@@ -6,32 +6,54 @@
 //   disabled if configured in config.toml).
 // - Claude: --permission-mode default + --strict-mcp-config + minimal MCP +
 //   write/edit tools disabled.
+// - Gemini (added in v0.5.0-alpha / spec v4.7 triangular): --approval-mode
+//   plan (read-only) + --allowed-mcp-server-names limited to
+//   {memory, ultrathink, code-reasoning} (recursion prevented -- cross-review
+//   is NOT in the allowlist) + --output-format text + explicit -m. Prompt is
+//   delivered via stdin with a minimal -p marker " " to trigger
+//   non-interactive mode; Gemini CLI appends -p to stdin (verified on
+//   CLI 0.39.1), so the effective prompt equals the stdin content.
 //
-// Since v0.4.0-alpha (spec v4 section 6.9.2), both paths pass an EXPLICIT
-// model flag targeting the top-tier model available in the user's
+// Since v0.4.0-alpha (spec v4 section 6.9.2), all paths pass an EXPLICIT
+// model flag targeting the top-tier model available in the operator's
 // subscription -- never rely on CLI defaults (which may regress to smaller
-// variants in future releases). IDs pinned in v0.4.0:
+// variants in future releases). IDs pinned in v0.5.0-alpha:
 //   - Codex: model `gpt-5.5` + reasoning_effort `xhigh` (via -c override,
 //            equivalent to a dedicated high-reasoning flag where available).
 //   - Claude: model `claude-opus-4-7` (full ID, not an alias, for
 //             auditability).
+//   - Gemini: model `gemini-2.5-pro` (Path A pin; 3.x previews are not GA on
+//             the oauth-personal auth path as of 2026-04-24; gemini-3.x-pro
+//             will re-pin via probe on GA). Gemini CLI 0.39.1 silently
+//             downgrades on nonexistent IDs, so v0.5.0-alpha adds a
+//             runtime self-report + enforcement layer (W5,
+//             TODO-spec-v4.9).
 // Model change requires explicit spec/config bump/edit; no silent fallback.
 // `spawnPeer` returns `peer_model` for persistence in
 // meta.json.rounds[i].peer_model, meeting the normative auditability
 // requirement.
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
 
 const CONFIGS_DIR = path.resolve(__dirname, '..', '..', 'reviewer-configs');
 const EXCLUSIONS_PATH = path.join(CONFIGS_DIR, 'peer-exclusions.json');
 const REVIEWER_MCP_JSON = path.join(CONFIGS_DIR, 'reviewer-minimal.mcp.json');
 
-// Normative IDs for v0.4.0 (spec v4 section 6.9.2).
+// Normative IDs for v0.5.0-alpha (spec v4 section 6.9.2, extended by v4.7
+// triangular + v4.8 resilience).
 const CODEX_MODEL = 'gpt-5.5';
 const CODEX_REASONING_EFFORT = 'xhigh';
 const CLAUDE_MODEL = 'claude-opus-4-7';
+const GEMINI_MODEL = 'gemini-2.5-pro';
+
+// Gemini peer containment: allowlist of MCP servers the peer may use while
+// analyzing. Deliberately excludes cross-review-mcp to prevent recursion
+// (spec v4 section 6.9.2). Includes the canonical reasoning stack so the
+// peer can honor the tri-tool mandate (spec v4 section 6.2 per
+// feedback_tri_tool_cross_review).
+const GEMINI_ALLOWED_MCP_SERVERS = ['memory', 'ultrathink', 'code-reasoning'];
 
 function loadExclusions() {
     return JSON.parse(fs.readFileSync(EXCLUSIONS_PATH, 'utf8'));
@@ -47,8 +69,11 @@ function listCodexConfiguredServers() {
     const content = fs.readFileSync(configPath, 'utf8');
     const names = new Set();
     const re = /^\[mcp_servers\.([^\].]+)\]/gm;
-    let m;
-    while ((m = re.exec(content)) !== null) names.add(m[1]);
+    for (;;) {
+        const m = re.exec(content);
+        if (m === null) break;
+        names.add(m[1]);
+    }
     return [...names];
 }
 
@@ -113,8 +138,303 @@ function buildClaudeArgs() {
     ];
 }
 
+function buildGeminiArgs() {
+    const allowArgs = GEMINI_ALLOWED_MCP_SERVERS.flatMap((name) => [
+        '--allowed-mcp-server-names',
+        name,
+    ]);
+    return [
+        '-m',
+        GEMINI_MODEL,
+        '-p',
+        ' ',
+        '--approval-mode',
+        'plan',
+        '--output-format',
+        'text',
+        ...allowArgs,
+    ];
+}
+
 function modelForPeer(peerAgent) {
-    return peerAgent === 'codex' ? CODEX_MODEL : CLAUDE_MODEL;
+    if (peerAgent === 'codex') return CODEX_MODEL;
+    if (peerAgent === 'claude') return CLAUDE_MODEL;
+    if (peerAgent === 'gemini') return GEMINI_MODEL;
+    throw new Error(`modelForPeer: unknown peer agent '${peerAgent}'`);
+}
+
+// Kill a spawned child and its process tree. On Windows the `shell: true`
+// child is cmd.exe which launches the real CLI; `proc.kill()` terminates
+// cmd.exe but leaves the CLI orphaned. `taskkill /T /F` reaps the tree.
+// On Unix we negate the pid to target the process group.
+// R11 (Codex peer review F2 round 2): Windows spawn trees must be reaped
+// on timeout and on retry; leaving orphans breaks wallclock budgets.
+function killProcessTree(proc) {
+    if (!proc || proc.killed || proc.exitCode != null) return;
+    if (process.platform === 'win32') {
+        try {
+            spawn('taskkill', ['/PID', String(proc.pid), '/T', '/F'], {
+                stdio: 'ignore',
+                windowsHide: true,
+            });
+        } catch {
+            try { proc.kill('SIGKILL'); } catch {}
+        }
+        return;
+    }
+    try {
+        process.kill(-proc.pid, 'SIGKILL');
+    } catch {
+        try { proc.kill('SIGKILL'); } catch {}
+    }
+}
+
+// Probe stub: short-circuits probeAgent for smoke tests.
+// CROSS_REVIEW_PROBE_STUB format: comma-separated "agent:tier[:model]"
+// entries. Tier in {top, fallback, excluded}. Model defaults to
+// modelForPeer(agent). Unlisted agents fall through to real probe.
+// Example: "gemini:top:gemini-2.5-pro,codex:excluded,claude:fallback:claude-sonnet-4-6"
+function probeStubFor(agent) {
+    const raw = process.env.CROSS_REVIEW_PROBE_STUB;
+    if (!raw) return null;
+    const entries = raw
+        .split(',')
+        .map((e) => e.trim())
+        .filter(Boolean)
+        .map((e) => e.split(':'));
+    for (const parts of entries) {
+        const [a, tier, model] = parts;
+        if (a !== agent) continue;
+        if (!['top', 'fallback', 'excluded'].includes(tier)) {
+            return null;
+        }
+        return {
+            agent,
+            tier,
+            requested_model: modelForPeer(agent),
+            model_reported: model || modelForPeer(agent),
+            model_match: (model || modelForPeer(agent)) === modelForPeer(agent),
+            probe_latency_ms: 0,
+            probe_budget_ms: 30000,
+            exit_code: tier === 'excluded' ? 1 : 0,
+            failure_class: tier === 'excluded' ? 'probe_excluded_stub' : null,
+            cli_version: null,
+            timestamp: new Date().toISOString(),
+            stderr_tail: '',
+        };
+    }
+    return null;
+}
+
+// Probe a single agent with a minimal CLI call to determine tier and
+// confirm the model identity. 30s default budget; configurable via
+// options.budgetMs. Returns a rich capability_snapshot entry (spec v4.8
+// section 6.9.3 + F2 Q6 field schema).
+function probeAgent(agent, options = {}) {
+    const stubbed = probeStubFor(agent);
+    if (stubbed) return Promise.resolve(stubbed);
+
+    const budgetMs = options.budgetMs ?? 30 * 1000;
+    const started = Date.now();
+    const requested = modelForPeer(agent);
+    // Minimal probe prompt; the peer is expected to reply tersely.
+    const prompt =
+        'Identify your exact model id in one short line, then stop. ' +
+        'No other output needed.';
+
+    return new Promise((resolve) => {
+        let resolved = false;
+        const finish = (snapshot) => {
+            if (resolved) return;
+            resolved = true;
+            resolve(snapshot);
+        };
+
+        let proc;
+        try {
+            let cmd;
+            let args;
+            if (agent === 'codex') {
+                cmd = 'codex';
+                args = buildCodexArgs();
+            } else if (agent === 'claude') {
+                cmd = 'claude';
+                args = buildClaudeArgs();
+            } else if (agent === 'gemini') {
+                cmd = 'gemini';
+                args = buildGeminiArgs();
+            } else {
+                return finish({
+                    agent,
+                    tier: 'excluded',
+                    requested_model: null,
+                    model_reported: null,
+                    model_match: false,
+                    probe_latency_ms: 0,
+                    probe_budget_ms: budgetMs,
+                    exit_code: -1,
+                    failure_class: 'unknown_agent',
+                    cli_version: null,
+                    timestamp: new Date().toISOString(),
+                    stderr_tail: '',
+                });
+            }
+            const cmdLine = buildCommandLine(cmd, args);
+            proc = spawn(cmdLine, {
+                stdio: ['pipe', 'pipe', 'pipe'],
+                shell: true,
+                windowsHide: true,
+            });
+        } catch (err) {
+            return finish({
+                agent,
+                tier: 'excluded',
+                requested_model: requested,
+                model_reported: null,
+                model_match: false,
+                probe_latency_ms: Date.now() - started,
+                probe_budget_ms: budgetMs,
+                exit_code: -1,
+                failure_class: 'spawn_error',
+                cli_version: null,
+                timestamp: new Date().toISOString(),
+                stderr_tail: String(err?.message || err).slice(-400),
+            });
+        }
+
+        let stdout = '';
+        let stderr = '';
+        const timer = setTimeout(() => {
+            killProcessTree(proc);
+            finish({
+                agent,
+                tier: 'excluded',
+                requested_model: requested,
+                model_reported: null,
+                model_match: false,
+                probe_latency_ms: Date.now() - started,
+                probe_budget_ms: budgetMs,
+                exit_code: -1,
+                failure_class: 'probe_timeout',
+                cli_version: null,
+                timestamp: new Date().toISOString(),
+                stderr_tail: stderr.slice(-400),
+            });
+        }, budgetMs);
+
+        proc.stdout.on('data', (d) => (stdout += d.toString('utf8')));
+        proc.stderr.on('data', (d) => (stderr += d.toString('utf8')));
+        proc.on('error', (err) => {
+            clearTimeout(timer);
+            finish({
+                agent,
+                tier: 'excluded',
+                requested_model: requested,
+                model_reported: null,
+                model_match: false,
+                probe_latency_ms: Date.now() - started,
+                probe_budget_ms: budgetMs,
+                exit_code: -1,
+                failure_class: 'spawn_error',
+                cli_version: null,
+                timestamp: new Date().toISOString(),
+                stderr_tail: String(err?.message || err).slice(-400),
+            });
+        });
+        proc.on('close', (code) => {
+            clearTimeout(timer);
+            const latency = Date.now() - started;
+            if (code !== 0) {
+                return finish({
+                    agent,
+                    tier: 'excluded',
+                    requested_model: requested,
+                    model_reported: null,
+                    model_match: false,
+                    probe_latency_ms: latency,
+                    probe_budget_ms: budgetMs,
+                    exit_code: code,
+                    failure_class: 'probe_nonzero_exit',
+                    cli_version: null,
+                    timestamp: new Date().toISOString(),
+                    stderr_tail: stderr.slice(-400),
+                });
+            }
+            // Extract model self-report from stdout tail. First non-empty
+            // line that looks like a model id.
+            const reported = extractReportedModel(stdout);
+            const match = reported != null && reported === requested;
+            finish({
+                agent,
+                tier: match ? 'top' : (reported ? 'fallback' : 'excluded'),
+                requested_model: requested,
+                model_reported: reported,
+                model_match: match,
+                probe_latency_ms: latency,
+                probe_budget_ms: budgetMs,
+                exit_code: code,
+                failure_class: match ? null : (reported ? 'silent_model_downgrade' : 'probe_no_model_report'),
+                cli_version: null,
+                timestamp: new Date().toISOString(),
+                stderr_tail: stderr.slice(-400),
+            });
+        });
+
+        proc.stdin.write(prompt);
+        proc.stdin.end();
+    });
+}
+
+// Heuristic extractor for a model id from the probe response. The peer
+// was asked for "your exact model id in one short line"; we pick the
+// last non-empty line that matches a conservative id shape (letters,
+// digits, dots, hyphens, underscores; length 3-80). Returns null if no
+// candidate found.
+function extractReportedModel(stdout) {
+    if (!stdout) return null;
+    const lines = stdout
+        .split(/\r?\n/)
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0);
+    if (lines.length === 0) return null;
+    const idShape = /^[A-Za-z0-9][A-Za-z0-9._-]{2,79}$/;
+    for (let i = lines.length - 1; i >= 0; i -= 1) {
+        const candidate = lines[i];
+        if (idShape.test(candidate)) return candidate;
+        // Allow a line like "I am gemini-2.5-pro." -> strip trailing
+        // punctuation and extract last token.
+        const tokens = candidate.split(/\s+/).map((t) => t.replace(/[.,;:!?]+$/, ''));
+        for (let j = tokens.length - 1; j >= 0; j -= 1) {
+            if (idShape.test(tokens[j])) return tokens[j];
+        }
+    }
+    return null;
+}
+
+// Probe multiple agents in parallel. Promise.allSettled preserves
+// per-agent partial results; never rejects. Returns an array of
+// snapshots in the same order as `agents`.
+function probeChain(agents, options = {}) {
+    const tasks = agents.map((a) => probeAgent(a, options));
+    return Promise.allSettled(tasks).then((results) =>
+        results.map((r, i) => {
+            if (r.status === 'fulfilled') return r.value;
+            return {
+                agent: agents[i],
+                tier: 'excluded',
+                requested_model: null,
+                model_reported: null,
+                model_match: false,
+                probe_latency_ms: 0,
+                probe_budget_ms: options.budgetMs ?? 30 * 1000,
+                exit_code: -1,
+                failure_class: 'probe_rejected',
+                cli_version: null,
+                timestamp: new Date().toISOString(),
+                stderr_tail: String(r.reason?.message || r.reason).slice(-400),
+            };
+        })
+    );
 }
 
 // Test stub. Does NOT spawn a real CLI -- returns a synthetic response so
@@ -172,7 +492,7 @@ function resolveStub(stub) {
     const peer_model = 'stub';
 
     if (stub === 'MISSING') {
-        return { stdout: body + '\n', stderr, peer_model };
+        return { stdout: `${body}\n`, stderr, peer_model };
     }
     if (LEGACY_STATUSES.has(stub)) {
         return { stdout: `${body}\n\nSTATUS: ${stub}\n`, stderr, peer_model };
@@ -300,6 +620,54 @@ function resolveStub(stub) {
         })}</cross_review_status>`;
         return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
     }
+    // v0.5.0-alpha stubs for server-level model-check (W8). Unlike the
+    // other stubs that all return peer_model='stub' to bypass the
+    // model-check entirely, these return a REAL-looking peer_model so
+    // the server activates parseDeclaredModel + classifyModelMatch.
+    // Used by smoke tests to exercise the silent-downgrade defense
+    // end-to-end via the MCP surface.
+    if (stub.startsWith('REAL_MATCH:')) {
+        // REAL_MATCH:<model_id>:<status>
+        const parts = stub.split(':');
+        const modelId = parts[1];
+        const status = parts[2];
+        assertLegacy(status, 'REAL_MATCH');
+        const modelBlock = `<cross_review_peer_model>${JSON.stringify({ model_id: modelId })}</cross_review_peer_model>`;
+        const statusBlock = `<cross_review_status>${JSON.stringify({ status })}</cross_review_status>`;
+        return {
+            stdout: `${body}\n\n${modelBlock}\n${statusBlock}\n`,
+            stderr,
+            peer_model: modelId,
+        };
+    }
+    if (stub.startsWith('REAL_DOWNGRADE:')) {
+        // REAL_DOWNGRADE:<requested>:<reported>:<status>
+        const parts = stub.split(':');
+        const requested = parts[1];
+        const reported = parts[2];
+        const status = parts[3];
+        assertLegacy(status, 'REAL_DOWNGRADE');
+        const modelBlock = `<cross_review_peer_model>${JSON.stringify({ model_id: reported })}</cross_review_peer_model>`;
+        const statusBlock = `<cross_review_status>${JSON.stringify({ status })}</cross_review_status>`;
+        return {
+            stdout: `${body}\n\n${modelBlock}\n${statusBlock}\n`,
+            stderr,
+            peer_model: requested,
+        };
+    }
+    if (stub.startsWith('REAL_MISSING_MODEL:')) {
+        // REAL_MISSING_MODEL:<requested>:<status>
+        const parts = stub.split(':');
+        const requested = parts[1];
+        const status = parts[2];
+        assertLegacy(status, 'REAL_MISSING_MODEL');
+        const statusBlock = `<cross_review_status>${JSON.stringify({ status })}</cross_review_status>`;
+        return {
+            stdout: `${body}\n\n${statusBlock}\n`,
+            stderr,
+            peer_model: requested,
+        };
+    }
     if (stub === 'STRUCTURED_OPEN_NO_CLOSE') {
         // Open tag present but no close tag. Tail does not end with close,
         // falls through to tryLegacyLastLine; without a canonical
@@ -342,8 +710,22 @@ function spawnPeer(peerAgent, prompt, options = {}) {
     if (stubbed) return stubbed;
 
     const timeoutMs = options.timeoutMs ?? 30 * 60 * 1000; // 30 min
-    const cmd = peerAgent === 'codex' ? 'codex' : 'claude';
-    const args = peerAgent === 'codex' ? buildCodexArgs() : buildClaudeArgs();
+    let cmd;
+    let args;
+    if (peerAgent === 'codex') {
+        cmd = 'codex';
+        args = buildCodexArgs();
+    } else if (peerAgent === 'claude') {
+        cmd = 'claude';
+        args = buildClaudeArgs();
+    } else if (peerAgent === 'gemini') {
+        cmd = 'gemini';
+        args = buildGeminiArgs();
+    } else {
+        return Promise.reject(
+            new Error(`spawnPeer: unknown peer agent '${peerAgent}'`)
+        );
+    }
     const cmdLine = buildCommandLine(cmd, args);
 
     return new Promise((resolve, reject) => {
@@ -357,9 +739,7 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 
         const timer = setTimeout(() => {
             if (finished) return;
-            try {
-                proc.kill('SIGKILL');
-            } catch {}
+            killProcessTree(proc);
             reject(new Error(`peer ${peerAgent} timed out after ${timeoutMs / 1000}s`));
         }, timeoutMs);
 
@@ -393,10 +773,32 @@ function spawnPeer(peerAgent, prompt, options = {}) {
     });
 }
 
+// Spawn multiple peers in parallel preserving per-peer partial results
+// and explicit agent identity (R12 from F2 round 2: never infer agent
+// from array index). Never rejects; each item carries either
+// {agent, status: 'fulfilled', value} or {agent, status: 'rejected',
+// reason}. `value` is the raw spawnPeer resolution; callers layer the
+// statusParser + silent-downgrade check on top.
+function spawnPeers(agents, prompt, options = {}) {
+    const tasks = agents.map((a) =>
+        spawnPeer(a, prompt, options).then(
+            (value) => ({ agent: a, status: 'fulfilled', value }),
+            (reason) => ({ agent: a, status: 'rejected', reason })
+        )
+    );
+    return Promise.all(tasks);
+}
+
 module.exports = {
     spawnPeer,
+    spawnPeers,
+    probeAgent,
+    probeChain,
+    killProcessTree,
+    extractReportedModel,
     buildCodexArgs,
     buildClaudeArgs,
+    buildGeminiArgs,
     listCodexConfiguredServers,
     loadExclusions,
     // Exported for audit/test use only. Exposes the pinned top-level
@@ -405,4 +807,6 @@ module.exports = {
     CODEX_MODEL,
     CODEX_REASONING_EFFORT,
     CLAUDE_MODEL,
+    GEMINI_MODEL,
+    GEMINI_ALLOWED_MCP_SERVERS,
 };

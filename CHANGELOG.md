@@ -1,8 +1,8 @@
 # CHANGELOG — cross-review-mcp
 
-Histórico de mudanças do servidor MCP de cross-review bilateral entre Claude Code e ChatGPT Codex.
+Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex e, desde v0.5.0-alpha, triangular claude↔codex↔gemini).
 
-**Convenção de versão:** SemVer para código (`package.json` `version` + `src/server.js` MCP identity). O versionamento da spec (`docs/workflow-spec.md`) tem seu próprio ciclo (v2/v3/v4/v4.1/.../v4.6) documentado internamente; releases spec-only NÃO bumpam o código.
+**Convenção de versão:** SemVer para código (`package.json` `version` + `src/server.js` MCP identity). O versionamento da spec (`docs/workflow-spec.md`) tem seu próprio ciclo (v2/v3/v4/v4.1/.../v4.8) documentado internamente; releases spec-only NÃO bumpam o código.
 
 **Convenção de seções:** Adicionado / Alterado / Corrigido / Removido por release, em ordem cronológica reversa (mais recente primeiro).
 
@@ -11,7 +11,7 @@ Histórico de mudanças do servidor MCP de cross-review bilateral entre Claude C
 ## [Unreleased]
 
 ### Adicionado
-- (em aberto)
+- (em aberto — v0.6.0-alpha planejada: anti-hallucination safeguards, open-source readiness, silent-downgrade spec formalização v4.9.)
 
 ### Alterado
 - (em aberto)
@@ -21,6 +21,45 @@ Histórico de mudanças do servidor MCP de cross-review bilateral entre Claude C
 
 ### Removido
 - (em aberto)
+
+---
+
+## [0.5.0-alpha] — 2026-04-24
+
+Release F2: triangular + tier resilience integrados, per spec v4.7 (triangular topology additive) + v4.8 (tier resilience + transient failure handling). Design session selada em 4 rounds entre Claude Code (caller) e ChatGPT Codex (peer) sob mandato tri-tool (ultrathink + code-reasoning + cross-review). Implementação aplicada em 9 waves com smoke gate após cada wave (62 → 87 steps).
+
+### Adicionado
+- `VALID_AGENTS = {claude, codex, gemini}` — terceiro peer (Gemini) entra no arranjo como complemento triangular. `CROSS_REVIEW_CALLER` aceita os três; `PEERS = VALID_AGENTS.filter(a => a !== CALLER)` é N-ary.
+- Ferramenta MCP `ask_peers` (N-ary): spawna todos os complementos em paralelo via `spawnPeers` (Promise.allSettled wrapped), preserva identity por peer (R12), registra spawns falhos em `meta.failed_attempts` com redaction R14, e persiste o round com `peers[]` + `quorum: {requested, responded, rejected}` para convergência N-ary (unanimidade).
+- Capability probe em `session_init`: `probeChain` roda em paralelo contra todos os peers com budget alvo 25s / ceiling 30s, emite snapshot por agent `{agent, tier: top|fallback|excluded, requested_model, model_reported, model_match, probe_latency_ms, probe_budget_ms, exit_code, failure_class, timestamp}` e persiste em `meta.capability_snapshot` (session-level, nunca per-round). Controlado em testes por `CROSS_REVIEW_SKIP_PROBE=1` e `CROSS_REVIEW_PROBE_STUB`.
+- Silent-downgrade defense: toda resposta de peer (real-spawn) é re-parseada pelo sibling `model-parser.js` (`parseDeclaredModel` + `classifyModelMatch`). O prompt do peer recebe tail-augmentation com diretriz para emitir `<cross_review_peer_model>{"model_id":"..."}</cross_review_peer_model>` imediatamente antes de `<cross_review_status>{...}</cross_review_status>`. Mismatch → `protocol_violation: true` com classe `silent_model_downgrade`; bloco ausente → classe `missing_model_report`. Não é retried (spec v4.8 §6.9.3.6 + F2 R15). Formalização diferida para spec v4.9 (TODO-spec-v4.9).
+- `top-models.json` schema_version 2 com entry `gemini` pinado em `gemini-2.5-pro` (top verificado no auth path oauth-personal; 3.x previews ainda beta por diretriz do operador 2026-04-24), `fallback_chain[]` por entry com invariante `fallback_chain[0] === id`, `last_verified` substituindo `validated_at`, e `notes_en` por provider.
+- `audit-model-drift.js` suporte estrito a schema v2: exige `schema_version === 2`, presença dos três agents canônicos (codex, claude, gemini), invariante `fallback_chain[0] === id` por entry, `last_verified` obrigatório, e reconhece constantes `GEMINI_MODEL` / `CODEX_MODEL` / `CODEX_REASONING_EFFORT` / `CLAUDE_MODEL` em `peer-spawn.js` via regex.
+- `peer-spawn.js` branch Gemini: `GEMINI_MODEL = 'gemini-2.5-pro'`, `GEMINI_ALLOWED_MCP_SERVERS = ['memory','ultrathink','code-reasoning']` (cross-review-mcp deliberadamente ausente — recursion prevention), `buildGeminiArgs()` produzindo `-m gemini-2.5-pro -p " " --approval-mode plan --output-format text --allowed-mcp-server-names memory --allowed-mcp-server-names ultrathink --allowed-mcp-server-names code-reasoning`. `modelForPeer` estendido aos três agents; agent desconhecido lança erro.
+- `peer-spawn.js` process-tree kill (R11): Windows `taskkill /PID /T /F`, Unix `process.kill(-pid, 'SIGKILL')`. Substitui o antigo `proc.kill('SIGKILL')` parent-only que deixava CLI órfão sob `shell: true`.
+- `peer-spawn.js` `spawnPeers(agents, prompt, options)` — spawn N-ary paralelo preservando partial results via `{agent, status: 'fulfilled'|'rejected', value|reason}` (R12 explicit identity).
+- `peer-spawn.js` `probeAgent(agent, {budgetMs})` + `probeChain(agents, options)` — probe CLI self-report mínimo com classificação de tier e short-circuit por stub via `CROSS_REVIEW_PROBE_STUB` (smoke-only). `extractReportedModel(stdout)` heurística de extração de id.
+- `session-store.js` extensão de schema (v0.5.0-alpha): array `peers[]` (N-ary) junto ao scalar legacy `peer` (read-time `normalizePeers` sintetiza, idempotente, prefere `peers[]` quando ambos presentes e divergem), `capability_snapshot` session-level, `failed_attempts[]`, e `quorum` carregado em rounds N-ary. `checkConvergence` N-ary requer caller READY e todos os peers respondidos READY.
+- `session-store.js` `saveCapabilitySnapshot`, `saveFailedAttempt(sessionId, agent, reason, extras)`, `redactSensitive(text)`, `clipStderrTail(text)` com patterns R14 (OpenAI sk-, Google AIza, GitHub gh_, Slack xox-, JWT, Bearer, PEM blocks, URL userinfo, atribuições env-style `TOKEN/SECRET/PASSWORD/API_KEY/PRIVATE_KEY`).
+- Novo sibling parser `src/lib/model-parser.js` com `parseDeclaredModel(text)` (tail discipline: status block no tail; peer-model block como penúltimo structured block; caso contrário retorna null + parser warning) e `classifyModelMatch(requested, reported)`. Não compartilha estado com `status-parser.js` por R20.
+- Corpus de stubs em `peer-spawn.js` estendido: `REAL_MATCH:<model>:<status>`, `REAL_DOWNGRADE:<requested>:<reported>:<status>`, `REAL_MISSING_MODEL:<requested>:<status>` retornam peer_model non-'stub' para exercitar o model-check server-side end-to-end.
+- `functional-smoke.js` expandido de 62 para 87 steps: model-parser unit coverage (6), buildGeminiArgs shape, spawnPeers explicit identity (2), probeChain stub/tier (2), session-store N-ary + redaction (7), ask_peers end-to-end (2), ask_peer gemini-caller rejection (1), e ask_peer model-check via server para MATCH / DOWNGRADE / MISSING (3).
+
+### Alterado
+- `server.js` version bump `0.4.0-alpha` → `0.5.0-alpha`; startup log enumera `caller` + `peers[]` + `legacy_bilateral_peer` (ou `(none)` para caller=gemini).
+- `server.js` `ask_peer` agora é estritamente bilateral (claude↔codex); callers gemini recebem erro explícito apontando para `ask_peers` (R23).
+- `server.js` `parsePeerOutputs(stdout, peerModel)` é o ponto canônico de integração combinando `parsePeerResponse` (status) com `parseDeclaredModel` (model). O model-parser e seus warnings ativam apenas quando `peerModel !== 'stub'`; respostas stub bypassam o check por design.
+- `server.js` todo prompt de peer spawnado recebe tail-augmentation via `attachPromptTailDirective` (bloco model declarado + status block).
+- `session-store.js` `checkConvergence` agora roteia para lógica N-ary ou legacy baseado no shape do round (`round.peers[]` vs `round.peer_status`), preservando comportamento bilateral legacy.
+- `top-models.json` `validated_at` → `last_verified` (schema v2); `reasoning_effort` retido na entry codex.
+- `package.json` version bump `0.4.0-alpha` → `0.5.0-alpha`.
+
+### Corrigido
+- Preexisting-issues sweep (diretriz do operador 2026-04-24): todos os imports builtin migrados para `node:` protocol em `peer-spawn.js`, `session-store.js`, `audit-model-drift.js`, `functional-smoke.js`. Template literals substituem concatenação de strings nos sites flaggeados. Optional chaining substitui `a && a.b` nos sites novos. `while ((x = next()) !== null)` refatorado: `functional-smoke.js` centraliza o JSON-RPC reader como `attachJsonRpcReader(stream, responses)` (5 sites → 1 helper compartilhado); `peer-spawn.js` `listCodexConfiguredServers` usa `for (;;)` explícito. Destructuring com `payload` unused em `drivePeerModelAndWarningsPersisted` removido. Shadowed `const fs = require('fs')` dentro de driver functions removido em favor do import top-level.
+
+### Removido
+- Default bilateral legacy de `CROSS_REVIEW_CALLER`: o complemento binário `PEER` (scalar) não é mais derivado globalmente. `LEGACY_PEER` guarda o partner bilateral apenas para callers claude / codex; gemini não tem legacy partner.
+- Campo `validated_at` em entries de top-models.json (renomeado para `last_verified` no boundary do schema v2).
 
 ---
 

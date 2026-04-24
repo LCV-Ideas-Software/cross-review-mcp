@@ -16,25 +16,50 @@
  * files are created in ~/.cross-review/<id>/.
  */
 
-const { spawn } = require('child_process');
-const fs = require('fs');
-const path = require('path');
-const os = require('os');
+const { spawn } = require('node:child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 const SERVER = path.resolve(__dirname, '..', 'src', 'server.js');
 const STATE_DIR = path.join(os.homedir(), '.cross-review');
 
 function requestLine(id, method, params) {
-    return JSON.stringify({ jsonrpc: '2.0', id, method, params }) + '\n';
+    return `${JSON.stringify({ jsonrpc: '2.0', id, method, params })}\n`;
 }
 
 function notifLine(method, params) {
-    return JSON.stringify({ jsonrpc: '2.0', method, params }) + '\n';
+    return `${JSON.stringify({ jsonrpc: '2.0', method, params })}\n`;
+}
+
+// Shared reader: parse line-delimited JSON-RPC messages from a child
+// stdout stream and route responses (msg.id != null) into a Map. Used
+// by every driver function; centralizing this removes repetition and
+// avoids the assignment-in-expression pattern.
+function attachJsonRpcReader(stream, responses) {
+    let buf = '';
+    stream.on('data', (d) => {
+        buf += d.toString('utf8');
+        let idx = buf.indexOf('\n');
+        while (idx !== -1) {
+            const line = buf.slice(0, idx).trim();
+            buf = buf.slice(idx + 1);
+            if (line) {
+                try {
+                    const msg = JSON.parse(line);
+                    if (msg.id != null) responses.set(msg.id, msg);
+                } catch {
+                    // ignore non-JSON lines (MCP diagnostic output etc.)
+                }
+            }
+            idx = buf.indexOf('\n');
+        }
+    });
 }
 
 async function driveServer(extraEnv = {}) {
     const proc = spawn('node', [SERVER], {
-        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', ...extraEnv },
+        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_SKIP_PROBE: '1', ...extraEnv },
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
     });
@@ -43,22 +68,7 @@ async function driveServer(extraEnv = {}) {
     proc.stderr.on('data', (d) => stderrChunks.push(d.toString('utf8')));
 
     const responses = new Map();
-    let buf = '';
-    proc.stdout.on('data', (d) => {
-        buf += d.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line) continue;
-            try {
-                const msg = JSON.parse(line);
-                if (msg.id != null) responses.set(msg.id, msg);
-            } catch {
-                // ignore non-JSON lines
-            }
-        }
-    });
+    attachJsonRpcReader(proc.stdout, responses);
 
     function call(id, method, params) {
         return new Promise((resolve, reject) => {
@@ -98,6 +108,7 @@ async function driveServer(extraEnv = {}) {
         const names = tools.result.tools.map((t) => t.name).sort();
         const expected = [
             'ask_peer',
+            'ask_peers',
             'session_check_convergence',
             'session_finalize',
             'session_init',
@@ -116,7 +127,15 @@ async function driveServer(extraEnv = {}) {
         });
         const initPayload = JSON.parse(init2.result.content[0].text);
         assert(typeof initPayload.session_id === 'string' && initPayload.session_id.length > 0, 'session_init: session_id');
-        assert(initPayload.caller === 'claude' && initPayload.peer === 'codex', 'session_init: caller/peer');
+        assert(initPayload.caller === 'claude', 'session_init: caller');
+        assert(
+            Array.isArray(initPayload.peers) && initPayload.peers.includes('codex') && initPayload.peers.includes('gemini'),
+            'session_init: peers array contains codex and gemini'
+        );
+        assert(
+            initPayload.capability_snapshot && initPayload.capability_snapshot.skipped === true,
+            'session_init: capability_snapshot records probe skip under CROSS_REVIEW_SKIP_PROBE=1'
+        );
         const sessionId = initPayload.session_id;
         const sessDir = path.join(STATE_DIR, sessionId);
         assert(fs.existsSync(path.join(sessDir, 'meta.json')), 'session_init: meta.json exists');
@@ -197,27 +216,14 @@ function assert(cond, msg) {
 async function driveAskPeerMatrix() {
     const results = [];
     const proc = spawn('node', [SERVER], {
-        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_PEER_STUB: 'READY' },
+        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_SKIP_PROBE: '1', CROSS_REVIEW_PEER_STUB: 'READY' },
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
     });
     const stderrChunks = [];
     proc.stderr.on('data', (d) => stderrChunks.push(d.toString('utf8')));
     const responses = new Map();
-    let buf = '';
-    proc.stdout.on('data', (d) => {
-        buf += d.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line) continue;
-            try {
-                const msg = JSON.parse(line);
-                if (msg.id != null) responses.set(msg.id, msg);
-            } catch {}
-        }
-    });
+    attachJsonRpcReader(proc.stdout, responses);
     const call = (id, method, params) =>
         new Promise((resolve, reject) => {
             proc.stdin.write(requestLine(id, method, params));
@@ -282,25 +288,12 @@ async function driveAskPeerMatrix() {
 async function driveProtocolViolation() {
     const results = [];
     const proc = spawn('node', [SERVER], {
-        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_PEER_STUB: 'MISSING' },
+        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_SKIP_PROBE: '1', CROSS_REVIEW_PEER_STUB: 'MISSING' },
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
     });
     const responses = new Map();
-    let buf = '';
-    proc.stdout.on('data', (d) => {
-        buf += d.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line) continue;
-            try {
-                const msg = JSON.parse(line);
-                if (msg.id != null) responses.set(msg.id, msg);
-            } catch {}
-        }
-    });
+    attachJsonRpcReader(proc.stdout, responses);
     const call = (id, method, params) =>
         new Promise((resolve, reject) => {
             proc.stdin.write(requestLine(id, method, params));
@@ -343,25 +336,12 @@ async function driveProtocolViolation() {
 // Helper: spawn server, do one ask_peer, return payload+session_id for assertions
 async function oneShotAskPeer(stubValue, callerStatus = 'NOT_READY') {
     const proc = spawn('node', [SERVER], {
-        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_PEER_STUB: stubValue },
+        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_SKIP_PROBE: '1', CROSS_REVIEW_PEER_STUB: stubValue },
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
     });
     const responses = new Map();
-    let buf = '';
-    proc.stdout.on('data', (d) => {
-        buf += d.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line) continue;
-            try {
-                const msg = JSON.parse(line);
-                if (msg.id != null) responses.set(msg.id, msg);
-            } catch {}
-        }
-    });
+    attachJsonRpcReader(proc.stdout, responses);
     const call = (id, method, params) =>
         new Promise((resolve, reject) => {
             proc.stdin.write(requestLine(id, method, params));
@@ -700,28 +680,15 @@ async function driveStructuredOpenNoClose() {
 // v0.4.0: persistencia de parser_warnings e peer_model em meta.json.rounds[i] via session_read.
 async function drivePeerModelAndWarningsPersisted() {
     const results = [];
-    const { sessionId, payload } = await oneShotAskPeer('STRUCTURED_V4_BAD_UNCERTAINTY', 'NOT_READY');
+    const { sessionId } = await oneShotAskPeer('STRUCTURED_V4_BAD_UNCERTAINTY', 'NOT_READY');
     // Open a separate server to session_read the persisted meta.
     const proc = spawn('node', [SERVER], {
-        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude' },
+        env: { ...process.env, CROSS_REVIEW_CALLER: 'claude', CROSS_REVIEW_SKIP_PROBE: '1' },
         stdio: ['pipe', 'pipe', 'pipe'],
         shell: false,
     });
     const responses = new Map();
-    let buf = '';
-    proc.stdout.on('data', (d) => {
-        buf += d.toString('utf8');
-        let idx;
-        while ((idx = buf.indexOf('\n')) !== -1) {
-            const line = buf.slice(0, idx).trim();
-            buf = buf.slice(idx + 1);
-            if (!line) continue;
-            try {
-                const msg = JSON.parse(line);
-                if (msg.id != null) responses.set(msg.id, msg);
-            } catch {}
-        }
-    });
+    attachJsonRpcReader(proc.stdout, responses);
     const call = (id, method, params) =>
         new Promise((resolve, reject) => {
             proc.stdin.write(requestLine(id, method, params));
@@ -809,7 +776,528 @@ async function runAll() {
     all.push(...s25.results);
     const s26 = await drivePeerSpawnRealPathModel();
     all.push(...s26.results);
+    const s27 = await driveModelParserUnit();
+    all.push(...s27.results);
+    const s28 = await driveGeminiArgsShape();
+    all.push(...s28.results);
+    const s29 = await driveSpawnPeersIdentityShape();
+    all.push(...s29.results);
+    const s30 = await driveProbeStubShape();
+    all.push(...s30.results);
+    const s31 = await driveSessionStoreUnit();
+    all.push(...s31.results);
+    const s32 = await driveAskPeersNAry();
+    all.push(...s32.results);
+    const s33 = await driveAskPeerGeminiCallerRejected();
+    all.push(...s33.results);
+    const s34 = await driveModelCheckMatchViaServer();
+    all.push(...s34.results);
+    const s35 = await driveModelCheckDowngradeViaServer();
+    all.push(...s35.results);
+    const s36 = await driveModelCheckMissingViaServer();
+    all.push(...s36.results);
     return all;
+}
+
+// W8: ask_peers N-ary flow end-to-end via MCP. Smoke uses the agent-
+// agnostic CROSS_REVIEW_PEER_STUB=STRUCTURED:READY so every spawned
+// peer (codex + gemini under caller=claude) resolves with a stub READY.
+// Verifies the round carries peers[] with explicit identity and the
+// unanimity convergence path.
+async function driveAskPeersNAry() {
+    const results = [];
+    const proc = spawn('node', [SERVER], {
+        env: {
+            ...process.env,
+            CROSS_REVIEW_CALLER: 'claude',
+            CROSS_REVIEW_SKIP_PROBE: '1',
+            CROSS_REVIEW_PEER_STUB: 'STRUCTURED:READY',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+    });
+    const responses = new Map();
+    attachJsonRpcReader(proc.stdout, responses);
+    const call = (id, method, params) =>
+        new Promise((resolve, reject) => {
+            proc.stdin.write(requestLine(id, method, params));
+            const t = setTimeout(() => reject(new Error(`timeout id=${id}`)), 10000);
+            const poll = setInterval(() => {
+                if (responses.has(id)) {
+                    clearInterval(poll);
+                    clearTimeout(t);
+                    resolve(responses.get(id));
+                }
+            }, 25);
+        });
+    let sessionId;
+    try {
+        await call(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke-ask-peers', version: '0.1' } });
+        proc.stdin.write(notifLine('notifications/initialized'));
+        const init = await call(2, 'tools/call', {
+            name: 'session_init',
+            arguments: { task: 'ask_peers N-ary smoke', artifacts: [] },
+        });
+        sessionId = JSON.parse(init.result.content[0].text).session_id;
+        const askResp = await call(3, 'tools/call', {
+            name: 'ask_peers',
+            arguments: { session_id: sessionId, prompt: 'trilateral stub probe', caller_status: 'READY' },
+        });
+        const askPayload = JSON.parse(askResp.result.content[0].text);
+        assert(Array.isArray(askPayload.peers), 'ask_peers: peers array returned');
+        assert(askPayload.peers.length === 2, 'ask_peers: 2 peers responded (codex+gemini)');
+        const agents = askPayload.peers.map((p) => p.agent).sort();
+        assert(JSON.stringify(agents) === JSON.stringify(['codex', 'gemini']), `peers are codex,gemini (got ${agents.join(',')})`);
+        for (const p of askPayload.peers) {
+            assert(p.status === 'fulfilled', `peer ${p.agent} status=fulfilled`);
+            assert(p.peer_status === 'READY', `peer ${p.agent} peer_status=READY`);
+        }
+        assert(askPayload.quorum.requested === 2 && askPayload.quorum.responded === 2 && askPayload.quorum.rejected === 0, 'quorum: 2/2/0');
+        assert(askPayload.protocol_violation === false, 'no protocol violation on stub READY');
+        results.push({ step: 'ask_peers: N-ary round with 2 stub peers, unanimity READY, quorum 2/2/0', ok: true });
+
+        const convResp = await call(4, 'tools/call', { name: 'session_check_convergence', arguments: { session_id: sessionId } });
+        const convPayload = JSON.parse(convResp.result.content[0].text);
+        assert(convPayload.converged === true, 'N-ary convergence: caller READY + all peers READY');
+        results.push({ step: 'session_check_convergence N-ary after ask_peers: converged=true', ok: true });
+    } finally {
+        proc.kill();
+        if (sessionId) cleanupSession(sessionId);
+    }
+    return { results };
+}
+
+// W8: ask_peer MUST reject gemini caller (R23, legacy bilateral
+// surface is claude<->codex only).
+async function driveAskPeerGeminiCallerRejected() {
+    const results = [];
+    const proc = spawn('node', [SERVER], {
+        env: {
+            ...process.env,
+            CROSS_REVIEW_CALLER: 'gemini',
+            CROSS_REVIEW_SKIP_PROBE: '1',
+            CROSS_REVIEW_PEER_STUB: 'STRUCTURED:READY',
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+    });
+    const responses = new Map();
+    attachJsonRpcReader(proc.stdout, responses);
+    const call = (id, method, params) =>
+        new Promise((resolve, reject) => {
+            proc.stdin.write(requestLine(id, method, params));
+            const t = setTimeout(() => reject(new Error(`timeout id=${id}`)), 10000);
+            const poll = setInterval(() => {
+                if (responses.has(id)) {
+                    clearInterval(poll);
+                    clearTimeout(t);
+                    resolve(responses.get(id));
+                }
+            }, 25);
+        });
+    let sessionId;
+    try {
+        await call(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke-gemini-reject', version: '0.1' } });
+        proc.stdin.write(notifLine('notifications/initialized'));
+        const init = await call(2, 'tools/call', {
+            name: 'session_init',
+            arguments: { task: 'gemini caller rejection smoke', artifacts: [] },
+        });
+        const initPayload = JSON.parse(init.result.content[0].text);
+        sessionId = initPayload.session_id;
+        assert(initPayload.caller === 'gemini', 'caller=gemini');
+        assert(Array.isArray(initPayload.peers) && initPayload.peers.includes('claude') && initPayload.peers.includes('codex'), 'peers=[claude,codex]');
+        const askResp = await call(3, 'tools/call', {
+            name: 'ask_peer',
+            arguments: { session_id: sessionId, prompt: 'should reject', caller_status: 'NOT_READY' },
+        });
+        const askPayload = JSON.parse(askResp.result.content[0].text);
+        assert(askResp.result.isError === true, 'ask_peer returned isError=true');
+        assert(/ask_peers|bilateral-only/.test(askPayload.error), `error message points operator at ask_peers (got: ${askPayload.error})`);
+        results.push({ step: 'ask_peer rejects gemini caller with pointer to ask_peers (R23)', ok: true });
+    } finally {
+        proc.kill();
+        if (sessionId) cleanupSession(sessionId);
+    }
+    return { results };
+}
+
+// W8 model-check helpers: drive server ask_peer with the new REAL_*
+// stubs that return peer_model !== 'stub', activating the server-side
+// sibling model-parser + silent-downgrade defense.
+async function runServerAskPeer(stubValue, callerStatus, callerAgent = 'claude') {
+    const proc = spawn('node', [SERVER], {
+        env: {
+            ...process.env,
+            CROSS_REVIEW_CALLER: callerAgent,
+            CROSS_REVIEW_SKIP_PROBE: '1',
+            CROSS_REVIEW_PEER_STUB: stubValue,
+        },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        shell: false,
+    });
+    const responses = new Map();
+    attachJsonRpcReader(proc.stdout, responses);
+    const call = (id, method, params) =>
+        new Promise((resolve, reject) => {
+            proc.stdin.write(requestLine(id, method, params));
+            const t = setTimeout(() => reject(new Error(`timeout id=${id}`)), 10000);
+            const poll = setInterval(() => {
+                if (responses.has(id)) {
+                    clearInterval(poll);
+                    clearTimeout(t);
+                    resolve(responses.get(id));
+                }
+            }, 25);
+        });
+    let sessionId;
+    try {
+        await call(1, 'initialize', { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'smoke-model-check', version: '0.1' } });
+        proc.stdin.write(notifLine('notifications/initialized'));
+        const init = await call(2, 'tools/call', {
+            name: 'session_init',
+            arguments: { task: 'model-check smoke', artifacts: [] },
+        });
+        sessionId = JSON.parse(init.result.content[0].text).session_id;
+        const askResp = await call(3, 'tools/call', {
+            name: 'ask_peer',
+            arguments: { session_id: sessionId, prompt: 'trigger model check', caller_status: callerStatus },
+        });
+        const askPayload = JSON.parse(askResp.result.content[0].text);
+        return { sessionId, askPayload };
+    } finally {
+        proc.kill();
+    }
+}
+
+async function driveModelCheckMatchViaServer() {
+    const results = [];
+    const { sessionId, askPayload } = await runServerAskPeer('REAL_MATCH:gpt-5.5:READY', 'READY');
+    try {
+        assert(askPayload.peer_status === 'READY', 'match path: peer_status=READY');
+        assert(askPayload.model_requested === 'gpt-5.5', 'match path: model_requested=gpt-5.5');
+        assert(askPayload.model_reported === 'gpt-5.5', 'match path: model_reported=gpt-5.5');
+        assert(askPayload.model_match === true, 'match path: model_match=true');
+        assert(askPayload.model_failure_class == null, 'match path: failure_class null');
+        assert(askPayload.protocol_violation === false, 'match path: no protocol violation');
+        results.push({ step: 'ask_peer model-check MATCH via server (REAL_MATCH:gpt-5.5:READY) -> model_match=true, no violation', ok: true });
+    } finally {
+        if (sessionId) cleanupSession(sessionId);
+    }
+    return { results };
+}
+
+async function driveModelCheckDowngradeViaServer() {
+    const results = [];
+    const { sessionId, askPayload } = await runServerAskPeer('REAL_DOWNGRADE:gpt-5.5:gpt-3.5-legacy:READY', 'NOT_READY');
+    try {
+        assert(askPayload.peer_status === 'READY', 'downgrade path: status still parses');
+        assert(askPayload.model_requested === 'gpt-5.5', 'downgrade: model_requested=gpt-5.5');
+        assert(askPayload.model_reported === 'gpt-3.5-legacy', 'downgrade: model_reported=gpt-3.5-legacy');
+        assert(askPayload.model_match === false, 'downgrade: model_match=false');
+        assert(askPayload.model_failure_class === 'silent_model_downgrade', 'downgrade: failure_class=silent_model_downgrade');
+        assert(askPayload.protocol_violation === true, 'downgrade: protocol_violation=true');
+        results.push({ step: 'ask_peer model-check DOWNGRADE via server -> model_match=false, failure_class=silent_model_downgrade, protocol_violation=true', ok: true });
+    } finally {
+        if (sessionId) cleanupSession(sessionId);
+    }
+    return { results };
+}
+
+async function driveModelCheckMissingViaServer() {
+    const results = [];
+    const { sessionId, askPayload } = await runServerAskPeer('REAL_MISSING_MODEL:gpt-5.5:READY', 'NOT_READY');
+    try {
+        assert(askPayload.peer_status === 'READY', 'missing-model path: status parses');
+        assert(askPayload.model_reported == null, 'missing: model_reported null');
+        assert(askPayload.model_match === false, 'missing: model_match=false');
+        assert(askPayload.model_failure_class === 'missing_model_report', 'missing: failure_class=missing_model_report');
+        assert(askPayload.protocol_violation === true, 'missing: protocol_violation=true');
+        results.push({ step: 'ask_peer model-check MISSING_MODEL_REPORT via server -> failure_class=missing_model_report, protocol_violation=true', ok: true });
+    } finally {
+        if (sessionId) cleanupSession(sessionId);
+    }
+    return { results };
+}
+
+// W6: session-store.js N-ary schema + redaction + normalization +
+// capability_snapshot + failed_attempts + N-ary convergence.
+async function driveSessionStoreUnit() {
+    const results = [];
+    const store = require('../src/lib/session-store.js');
+
+    // redactSensitive: known patterns.
+    const raw = [
+        'token=sk-abcdefghijklmnopqrstuv',
+        'AIzaAbCdEfGhIjKlMnOpQrStUvWxYz012345678',
+        'Authorization: Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIifX0.sig-xyz',
+        'gh_token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123',
+        'slack=xoxb-abc-def-ghi-jklmn',
+        'PRIVATE_API_KEY=topsecret',
+        'https://alice:p4ssw0rd@internal.lcv.app.br/path',
+    ].join('\n');
+    const redacted = store.redactSensitive(raw);
+    assert(!redacted.includes('sk-abcdefghij'), 'redact: sk- OpenAI');
+    assert(!redacted.includes('AIzaAbCdEfGhIj'), 'redact: Google AIza');
+    assert(!redacted.includes('eyJhbGciOi'), 'redact: JWT');
+    assert(!redacted.includes('ghp_ABCDE'), 'redact: GitHub gh');
+    assert(!redacted.includes('xoxb-abc-def'), 'redact: Slack xox');
+    assert(!redacted.includes('topsecret'), 'redact: env-style PRIVATE_API_KEY');
+    assert(!redacted.includes('alice:p4ssw0rd'), 'redact: URL userinfo');
+    results.push({ step: 'session-store.redactSensitive masks OpenAI/Google/JWT/GitHub/Slack/env-style/URL-userinfo (R14)', ok: true });
+
+    // normalizePeers: idempotent on peers[], synthesizes from legacy peer.
+    const m1 = store.normalizePeers({ peer: 'codex', rounds: [] });
+    assert(Array.isArray(m1.peers) && m1.peers.length === 1 && m1.peers[0] === 'codex', 'legacy peer -> peers[codex]');
+    const m2 = store.normalizePeers({ peers: ['codex', 'gemini'], rounds: [] });
+    assert(m2.peers.length === 2 && m2.peers[1] === 'gemini', 'peers[] preserved when present');
+    const m3 = store.normalizePeers({ peer: 'codex', peers: ['claude'], rounds: [] });
+    assert(m3.peers[0] === 'claude', 'peers[] wins over scalar peer when both present');
+    results.push({ step: 'session-store.normalizePeers: idempotent + synthesizes from legacy peer + prefers peers[] over scalar', ok: true });
+
+    // initSession N-ary path: write and read back.
+    const id = store.initSession({
+        task: 'W6 smoke N-ary',
+        artifacts: [],
+        callerAgent: 'claude',
+        peers: ['codex', 'gemini'],
+        capabilitySnapshot: { stub: true, peers: [{ agent: 'codex', tier: 'top' }, { agent: 'gemini', tier: 'top' }] },
+    });
+    const meta = store.readMeta(id);
+    assert(Array.isArray(meta.peers) && meta.peers.length === 2, 'initSession persisted peers[]');
+    assert(!('peer' in meta), 'N-ary session: no legacy peer scalar');
+    assert(meta.capability_snapshot && meta.capability_snapshot.stub === true, 'capability_snapshot persisted at init');
+    results.push({ step: 'session-store.initSession N-ary: peers[] + capability_snapshot persisted, no scalar peer', ok: true });
+
+    // saveCapabilitySnapshot overwrites.
+    store.saveCapabilitySnapshot(id, { stub: true, version: 2 });
+    const meta2 = store.readMeta(id);
+    assert(meta2.capability_snapshot.version === 2, 'saveCapabilitySnapshot overwrites');
+    results.push({ step: 'session-store.saveCapabilitySnapshot: overwrites and updates last_updated_at', ok: true });
+
+    // saveFailedAttempt with secret in stderr_tail -> redacted.
+    store.saveFailedAttempt(id, 'gemini', 'rate_limit_exceeded', {
+        stderr_tail: 'Error: quota exceeded. token=sk-1234567890abcdefghij; retry later.',
+        failure_class: 'rate_limit_exceeded',
+        round: 1,
+        retry_attempt: 0,
+    });
+    const meta3 = store.readMeta(id);
+    assert(Array.isArray(meta3.failed_attempts) && meta3.failed_attempts.length === 1, 'failed_attempts recorded');
+    const attempt = meta3.failed_attempts[0];
+    assert(attempt.agent === 'gemini' && attempt.failure_class === 'rate_limit_exceeded', 'attempt carries agent + failure_class');
+    assert(!attempt.stderr_tail.includes('sk-1234567890'), 'stderr_tail redacted (R14)');
+    assert(attempt.stderr_tail.includes('[REDACTED]'), 'REDACTED marker present');
+    results.push({ step: 'session-store.saveFailedAttempt: entry persisted with clipped + redacted stderr_tail', ok: true });
+
+    // N-ary checkConvergence: all READY -> converged.
+    store.appendRound(id, {
+        round: 1,
+        caller: 'claude',
+        caller_status: 'READY',
+        peers: [
+            { agent: 'codex', peer_status: 'READY' },
+            { agent: 'gemini', peer_status: 'READY' },
+        ],
+    });
+    const conv1 = store.checkConvergence(id);
+    assert(conv1.converged === true, 'N-ary all READY -> converged');
+    results.push({ step: 'session-store.checkConvergence N-ary: caller + all peers READY -> converged', ok: true });
+
+    // One peer NOT_READY -> not converged.
+    store.appendRound(id, {
+        round: 2,
+        caller: 'claude',
+        caller_status: 'READY',
+        peers: [
+            { agent: 'codex', peer_status: 'READY' },
+            { agent: 'gemini', peer_status: 'NOT_READY' },
+        ],
+    });
+    const conv2 = store.checkConvergence(id);
+    assert(conv2.converged === false, 'one peer NOT_READY -> not converged');
+    assert(/gemini/.test(conv2.reason), 'reason mentions the dissenting peer');
+    results.push({ step: 'session-store.checkConvergence N-ary: one peer NOT_READY -> not converged, reason names peer', ok: true });
+
+    // cleanup
+    store.finalize(id, 'aborted');
+    fs.rmSync(store.sessionDir(id), { recursive: true, force: true });
+
+    return { results };
+}
+
+// W5: parseDeclaredModel + classifyModelMatch unit coverage. Pure lib
+// tests (no server spawn): exercise well-formed, missing, malformed,
+// misplaced blocks and match classification.
+async function driveModelParserUnit() {
+    const results = [];
+    const { parseDeclaredModel, classifyModelMatch, MODEL_OPEN_TAG, MODEL_CLOSE_TAG } = require('../src/lib/model-parser.js');
+
+    const statusBlock = '<cross_review_status>{"status":"READY"}</cross_review_status>';
+
+    // Well-formed: model block immediately before status block.
+    const r1 = parseDeclaredModel(
+        `body\n\n${MODEL_OPEN_TAG}{"model_id":"gemini-2.5-pro"}${MODEL_CLOSE_TAG}\n${statusBlock}\n`
+    );
+    assert(r1.model_id === 'gemini-2.5-pro' && r1.source === 'structured', 'parseDeclaredModel well-formed -> gemini-2.5-pro');
+    results.push({ step: 'parseDeclaredModel: well-formed tail -> model_id extracted, source=structured', ok: true });
+
+    // Missing: status block only.
+    const r2 = parseDeclaredModel(`body\n\n${statusBlock}\n`);
+    assert(r2.model_id === null && r2.parser_warnings.length > 0, 'parseDeclaredModel missing -> null + warning');
+    results.push({ step: 'parseDeclaredModel: missing model block -> null + warning', ok: true });
+
+    // Malformed JSON.
+    const r3 = parseDeclaredModel(
+        `body\n\n${MODEL_OPEN_TAG}{not json${MODEL_CLOSE_TAG}\n${statusBlock}\n`
+    );
+    assert(r3.model_id === null && r3.parser_warnings.some((w) => /not valid JSON/.test(w)), 'malformed JSON -> null + warning');
+    results.push({ step: 'parseDeclaredModel: malformed JSON payload -> null + parser warning', ok: true });
+
+    // Missing model_id field.
+    const r4 = parseDeclaredModel(
+        `body\n\n${MODEL_OPEN_TAG}{"foo":"bar"}${MODEL_CLOSE_TAG}\n${statusBlock}\n`
+    );
+    assert(r4.model_id === null, 'missing model_id field -> null');
+    results.push({ step: 'parseDeclaredModel: payload without model_id field -> null + warning', ok: true });
+
+    // Wrong position: status block first, then model block. Tail discipline
+    // requires model block IMMEDIATELY before status block; reversed order
+    // is a protocol violation.
+    const r5 = parseDeclaredModel(
+        `body\n\n${statusBlock}\n\n${MODEL_OPEN_TAG}{"model_id":"gemini-2.5-pro"}${MODEL_CLOSE_TAG}\n`
+    );
+    assert(r5.model_id === null, 'wrong position (status before model) -> null');
+    results.push({ step: 'parseDeclaredModel: wrong block order (status before model) -> null (tail discipline)', ok: true });
+
+    // Empty input.
+    const r6 = parseDeclaredModel('');
+    assert(r6.model_id === null, 'empty input -> null');
+    results.push({ step: 'parseDeclaredModel: empty input -> null', ok: true });
+
+    // classifyModelMatch cases.
+    assert(classifyModelMatch('gemini-2.5-pro', 'gemini-2.5-pro') === 'ok', 'match -> ok');
+    assert(
+        classifyModelMatch('gemini-3.1-pro-preview', 'gemini-2.5-pro') === 'silent_model_downgrade',
+        'mismatch -> silent_model_downgrade'
+    );
+    assert(classifyModelMatch('gemini-2.5-pro', null) === 'missing_model_report', 'null reported -> missing_model_report');
+    results.push({ step: 'classifyModelMatch: ok / silent_model_downgrade / missing_model_report', ok: true });
+
+    return { results };
+}
+
+// W3: buildGeminiArgs structural shape. Verifies the exact flag set
+// agreed in F2 round 2 (CLI 0.39.1 evidence packet).
+async function driveGeminiArgsShape() {
+    const results = [];
+    const { buildGeminiArgs, GEMINI_MODEL, GEMINI_ALLOWED_MCP_SERVERS } = require('../src/lib/peer-spawn.js');
+    const args = buildGeminiArgs();
+
+    assert(args.includes('-m'), 'buildGeminiArgs has -m flag');
+    assert(args[args.indexOf('-m') + 1] === GEMINI_MODEL, `-m value is GEMINI_MODEL (${GEMINI_MODEL})`);
+    assert(args.includes('--approval-mode'), 'has --approval-mode');
+    assert(args[args.indexOf('--approval-mode') + 1] === 'plan', '--approval-mode=plan (read-only)');
+    assert(args.includes('--output-format'), 'has --output-format');
+    assert(args[args.indexOf('--output-format') + 1] === 'text', '--output-format=text');
+    assert(!args.includes('--skip-trust'), '--skip-trust NOT present (R9: not a containment flag)');
+    assert(!args.includes('--allowed-tools'), '--allowed-tools NOT present (deprecated in 0.39.1)');
+    // each allowed MCP server must appear paired with the flag
+    const allowCount = args.filter((a) => a === '--allowed-mcp-server-names').length;
+    assert(allowCount === GEMINI_ALLOWED_MCP_SERVERS.length, `--allowed-mcp-server-names appears ${GEMINI_ALLOWED_MCP_SERVERS.length} times`);
+    for (const name of GEMINI_ALLOWED_MCP_SERVERS) {
+        assert(args.includes(name), `allowed MCP '${name}' in args`);
+    }
+    assert(!args.includes('cross-review-mcp'), 'cross-review-mcp NOT in allowed MCPs (recursion prevented)');
+    results.push({ step: 'buildGeminiArgs: -m GEMINI_MODEL + --approval-mode plan + --output-format text + --allowed-mcp-server-names x3 (memory, ultrathink, code-reasoning; cross-review-mcp excluded)', ok: true });
+
+    return { results };
+}
+
+// W4: spawnPeers explicit-identity contract (R12: never infer agent
+// from array index). Uses CROSS_REVIEW_PEER_STUB to avoid real CLI.
+async function driveSpawnPeersIdentityShape() {
+    const results = [];
+    const { spawnPeers } = require('../src/lib/peer-spawn.js');
+
+    // Set stub to a READY legacy status so spawnPeer resolves quickly.
+    const prevStub = process.env.CROSS_REVIEW_PEER_STUB;
+    process.env.CROSS_REVIEW_PEER_STUB = 'STRUCTURED:READY';
+    try {
+        const out = await spawnPeers(['codex', 'claude', 'gemini'], 'probe');
+        assert(Array.isArray(out) && out.length === 3, 'spawnPeers returns array of 3');
+        const agents = out.map((o) => o.agent);
+        assert(agents.includes('codex') && agents.includes('claude') && agents.includes('gemini'), 'all three agents present by identity');
+        for (const entry of out) {
+            assert(entry.status === 'fulfilled', `entry.status === fulfilled for ${entry.agent}`);
+            assert(typeof entry.value === 'object' && entry.value !== null, `entry.value is object for ${entry.agent}`);
+            assert(typeof entry.value.stdout === 'string', `entry.value.stdout is string for ${entry.agent}`);
+        }
+        results.push({ step: 'spawnPeers: 3 agents, Promise.all resolution, explicit agent identity per entry (R12)', ok: true });
+    } finally {
+        if (prevStub === undefined) delete process.env.CROSS_REVIEW_PEER_STUB;
+        else process.env.CROSS_REVIEW_PEER_STUB = prevStub;
+    }
+
+    // Error path: one stub is ERROR, others are READY. Result: partial
+    // results preserved (no reject). CROSS_REVIEW_PEER_STUB is process-wide,
+    // so we exercise with ERROR alone and verify the rejection shape.
+    process.env.CROSS_REVIEW_PEER_STUB = 'ERROR';
+    try {
+        const out = await spawnPeers(['codex'], 'probe');
+        assert(out.length === 1 && out[0].agent === 'codex', 'single-agent spawn returns 1 entry');
+        assert(out[0].status === 'rejected', 'error stub -> status=rejected');
+        assert(out[0].reason instanceof Error, 'reason is Error instance');
+        results.push({ step: 'spawnPeers: rejected peer preserved with explicit agent identity + reason Error', ok: true });
+    } finally {
+        if (prevStub === undefined) delete process.env.CROSS_REVIEW_PEER_STUB;
+        else process.env.CROSS_REVIEW_PEER_STUB = prevStub;
+    }
+
+    return { results };
+}
+
+// W4: probeStub short-circuits probeAgent. Verifies capability_snapshot
+// shape (F2 Q6 field set).
+async function driveProbeStubShape() {
+    const results = [];
+    const { probeChain } = require('../src/lib/peer-spawn.js');
+
+    const prev = process.env.CROSS_REVIEW_PROBE_STUB;
+    process.env.CROSS_REVIEW_PROBE_STUB = 'codex:top,claude:top,gemini:fallback:gemini-2.5-flash';
+    try {
+        const snap = await probeChain(['codex', 'claude', 'gemini'], { budgetMs: 5000 });
+        assert(Array.isArray(snap) && snap.length === 3, 'probeChain returns array of 3');
+        const byAgent = Object.fromEntries(snap.map((s) => [s.agent, s]));
+        assert(byAgent.codex.tier === 'top', 'codex tier=top');
+        assert(byAgent.claude.tier === 'top', 'claude tier=top');
+        assert(byAgent.gemini.tier === 'fallback', 'gemini tier=fallback');
+        assert(byAgent.gemini.model_reported === 'gemini-2.5-flash', 'gemini reported fallback model');
+        for (const entry of snap) {
+            for (const field of ['agent', 'tier', 'requested_model', 'model_reported', 'model_match', 'probe_latency_ms', 'probe_budget_ms', 'exit_code', 'failure_class', 'timestamp']) {
+                assert(field in entry, `probe entry has field ${field} for ${entry.agent}`);
+            }
+        }
+        results.push({ step: 'probeChain: stub mode returns 3 snapshots with full capability_snapshot field set (F2 Q6)', ok: true });
+    } finally {
+        if (prev === undefined) delete process.env.CROSS_REVIEW_PROBE_STUB;
+        else process.env.CROSS_REVIEW_PROBE_STUB = prev;
+    }
+
+    // Excluded tier.
+    process.env.CROSS_REVIEW_PROBE_STUB = 'codex:excluded';
+    try {
+        const snap = await probeChain(['codex'], { budgetMs: 5000 });
+        assert(snap.length === 1, '1 snapshot');
+        assert(snap[0].tier === 'excluded', 'tier=excluded');
+        assert(snap[0].failure_class === 'probe_excluded_stub', 'failure_class populated');
+        results.push({ step: 'probeChain: stub excluded tier carries failure_class', ok: true });
+    } finally {
+        if (prev === undefined) delete process.env.CROSS_REVIEW_PROBE_STUB;
+        else process.env.CROSS_REVIEW_PROBE_STUB = prev;
+    }
+
+    return { results };
 }
 
 // Regression test for the peer review finding 2026-04-24 (HIGH): the real
@@ -829,7 +1317,6 @@ async function drivePeerSpawnRealPathModel() {
 
     // Structural: real-path resolve in peer-spawn.js must include peer_model.
     // Prevents silent regression of the 2026-04-24 fix (see CHANGELOG).
-    const fs = require('fs');
     const src = fs.readFileSync(require.resolve('../src/lib/peer-spawn.js'), 'utf8');
     const closeBlockMatch = src.match(/proc\.on\('close'[\s\S]*?resolve\(\s*\{[^}]*\}/);
     assert(closeBlockMatch, 'peer-spawn.js: proc.on(close) resolve block present');

@@ -1,20 +1,30 @@
 {
-    "schema_version": 1,
-    "description": "Authoritative source-of-truth for top-level model IDs referenced by peer-spawn.js. Curated manually by the user. Drift between the constants pinned in src/lib/peer-spawn.js and the entries here triggers ERROR in scripts/audit-model-drift.js. Staleness of validated_at beyond staleness_threshold_days triggers WARN (forcing a cadence of human revalidation). This file is advisory-only per workflow-spec v4.3 section 6.9.2.1: it does NOT drive runtime model selection. Changes to runtime model IDs still require bump + spec edit per section 6.9.2.",
+    "schema_version": 2,
+    "description": "Authoritative source-of-truth for top-level model IDs referenced by peer-spawn.js. Curated manually by the operator. Drift between the constants pinned in src/lib/peer-spawn.js and the entries here triggers ERROR in scripts/audit-model-drift.js. fallback_chain[0] MUST equal id (spec v4.8 section 6.9.3 invariant). last_verified staleness beyond staleness_threshold_days triggers WARN (forcing a cadence of human revalidation). This file is advisory-only per workflow-spec v4.3 section 6.9.2.1: it does NOT drive runtime model selection. Changes to runtime model IDs still require bump + spec edit per section 6.9.2. Schema v2 introduced in v0.5.0-alpha (triangular + resilience).",
     "staleness_threshold_days": 30,
     "entries": {
         "codex": {
             "id": "gpt-5.5",
             "reasoning_effort": "xhigh",
-            "validated_at": "2026-04-24",
+            "fallback_chain": ["gpt-5.5"],
+            "last_verified": "2026-04-24",
             "ref_url": "https://platform.openai.com/docs/models",
-            "notes": "Top-tier OpenAI Codex model at validated_at. User is on highest OpenAI subscription tier (see memory user_subscription_tier.md); no gating."
+            "notes_en": "Top-tier OpenAI Codex model at last_verified. Operator is on highest OpenAI subscription tier (see memory user_subscription_tier.md); no gating. Codex CLI errors cleanly on nonexistent IDs (no silent downgrade)."
         },
         "claude": {
             "id": "claude-opus-4-7",
-            "validated_at": "2026-04-24",
+            "fallback_chain": ["claude-opus-4-7"],
+            "last_verified": "2026-04-24",
             "ref_url": "https://docs.anthropic.com/en/docs/about-claude/models",
-            "notes": "Full ID, not alias, per section 6.9.2 auditability clause. Top-tier Anthropic model at validated_at. User is on highest Anthropic subscription tier."
+            "notes_en": "Full ID, not alias, per section 6.9.2 auditability clause. Top-tier Anthropic model at last_verified. Operator is on highest Anthropic subscription tier."
+        },
+        "gemini": {
+            "id": "gemini-2.5-pro",
+            "fallback_chain": ["gemini-2.5-pro"],
+            "cli_version": "0.39.1",
+            "last_verified": "2026-04-24",
+            "ref_url": "https://ai.google.dev/gemini-api/docs/models",
+            "notes_en": "Gemini CLI 0.39.1 silently downgrades on nonexistent IDs: e.g., `-m gemini-3.1-pro-preview` accepted but responds as gemini-2.5-pro; `-m gemini-3-pro-preview` responds as gemini-2.5-flash. `-m gemini-3-pro` / `-m gemini-pro-latest` return 404. Pin is the verified top available on the operator's oauth-personal auth path. 3.x previews are still in beta on this auth path per 2026-04-24 operator directive; revisit pin on GA. v0.5.0-alpha adds a silent-downgrade enforcement layer in peer-spawn.js (TODO-spec-v4.9) so runtime fails hard rather than silently downgrades."
         }
     }
 }
