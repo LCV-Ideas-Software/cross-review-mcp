@@ -1,5 +1,75 @@
+# Dependencies
 node_modules/
-probe-results.json
-# Artefatos de sessao ficam em ~/.cross-review/ (fora deste repo)
+
+# Build outputs (currently unused -- defensive)
+dist/
+build/
+out/
+.cache/
+
+# Test / coverage
+coverage/
+.nyc_output/
+*.lcov
+
+# Logs
+logs/
 *.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Runtime data
+pids/
+*.pid
+*.seed
+*.pid.lock
+probe-results.json
+
+# Environment files (secrets)
+.env
+.env.*
+!.env.example
+
+# Package manager caches and locks
+.npm/
+.yarn/
+.pnp.*
+.pnpm-store/
+
+# OS artifacts
+.DS_Store
+.AppleDouble
+.LSOverride
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# IDE artifacts (not tracked for this repo)
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.swp
+*.swo
+*~
+.cursor/
+
+# Python temp scripts (one-shot helpers)
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Temporary files
+.tmp/
+tmp/
+*.tmp
 *.tmp.*
+*.bak
+*.orig
+
+# Session artifacts (defensive -- real path is ~/.cross-review/ outside repo)
+.cross-review/
