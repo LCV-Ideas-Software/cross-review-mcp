@@ -54,7 +54,7 @@ const {
     MODEL_CLOSE_TAG,
 } = require('./lib/model-parser.js');
 
-const VERSION = '0.5.0-alpha';
+const VERSION = '0.5.0-alpha.1';
 const VALID_AGENTS = ['claude', 'codex', 'gemini'];
 const LEGACY_BILATERAL_PEER = Object.freeze({
     claude: 'codex',

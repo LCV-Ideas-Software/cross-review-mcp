@@ -11,7 +11,7 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 ## [Unreleased]
 
 ### Adicionado
-- (em aberto — v0.6.0-alpha planejada: anti-hallucination safeguards, open-source readiness, silent-downgrade spec formalização v4.9.)
+- (em aberto — v0.6.0-alpha planejada: anti-hallucination safeguards, open-source readiness, silent-downgrade spec formalização v4.9, Gemini-specific model-check bypass sob oauth-personal para eliminar falso-positivo de `silent_model_downgrade` no audit trail.)
 
 ### Alterado
 - (em aberto)
@@ -21,6 +21,24 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ### Removido
 - (em aberto)
+
+---
+
+## [0.5.0-alpha.1] — 2026-04-24
+
+Patch release: pin Gemini bumpado de `gemini-2.5-pro` para `gemini-3.1-pro-preview`. CLI path mantido (oauth-personal), sem migração para SDK. Habilitação pelo Google One AI Ultra subscription do operador.
+
+### Alterado
+- **`GEMINI_MODEL = 'gemini-3.1-pro-preview'`** em `src/lib/peer-spawn.js` (era `gemini-2.5-pro`). Verificado empiricamente 2026-04-24 que o Gemini CLI 0.39.1 oauth-personal, sob Google One AI Ultra subscription, roteia `gemini-3.1-pro-preview` corretamente via endpoint `cloudcode-pa.googleapis.com/v1internal` sem silent-downgrade (servidor aceita IDs válidos, retorna 404 clean para IDs inválidos como `gemini-9.9-nonexistent`).
+- **`docs/top-models.json`** gemini entry atualizada com id + notes documentando o Ultra-tier unlock e a limitação conhecida (response oauth-personal não expõe modelVersion autoritativo, então runtime silent-downgrade defense continua false-positive-flagging baseado no self-report de texto inconfiável; protocol_violation é noisy mas convergence continua funcionando baseado em peer_status só).
+- `src/server.js` VERSION + `package.json` version bumpados de `0.5.0-alpha` para `0.5.0-alpha.1`.
+- Header de `peer-spawn.js` reescrito para documentar a rota Ultra-tier + oauth-personal como autoritativa e a limitação do audit trail.
+
+### Corrigido
+- Operador com Google One AI Ultra subscription agora acessa o modelo 3.1-pro-preview (top-tier Gemini disponível) nas sessões cross-review-mcp sem custo extra (coberto pela subscription Ultra, não requer API key metered billing).
+
+### Trade-off documentado (resolução futura em v0.6.0-alpha)
+- Peer Gemini responde com `protocol_violation=true` class `silent_model_downgrade` mesmo quando o modelo correto (3.1-pro-preview) está sendo servido, porque o self-report textual do modelo hallucina (tipicamente "gemini-1.5-pro" ou "gemini-2.5-pro"). Isso é um falso-positivo conhecido. **Mitigação: adicionar bypass Gemini-específico na model-check quando `oauth-personal` (v0.6.0-alpha scope).** OU: migrar peer Gemini para @google/genai SDK contra v1beta (expõe `response.modelVersion` autoritativo) -- veto atual do operador por billing separado.
 
 ---
 

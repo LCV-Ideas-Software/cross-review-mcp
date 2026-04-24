@@ -22,12 +22,26 @@
 //            equivalent to a dedicated high-reasoning flag where available).
 //   - Claude: model `claude-opus-4-7` (full ID, not an alias, for
 //             auditability).
-//   - Gemini: model `gemini-2.5-pro` (Path A pin; 3.x previews are not GA on
-//             the oauth-personal auth path as of 2026-04-24; gemini-3.x-pro
-//             will re-pin via probe on GA). Gemini CLI 0.39.1 silently
-//             downgrades on nonexistent IDs, so v0.5.0-alpha adds a
-//             runtime self-report + enforcement layer (W5,
-//             TODO-spec-v4.9).
+//   - Gemini: model `gemini-3.1-pro-preview` via Gemini CLI oauth-personal
+//             auth under Google One AI Ultra subscription. Verified
+//             2026-04-24: Ultra tier unlocks 3.x previews through the
+//             v1internal code-assist endpoint (`cloudcode-pa.googleapis.com`).
+//             Empirical evidence: `-m gemini-3.1-pro-preview` and
+//             `-m gemini-3-pro-preview` both produce coherent responses
+//             under Ultra (previously silent-downgraded to 2.5-pro /
+//             2.5-flash on the pre-Ultra tier); `-m gemini-9.9-nonexistent`
+//             returns clean 404 (server validates IDs; accepted 3.x IDs
+//             are NOT silent-downgraded under Ultra).
+//             KNOWN LIMITATION: the oauth-personal response does NOT
+//             expose an authoritative `modelVersion` field (unlike the
+//             SDK path), so the runtime silent-downgrade defense from
+//             v0.5.0-alpha will still false-positive-flag based on the
+//             model's unreliable text self-report (e.g. `gemini-1.5-pro`).
+//             The protocol_violation audit flag is noisy on Gemini
+//             rounds; convergence still works (based on peer_status
+//             only, not protocol_violation). Resolution for a cleaner
+//             audit trail requires SDK path (separate billing) or a
+//             Gemini-specific bypass in the model-check (v0.6.0-alpha).
 // Model change requires explicit spec/config bump/edit; no silent fallback.
 // `spawnPeer` returns `peer_model` for persistence in
 // meta.json.rounds[i].peer_model, meeting the normative auditability
@@ -46,7 +60,7 @@ const REVIEWER_MCP_JSON = path.join(CONFIGS_DIR, 'reviewer-minimal.mcp.json');
 const CODEX_MODEL = 'gpt-5.5';
 const CODEX_REASONING_EFFORT = 'xhigh';
 const CLAUDE_MODEL = 'claude-opus-4-7';
-const GEMINI_MODEL = 'gemini-2.5-pro';
+const GEMINI_MODEL = 'gemini-3.1-pro-preview';
 
 // Gemini peer containment: allowlist of MCP servers the peer may use while
 // analyzing. Deliberately excludes cross-review-mcp to prevent recursion

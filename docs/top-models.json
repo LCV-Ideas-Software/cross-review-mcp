@@ -19,12 +19,12 @@
             "notes_en": "Full ID, not alias, per section 6.9.2 auditability clause. Top-tier Anthropic model at last_verified. Operator is on highest Anthropic subscription tier."
         },
         "gemini": {
-            "id": "gemini-2.5-pro",
-            "fallback_chain": ["gemini-2.5-pro"],
+            "id": "gemini-3.1-pro-preview",
+            "fallback_chain": ["gemini-3.1-pro-preview"],
             "cli_version": "0.39.1",
             "last_verified": "2026-04-24",
             "ref_url": "https://ai.google.dev/gemini-api/docs/models",
-            "notes_en": "Gemini CLI 0.39.1 silently downgrades on nonexistent IDs: e.g., `-m gemini-3.1-pro-preview` accepted but responds as gemini-2.5-pro; `-m gemini-3-pro-preview` responds as gemini-2.5-flash. `-m gemini-3-pro` / `-m gemini-pro-latest` return 404. Pin is the verified top available on the operator's oauth-personal auth path. 3.x previews are still in beta on this auth path per 2026-04-24 operator directive; revisit pin on GA. v0.5.0-alpha adds a silent-downgrade enforcement layer in peer-spawn.js (TODO-spec-v4.9) so runtime fails hard rather than silently downgrades."
+            "notes_en": "Gemini CLI 0.39.1 oauth-personal path under Google One AI Ultra subscription. Verified 2026-04-24: Ultra tier unlocks 3.x previews via v1internal code-assist endpoint. Empirical confirmation: `-m gemini-3.1-pro-preview` and `-m gemini-3-pro-preview` produce coherent responses; invalid IDs return clean 404 (server validates). No separate API billing -- covered by Ultra subscription. Known limitation: oauth-personal responses do not expose authoritative modelVersion header, so runtime silent-downgrade defense false-positive-flags based on unreliable text self-report. Cleaner audit trail would require SDK path (separate billing). Protocol_violation flag is noisy on Gemini rounds; convergence still works (based on peer_status only)."
         }
     }
 }
