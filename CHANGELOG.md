@@ -11,16 +11,61 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 ## [Unreleased]
 
 ### Adicionado
-- (em aberto — v0.6.0-alpha planejada: anti-hallucination safeguards, open-source readiness, silent-downgrade spec formalização v4.9, Gemini-specific model-check bypass sob oauth-personal para eliminar falso-positivo de `silent_model_downgrade` no audit trail.)
+- (em aberto — v0.7+ planejada: anti-hallucination safeguards, open-source readiness (LICENSE/README/SECURITY), CLI stderr banner como authoritative attestation.)
+
+---
+
+## [0.6.0-alpha] — 2026-04-24
+
+Release: spec v4.9 implementation. Trilateral design session `c9508617` (caller=claude + peers=codex+gemini) convergiu em 3 rounds sobre três scope items aprovados como normativos: (A) transport-class-aware model-check bypass, (B) strict-only convergence com persisted snapshot, (C) rate-limit class ortogonal a silent-downgrade. Itens diferidos para v0.7+ por decisão do operador 2026-04-24: anti-hallucination safeguards, open-source readiness, CLI stderr banner como authoritative attestation (v0.6.0-alpha aceita captura forensic-only não-parseada).
+
+### Adicionado
+- **Transport-class-aware model-check bypass (Item A / spec v4.9 §6.11):** `spawnPeer` e `probeAgent` em `src/lib/peer-spawn.js` passam a retornar `transport_descriptor: { agent, auth, endpoint_class }`:
+  - Codex CLI → `{ auth: 'cli-subscription', endpoint_class: 'chatgpt-pro-backend' }`.
+  - Claude CLI → `{ auth: 'cli-subscription', endpoint_class: 'claude-pro-backend' }`.
+  - Gemini CLI com `~/.gemini/oauth_creds.json` → `{ auth: 'oauth-personal', endpoint_class: 'v1internal' }`.
+  - Gemini CLI com `GEMINI_API_KEY` env → `{ auth: 'api-key', endpoint_class: 'generativelanguage-v1beta' }` (não alcançável sob o veto de billing 2026-04-24 — codificado defensivamente).
+- `parsePeerOutputs(stdout, peerModel, transportDescriptor)` em `src/server.js` agora aceita o descriptor como 3º argumento. Gate: `authoritativeModelAttestationAvailable(descriptor)` (≡ `auth === 'api-key'`). Quando falso, `classifyModelMatch` é SKIPPED; o round record recebe `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli', auth, endpoint_class }`. `model_failure_class` fica `null` sob bypass; `failure_class` fica reservado para falhas reais (spawn errors, rate-limits).
+- `probeAgent` retira `tier: 'fallback'` ambíguo. Novos valores canônicos: `tier: 'ok' | 'offline'`. `ok` = respondeu E (api-key match OU bypass aplicado com `model_check_skipped` setado). `offline` = não respondeu ou falhou. Stubs de probe (`probeStubFor`) aceitam tanto `{top, fallback, excluded}` legacy quanto `{ok, offline}` canônico para backward-compat de smoke.
+- Captura forensic-only `cli_attested_model_raw` em `spawnPeer` e `probeAgent`: extrai a linha de banner Codex CLI `model: <id>` via regex. Não-autoritativo; é apenas record-only para trilha de auditoria. Promoção a attestation autoritativa diferida para v0.7+.
+
+- **Strict-only convergence + persisted snapshot (Item B / spec v4.9 §6.10):** predicate normativo — `converged iff caller_status === 'READY' AND every p in round.peers has p.peer_status === 'READY'`. `status_missing` conta CONTRA convergence (strict). Sem toggle "loose".
+- `src/lib/session-store.js` `appendRound` computa e persiste `round.convergence_snapshot` com shape:
+  ```
+  {
+    round_index, spec_version: 'v4.9', denominator_mode: 'strict',
+    caller_status, responded_peers, excluded_probe, excluded_runtime,
+    ready_peers, blocking_peers: [{ agent, reason }], converged
+  }
+  ```
+  Snapshot é computado a partir de `meta.capability_snapshot.peers` (exclusões de probe) + `meta.failed_attempts` filtrado pela rodada (exclusões runtime) + `round.peers[]` (responded).
+- `checkConvergence` prefere o `round.convergence_snapshot` persistido (imutabilidade histórica sob evolução futura do predicate); fallback a compute-on-read somente para rounds pré-v4.9. Return value agora inclui `convergence_snapshot` junto aos campos backward-compat.
+
+- **Rate-limit class (Item C / spec v4.9 §6.12):** nova classe `rate_limit_induced_response`, ortogonal a `silent_model_downgrade`, `probe_no_model_report`, `unreliable_text_self_report_on_cli`.
+- Detecção spawn-level em `peer-spawn.js` `spawnPeer` + `probeAgent`: lexeme set provider-shaped `{429, rate limit, usage limit, quota exceeded, insufficient_quota, RESOURCE_EXHAUSTED, Retry-After}`. Genéricos `{rate, quota, limit}` EXPLICITAMENTE EXCLUÍDOS para prevenir false-positives em meta-discussion legítima. `retry_after_seconds` parseado de `Retry-After: <N>` no stderr quando presente; `null` quando ausente (nunca fabricado).
+- Não-zero exit com lexeme match → rejection error carrega `err.spawn_rate_limit = { retry_after_seconds, lexeme_matched, detection_source: 'spawn' }`. `ask_peers` handler em `server.js` classifica via `saveFailedAttempt(agent, 'rate_limit_induced_response', { failure_class, retry_after_seconds, detection_source: 'spawn', lexeme_matched })`.
+- Detecção response-level em `server.js` `detectResponseRateLimit`: requer TODAS AS TRÊS — (1) `</cross_review_status>` ausente, (2) body < 200 chars, (3) lexeme provider-shaped match. Match → per-peer entry ganha `response_class: 'rate_limit_induced_response'` + `retry_after_seconds`; `peer_status` permanece `null` (conta contra strict convergence per Item B).
+- `ask_peers` e `ask_peer` response envelope agora incluem `rate_limited_peers: [{ agent, retry_after_seconds, detection_source, lexeme_matched }]` para que o caller possa decidir retry-after-wait vs abort.
+
+- `src/lib/peer-spawn.js` helpers exportados: `detectGeminiAuth`, `buildTransportDescriptor`, `authoritativeModelAttestationAvailable`, `RATE_LIMIT_LEXEMES`, `matchRateLimitLexeme`, `extractRetryAfterSeconds`, `detectSpawnRateLimit`, `extractCodexAttestedModelRaw`.
+- `src/lib/session-store.js` helpers exportados: `computeConvergenceSnapshot`, `collectSessionExclusions`, `CONVERGENCE_SPEC_VERSION`.
+- `saveFailedAttempt` extras estendidos: `retry_after_seconds`, `detection_source`, `lexeme_matched`. Aditivo; entries pre-v4.9 preservam shape v0.5.0-alpha.
 
 ### Alterado
-- (em aberto)
+- `src/server.js` `VERSION` bumpado `0.5.0-alpha.1` → `0.6.0-alpha`.
+- `package.json` `version` bumpado `0.5.0-alpha.1` → `0.6.0-alpha`.
+- `parsePeerOutputs` signature estendida para `(stdout, peerModel, transportDescriptor)`. Callers sem descriptor preservam comportamento v0.5.0-alpha (bypass desligado).
+- `probeChain` fallback para rejection passa a retornar `tier: 'offline'` + `transport_descriptor` + `model_check_skipped: null` + `cli_attested_model_raw: null` (antes retornava apenas `tier: 'excluded'` e campos mínimos).
+- `checkConvergence` return value agora inclui `convergence_snapshot` (aditivo). Backward-compat preservado para shape N-ary e bilateral.
+- Peer Gemini sob oauth-personal + Google One AI Ultra não emite mais `protocol_violation=true` class `silent_model_downgrade` no audit trail (era o trade-off documentado em v0.5.0-alpha.1 — resolvido agora via bypass transport-class-aware, NÃO via migração SDK). Peer Codex sob ChatGPT Pro também beneficiado: a false-positive `gpt-5.5 → "gpt-5"` do text self-report deixa de ser flaggada.
 
 ### Corrigido
-- (em aberto)
+- Capability probe que flaggava BOTH Codex (`gpt-5.5 → "gpt-5"`) AND Gemini (`→ "Pro"`) como `silent_model_downgrade` em sessions triangulares sob CLI subscription auth. Evidência empírica: session `c9508617` 2026-04-24 confirmou que Codex CLI stderr banner `model: gpt-5.5` honra corretamente o pin no layer CLI; a mismatch está no text self-report unreliable do modelo, não em downgrade real. Correção normativa: bypass transport-class-aware elimina o false-positive em todos os CLI-subscription peers.
 
-### Removido
-- (em aberto)
+### Trade-offs documentados / diferidos para v0.7+
+- **Anti-hallucination safeguards:** NEEDS_EVIDENCE discipline + exhaustive search directives no tail prompt + `evidence_sources` audit trail. Diferido para v0.7+ conforme diretiva do operador 2026-04-24.
+- **Open-source readiness:** LICENSE + README + SECURITY.md + security audit para publicação GitHub pública. Diferido para v0.7+.
+- **CLI stderr banner como authoritative attestation:** fragilidade sob ANSI codes + drift de versão do CLI. v0.6.0-alpha aceita captura forensic-only não-parseada (`cli_attested_model_raw`); promoção a attestation autoritativa (comparação hard-gate contra `peer_model`) fica para v0.7+.
 
 ---
 

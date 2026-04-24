@@ -796,7 +796,223 @@ async function runAll() {
     all.push(...s35.results);
     const s36 = await driveModelCheckMissingViaServer();
     all.push(...s36.results);
+    const s37 = await driveV6TransportBypassUnit();
+    all.push(...s37.results);
+    const s38 = await driveV6RateLimitUnit();
+    all.push(...s38.results);
+    const s39 = await driveV6ConvergenceSnapshotUnit();
+    all.push(...s39.results);
     return all;
+}
+
+// v0.6.0-alpha / spec v4.9 unit coverage. Three compact drivers exercising
+// the three Item axes in isolation (no MCP spawn): transport-aware bypass,
+// rate-limit detection + retry_after extraction, strict-only convergence
+// with persisted snapshot.
+async function driveV6TransportBypassUnit() {
+    const results = [];
+    const peerSpawn = require('../src/lib/peer-spawn.js');
+    process.env.CROSS_REVIEW_TEST_IMPORT = '1';
+    const server = require('../src/server.js');
+
+    // buildTransportDescriptor shape per agent.
+    const codexDesc = peerSpawn.buildTransportDescriptor('codex');
+    assert(
+        codexDesc.agent === 'codex' && codexDesc.auth === 'cli-subscription' && codexDesc.endpoint_class === 'chatgpt-pro-backend',
+        'v4.9 Item A: codex transport_descriptor shape'
+    );
+    results.push({ step: 'v4.9 Item A: buildTransportDescriptor(codex)', ok: true });
+
+    const claudeDesc = peerSpawn.buildTransportDescriptor('claude');
+    assert(
+        claudeDesc.auth === 'cli-subscription' && claudeDesc.endpoint_class === 'claude-pro-backend',
+        'v4.9 Item A: claude transport_descriptor shape'
+    );
+    results.push({ step: 'v4.9 Item A: buildTransportDescriptor(claude)', ok: true });
+
+    const geminiDesc = peerSpawn.buildTransportDescriptor('gemini');
+    assert(
+        geminiDesc.agent === 'gemini' && (geminiDesc.auth === 'oauth-personal' || geminiDesc.auth === 'api-key'),
+        'v4.9 Item A: gemini transport_descriptor auth valid'
+    );
+    results.push({ step: 'v4.9 Item A: buildTransportDescriptor(gemini)', ok: true });
+
+    // Gate semantics.
+    assert(
+        peerSpawn.authoritativeModelAttestationAvailable({ auth: 'api-key' }) === true,
+        'v4.9 Item A: gate TRUE for api-key'
+    );
+    assert(
+        peerSpawn.authoritativeModelAttestationAvailable({ auth: 'cli-subscription' }) === false,
+        'v4.9 Item A: gate FALSE for cli-subscription'
+    );
+    assert(
+        peerSpawn.authoritativeModelAttestationAvailable({ auth: 'oauth-personal' }) === false,
+        'v4.9 Item A: gate FALSE for oauth-personal'
+    );
+    results.push({ step: 'v4.9 Item A: authoritativeModelAttestationAvailable gate', ok: true });
+
+    // parsePeerOutputs with non-api-key descriptor → SKIP set, no violation.
+    const stdout = 'some body\n\n<cross_review_peer_model>{"model_id":"gpt-4"}</cross_review_peer_model>\n<cross_review_status>{"status":"READY"}</cross_review_status>\n';
+    const parsedSkip = server.parsePeerOutputs(stdout, 'gpt-5.5', {
+        agent: 'codex',
+        auth: 'cli-subscription',
+        endpoint_class: 'chatgpt-pro-backend',
+    });
+    assert(parsedSkip.peer_status === 'READY', 'v4.9 Item A: peer_status READY under bypass');
+    assert(parsedSkip.model_check_applicable === false, 'v4.9 Item A: model_check_applicable false under bypass');
+    assert(
+        parsedSkip.model_check_skipped
+            && parsedSkip.model_check_skipped.reason === 'unreliable_text_self_report_on_cli'
+            && parsedSkip.model_check_skipped.auth === 'cli-subscription',
+        'v4.9 Item A: model_check_skipped audit record set'
+    );
+    assert(parsedSkip.model_match === null, 'v4.9 Item A: model_match null under bypass (not false)');
+    assert(parsedSkip.model_failure_class === null, 'v4.9 Item A: model_failure_class null under bypass');
+    assert(parsedSkip.protocol_violation === false, 'v4.9 Item A: no protocol_violation from bypass');
+    results.push({ step: 'v4.9 Item A: parsePeerOutputs skip-path end-to-end', ok: true });
+
+    // parsePeerOutputs with api-key descriptor → check runs normally.
+    const parsedCheck = server.parsePeerOutputs(stdout, 'gpt-5.5', {
+        agent: 'codex',
+        auth: 'api-key',
+        endpoint_class: 'generativelanguage-v1beta',
+    });
+    assert(parsedCheck.model_check_applicable === true, 'v4.9 Item A: check applicable under api-key');
+    assert(parsedCheck.model_match === false, 'v4.9 Item A: check fires for real mismatch under api-key');
+    assert(parsedCheck.model_failure_class === 'silent_model_downgrade', 'v4.9 Item A: silent_model_downgrade preserved under api-key');
+    assert(parsedCheck.model_check_skipped === null, 'v4.9 Item A: no skip record under api-key');
+    results.push({ step: 'v4.9 Item A: parsePeerOutputs check-path under api-key', ok: true });
+
+    return { results };
+}
+
+async function driveV6RateLimitUnit() {
+    const results = [];
+    const peerSpawn = require('../src/lib/peer-spawn.js');
+    process.env.CROSS_REVIEW_TEST_IMPORT = '1';
+    const server = require('../src/server.js');
+
+    // Provider-shaped lexeme matching.
+    assert(peerSpawn.matchRateLimitLexeme('HTTP 429 Too Many Requests') === '429', 'v4.9 Item C: 429 lexeme match');
+    assert(peerSpawn.matchRateLimitLexeme('RESOURCE_EXHAUSTED: quota') === 'RESOURCE_EXHAUSTED', 'v4.9 Item C: Gemini lexeme match');
+    assert(peerSpawn.matchRateLimitLexeme('hit usage limit on plan') === 'usage limit', 'v4.9 Item C: Claude lexeme match');
+    assert(peerSpawn.matchRateLimitLexeme('insufficient_quota for model') === 'insufficient_quota', 'v4.9 Item C: Codex lexeme match');
+    // Generic {rate, quota, limit} alone must NOT match.
+    assert(peerSpawn.matchRateLimitLexeme('discussion about rate of adoption') === null, 'v4.9 Item C: generic "rate" does not match');
+    assert(peerSpawn.matchRateLimitLexeme('set a limit for yourself') === null, 'v4.9 Item C: generic "limit" does not match');
+    assert(peerSpawn.matchRateLimitLexeme('their quota seems fine') === null, 'v4.9 Item C: generic "quota" does not match');
+    results.push({ step: 'v4.9 Item C: lexeme set excludes generic {rate,quota,limit}', ok: true });
+
+    // Retry-After extraction.
+    assert(peerSpawn.extractRetryAfterSeconds('Retry-After: 30\nOther header') === 30, 'v4.9 Item C: Retry-After extracted');
+    assert(peerSpawn.extractRetryAfterSeconds('retry_after: 15') === 15, 'v4.9 Item C: retry_after (snake) extracted');
+    assert(peerSpawn.extractRetryAfterSeconds('no retry info here') === null, 'v4.9 Item C: null when absent (never fabricated)');
+    results.push({ step: 'v4.9 Item C: extractRetryAfterSeconds', ok: true });
+
+    // detectSpawnRateLimit.
+    const spawnRL = peerSpawn.detectSpawnRateLimit('HTTP 429\nRetry-After: 42\nGone');
+    assert(
+        spawnRL && spawnRL.detection_source === 'spawn' && spawnRL.retry_after_seconds === 42 && spawnRL.lexeme_matched === '429',
+        'v4.9 Item C: detectSpawnRateLimit composed shape'
+    );
+    assert(peerSpawn.detectSpawnRateLimit('benign error') === null, 'v4.9 Item C: no match on benign stderr');
+    results.push({ step: 'v4.9 Item C: detectSpawnRateLimit output shape + null paths', ok: true });
+
+    // Response-level guardrail via parsePeerOutputs: ALL THREE required.
+    // Case: short body + no status block + provider lexeme → detected.
+    const shortRL = 'HTTP 429 rate limit';
+    const parsedRL = server.parsePeerOutputs(shortRL, 'stub', null);
+    assert(
+        parsedRL.rate_limit && parsedRL.rate_limit.detection_source === 'response' && parsedRL.rate_limit.lexeme_matched === '429',
+        'v4.9 Item C: response-level detection fires on all-three-match'
+    );
+    results.push({ step: 'v4.9 Item C: response-level ALL-THREE match', ok: true });
+
+    // Case: status block present → no detection (guardrail 1).
+    const statusPresent = 'HTTP 429\n<cross_review_status>{"status":"READY"}</cross_review_status>';
+    const parsedNoRL1 = server.parsePeerOutputs(statusPresent, 'stub', null);
+    assert(parsedNoRL1.rate_limit === null, 'v4.9 Item C: response-level blocked by status block present');
+    results.push({ step: 'v4.9 Item C: response-level guardrail 1 (status block absent required)', ok: true });
+
+    // Case: body over threshold → no detection (guardrail 2).
+    const longBody = `HTTP 429 rate limit ${'x'.repeat(250)}`;
+    const parsedNoRL2 = server.parsePeerOutputs(longBody, 'stub', null);
+    assert(parsedNoRL2.rate_limit === null, 'v4.9 Item C: response-level blocked by body >= 200 chars');
+    results.push({ step: 'v4.9 Item C: response-level guardrail 2 (body < 200 chars required)', ok: true });
+
+    // Case: no provider lexeme → no detection (guardrail 3).
+    const noLexeme = 'short response, no indicator';
+    const parsedNoRL3 = server.parsePeerOutputs(noLexeme, 'stub', null);
+    assert(parsedNoRL3.rate_limit === null, 'v4.9 Item C: response-level blocked by missing provider lexeme');
+    results.push({ step: 'v4.9 Item C: response-level guardrail 3 (provider lexeme required)', ok: true });
+
+    return { results };
+}
+
+async function driveV6ConvergenceSnapshotUnit() {
+    const results = [];
+    const store = require('../src/lib/session-store.js');
+
+    // computeConvergenceSnapshot shape — N-ary converged case.
+    const roundN = {
+        round: 1,
+        caller: 'claude',
+        caller_status: 'READY',
+        peers: [
+            { agent: 'codex', peer_status: 'READY' },
+            { agent: 'gemini', peer_status: 'READY' },
+        ],
+    };
+    const snapConverged = store.computeConvergenceSnapshot(1, roundN, {
+        excluded_probe: [],
+        excluded_runtime: [],
+    });
+    assert(snapConverged.spec_version === store.CONVERGENCE_SPEC_VERSION, 'v4.9 Item B: snapshot spec_version v4.9');
+    assert(snapConverged.denominator_mode === 'strict', 'v4.9 Item B: denominator_mode strict');
+    assert(snapConverged.converged === true, 'v4.9 Item B: converged when caller + all peers READY');
+    assert(snapConverged.ready_peers.length === 2, 'v4.9 Item B: ready_peers populated');
+    assert(snapConverged.blocking_peers.length === 0, 'v4.9 Item B: no blocking_peers when converged');
+    results.push({ step: 'v4.9 Item B: computeConvergenceSnapshot N-ary converged shape', ok: true });
+
+    // N-ary blocked by status_missing.
+    const roundBlocked = {
+        round: 2,
+        caller: 'claude',
+        caller_status: 'READY',
+        peers: [
+            { agent: 'codex', peer_status: 'READY' },
+            { agent: 'gemini', peer_status: null },
+        ],
+    };
+    const snapBlocked = store.computeConvergenceSnapshot(2, roundBlocked, {
+        excluded_probe: [],
+        excluded_runtime: [],
+    });
+    assert(snapBlocked.converged === false, 'v4.9 Item B: strict denominator — status_missing blocks');
+    assert(
+        snapBlocked.blocking_peers.length === 1 && snapBlocked.blocking_peers[0].reason === 'status_missing',
+        'v4.9 Item B: blocking_peers records status_missing'
+    );
+    results.push({ step: 'v4.9 Item B: strict denominator — status_missing counts AGAINST', ok: true });
+
+    // Legacy bilateral round shape still supported.
+    const roundLegacy = {
+        round: 1,
+        caller: 'claude',
+        caller_status: 'READY',
+        peer: 'codex',
+        peer_status: 'READY',
+    };
+    const snapLegacy = store.computeConvergenceSnapshot(1, roundLegacy, {
+        excluded_probe: [],
+        excluded_runtime: [],
+    });
+    assert(snapLegacy.converged === true, 'v4.9 Item B: legacy bilateral shape still converges');
+    assert(snapLegacy.responded_peers[0] === 'codex', 'v4.9 Item B: legacy bilateral responded_peers');
+    results.push({ step: 'v4.9 Item B: computeConvergenceSnapshot legacy bilateral shape', ok: true });
+
+    return { results };
 }
 
 // W8: ask_peers N-ary flow end-to-end via MCP. Smoke uses the agent-

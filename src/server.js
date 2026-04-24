@@ -45,6 +45,9 @@ const {
     spawnPeer,
     spawnPeers,
     probeChain,
+    authoritativeModelAttestationAvailable,
+    matchRateLimitLexeme,
+    extractRetryAfterSeconds,
 } = require('./lib/peer-spawn.js');
 const { parsePeerResponse } = require('./lib/status-parser.js');
 const {
@@ -54,7 +57,27 @@ const {
     MODEL_CLOSE_TAG,
 } = require('./lib/model-parser.js');
 
-const VERSION = '0.5.0-alpha.1';
+const VERSION = '0.6.0-alpha';
+
+// v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
+// Requires ALL THREE of (1) status block absent, (2) body < 200 chars,
+// (3) provider-shaped lexeme present. Generic {rate, quota, limit} is
+// explicitly excluded at the lexeme layer (see peer-spawn.js).
+// Returns null or { detection_source: 'response', retry_after_seconds,
+// lexeme_matched }.
+const RESPONSE_RATE_LIMIT_MAX_CHARS = 200;
+function detectResponseRateLimit(stdout) {
+    if (typeof stdout !== 'string') return null;
+    if (stdout.length >= RESPONSE_RATE_LIMIT_MAX_CHARS) return null;
+    if (stdout.includes('</cross_review_status>')) return null;
+    const lexeme = matchRateLimitLexeme(stdout);
+    if (!lexeme) return null;
+    return {
+        detection_source: 'response',
+        retry_after_seconds: extractRetryAfterSeconds(stdout),
+        lexeme_matched: lexeme,
+    };
+}
 const VALID_AGENTS = ['claude', 'codex', 'gemini'];
 const LEGACY_BILATERAL_PEER = Object.freeze({
     claude: 'codex',
@@ -64,8 +87,11 @@ const LEGACY_BILATERAL_PEER = Object.freeze({
     // ask_peers.
 });
 
-const CALLER = (process.env.CROSS_REVIEW_CALLER || '').toLowerCase();
-if (!VALID_AGENTS.includes(CALLER)) {
+const TEST_IMPORT = process.env.CROSS_REVIEW_TEST_IMPORT === '1';
+const CALLER = TEST_IMPORT
+    ? (process.env.CROSS_REVIEW_CALLER || 'claude').toLowerCase()
+    : (process.env.CROSS_REVIEW_CALLER || '').toLowerCase();
+if (!TEST_IMPORT && !VALID_AGENTS.includes(CALLER)) {
     process.stderr.write(
         `[cross-review-mcp] fatal: CROSS_REVIEW_CALLER must be one of ${VALID_AGENTS.join('|')} (got '${CALLER || '(unset)'}')\n`
     );
@@ -111,31 +137,66 @@ The peer-model block enables the caller to detect silent CLI downgrade (spec v4.
 // peerModel is the canonical id we PASSED to the CLI (modelForPeer);
 // when peerModel === 'stub' the synthetic peer bypasses the model
 // check because no real CLI ran.
-function parsePeerOutputs(stdout, peerModel) {
+//
+// v0.6.0-alpha / spec v4.9 (Item A): `transportDescriptor` is a third
+// argument carrying { agent, auth, endpoint_class }. When auth !== 'api-key'
+// (cli-subscription / oauth-personal), the model self-report text is
+// unreliable across CLI wrappers; the authoritativeModelAttestationAvailable
+// gate evaluates false and classifyModelMatch is SKIPPED. The round record
+// gets `model_check_skipped: { reason:'unreliable_text_self_report_on_cli',
+// auth, endpoint_class }` instead of false-positive-flagging
+// silent_model_downgrade. model_failure_class stays null for bypass rounds;
+// failure_class is reserved for real failures (spawn errors, rate-limits).
+// Backward-compat: callers that omit transportDescriptor (null/undefined)
+// fall back to the v0.5.0-alpha behavior (check runs; may false-positive).
+//
+// Response-level rate-limit detection also runs here (orthogonal to the
+// model check). When detected, `rate_limit` carries the detection_source +
+// retry_after_seconds + lexeme_matched payload.
+function parsePeerOutputs(stdout, peerModel, transportDescriptor) {
     const statusParsed = parsePeerResponse(stdout);
     const isStub = peerModel === 'stub';
 
-    // The sibling model-parser only runs when model-check is applicable
-    // (real spawn). For synthetic stub peers we skip both the parse and
-    // its warnings, since no CLI actually ran and the peer-model block
-    // is by design not emitted. This preserves the v4 stub corpus.
     let modelRequested = null;
     let modelReported = null;
     let modelMatch = null;
     let modelFailureClass = null;
     let modelCheckApplicable = false;
+    let modelCheckSkipped = null;
     let modelWarnings = [];
 
     if (!isStub) {
         const modelParsed = parseDeclaredModel(stdout);
-        modelCheckApplicable = true;
         modelRequested = peerModel;
         modelReported = modelParsed.model_id;
         modelWarnings = modelParsed.parser_warnings || [];
-        const clazz = classifyModelMatch(modelRequested, modelReported);
-        modelMatch = clazz === 'ok';
-        modelFailureClass = modelMatch ? null : clazz;
+
+        const attested = transportDescriptor
+            ? authoritativeModelAttestationAvailable(transportDescriptor)
+            : true; // legacy callers (no descriptor): preserve v0.5.0 semantics.
+
+        if (attested) {
+            modelCheckApplicable = true;
+            const clazz = classifyModelMatch(modelRequested, modelReported);
+            modelMatch = clazz === 'ok';
+            modelFailureClass = modelMatch ? null : clazz;
+        } else {
+            // Item A bypass: cli-subscription / oauth-personal transports do
+            // not expose an authoritative modelVersion. Skip the check and
+            // record the audit reason. model_match stays null (not false) to
+            // distinguish bypass from a real mismatch.
+            modelCheckSkipped = {
+                reason: 'unreliable_text_self_report_on_cli',
+                auth: transportDescriptor.auth,
+                endpoint_class: transportDescriptor.endpoint_class,
+            };
+            // Suppress peer-model parser warnings under bypass: the block is
+            // advisory-only when the transport has no authoritative field.
+            modelWarnings = [];
+        }
     }
+
+    const rateLimit = detectResponseRateLimit(stdout);
 
     const parserWarnings = [
         ...(statusParsed.parser_warnings || []),
@@ -152,11 +213,13 @@ function parsePeerOutputs(stdout, peerModel) {
         status_source: statusParsed.source,
         parser_warnings: parserWarnings,
         model_check_applicable: modelCheckApplicable,
+        model_check_skipped: modelCheckSkipped,
         model_requested: modelRequested,
         model_reported: modelReported,
         model_match: modelMatch,
         model_failure_class: modelFailureClass,
         protocol_violation: protocolViolation,
+        rate_limit: rateLimit,
     };
 }
 
@@ -399,12 +462,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                         prompt_bytes: Buffer.byteLength(promptWithTail, 'utf8'),
                     });
                     const t0 = Date.now();
-                    const { stdout, stderr, peer_model: peerModel } = await spawnPeer(
+                    const spawnResult = await spawnPeer(
                         LEGACY_PEER,
                         promptWithTail
                     );
+                    const {
+                        stdout,
+                        stderr,
+                        peer_model: peerModel,
+                        transport_descriptor: transportDescriptor,
+                        cli_attested_model_raw: cliAttestedModelRaw,
+                    } = spawnResult;
                     const durationMs = Date.now() - t0;
-                    const parsed = parsePeerOutputs(stdout, peerModel);
+                    const parsed = parsePeerOutputs(stdout, peerModel, transportDescriptor);
                     const fname = store.savePeerResponse(
                         sessionId,
                         roundNum,
@@ -412,6 +482,19 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                         stdout,
                         parsed.peer_status
                     );
+                    // Response-level rate-limit → surface in a per-peer
+                    // rate_limited_peers entry. The peer still blocks
+                    // convergence (strict denominator) but the operator
+                    // gets a retry-after signal.
+                    const rateLimitedPeers = [];
+                    if (parsed.rate_limit) {
+                        rateLimitedPeers.push({
+                            agent: LEGACY_PEER,
+                            retry_after_seconds: parsed.rate_limit.retry_after_seconds,
+                            detection_source: parsed.rate_limit.detection_source,
+                            lexeme_matched: parsed.rate_limit.lexeme_matched,
+                        });
+                    }
                     store.appendRound(sessionId, {
                         round: roundNum,
                         caller: CALLER,
@@ -426,6 +509,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                         model_reported: parsed.model_reported,
                         model_match: parsed.model_match,
                         model_failure_class: parsed.model_failure_class,
+                        model_check_skipped: parsed.model_check_skipped,
+                        transport_descriptor: transportDescriptor,
+                        cli_attested_model_raw: cliAttestedModelRaw,
+                        response_class: parsed.rate_limit ? 'rate_limit_induced_response' : null,
+                        retry_after_seconds: parsed.rate_limit?.retry_after_seconds ?? null,
+                        rate_limited_peers: rateLimitedPeers,
                         peer_file: fname,
                         protocol_violation: parsed.protocol_violation,
                         duration_ms: durationMs,
@@ -462,6 +551,10 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                                         model_reported: parsed.model_reported,
                                         model_match: parsed.model_match,
                                         model_failure_class: parsed.model_failure_class,
+                                        model_check_skipped: parsed.model_check_skipped,
+                                        transport_descriptor: transportDescriptor,
+                                        cli_attested_model_raw: cliAttestedModelRaw,
+                                        rate_limited_peers: rateLimitedPeers,
                                         protocol_violation: parsed.protocol_violation,
                                         duration_ms: durationMs,
                                         content: stdout,
@@ -513,33 +606,64 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
                     const roundPeers = [];
                     const responsePeers = [];
+                    const rateLimitedPeers = [];
                     let anyProtocolViolation = false;
 
                     for (const entry of peerResults) {
                         if (entry.status === 'rejected') {
                             const reason = entry.reason;
                             const reasonMsg = String(reason?.message || reason || 'spawn rejected');
-                            store.saveFailedAttempt(sessionId, entry.agent, 'spawn_rejected', {
+                            // v0.6.0-alpha / spec v4.9 (Item C): spawn-level
+                            // rate-limit hint attached by peer-spawn.js on
+                            // non-zero exit. Classify as
+                            // 'rate_limit_induced_response' when present.
+                            const spawnRateLimit = reason?.spawn_rate_limit || null;
+                            const failureClass = spawnRateLimit
+                                ? 'rate_limit_induced_response'
+                                : 'spawn_rejected';
+                            store.saveFailedAttempt(sessionId, entry.agent, failureClass, {
                                 stderr_tail: reasonMsg,
-                                failure_class: 'spawn_rejected',
+                                failure_class: failureClass,
                                 round: roundNum,
                                 retry_attempt: 0,
+                                retry_after_seconds: spawnRateLimit?.retry_after_seconds ?? null,
+                                detection_source: spawnRateLimit ? 'spawn' : null,
+                                lexeme_matched: spawnRateLimit?.lexeme_matched ?? null,
                             });
                             log('ask_peers: peer rejected', {
                                 round: roundNum,
                                 agent: entry.agent,
+                                failure_class: failureClass,
+                                retry_after_seconds: spawnRateLimit?.retry_after_seconds ?? null,
                                 reason: reasonMsg.slice(-200),
                             });
                             responsePeers.push({
                                 agent: entry.agent,
                                 status: 'rejected',
                                 reason: reasonMsg.slice(-400),
+                                failure_class: failureClass,
+                                retry_after_seconds: spawnRateLimit?.retry_after_seconds ?? null,
+                                detection_source: spawnRateLimit ? 'spawn' : null,
                             });
+                            if (spawnRateLimit) {
+                                rateLimitedPeers.push({
+                                    agent: entry.agent,
+                                    retry_after_seconds: spawnRateLimit.retry_after_seconds,
+                                    detection_source: 'spawn',
+                                    lexeme_matched: spawnRateLimit.lexeme_matched,
+                                });
+                            }
                             anyProtocolViolation = true;
                             continue;
                         }
-                        const { stdout, stderr, peer_model: peerModel } = entry.value;
-                        const parsed = parsePeerOutputs(stdout, peerModel);
+                        const {
+                            stdout,
+                            stderr,
+                            peer_model: peerModel,
+                            transport_descriptor: transportDescriptor,
+                            cli_attested_model_raw: cliAttestedModelRaw,
+                        } = entry.value;
+                        const parsed = parsePeerOutputs(stdout, peerModel, transportDescriptor);
                         const fname = store.savePeerResponse(
                             sessionId,
                             roundNum,
@@ -548,6 +672,14 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                             parsed.peer_status
                         );
                         if (parsed.protocol_violation) anyProtocolViolation = true;
+                        if (parsed.rate_limit) {
+                            rateLimitedPeers.push({
+                                agent: entry.agent,
+                                retry_after_seconds: parsed.rate_limit.retry_after_seconds,
+                                detection_source: parsed.rate_limit.detection_source,
+                                lexeme_matched: parsed.rate_limit.lexeme_matched,
+                            });
+                        }
                         roundPeers.push({
                             agent: entry.agent,
                             peer_status: parsed.peer_status,
@@ -559,6 +691,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                             model_reported: parsed.model_reported,
                             model_match: parsed.model_match,
                             model_failure_class: parsed.model_failure_class,
+                            model_check_skipped: parsed.model_check_skipped,
+                            transport_descriptor: transportDescriptor,
+                            cli_attested_model_raw: cliAttestedModelRaw,
+                            response_class: parsed.rate_limit ? 'rate_limit_induced_response' : null,
+                            retry_after_seconds: parsed.rate_limit?.retry_after_seconds ?? null,
                             peer_file: fname,
                             protocol_violation: parsed.protocol_violation,
                         });
@@ -574,6 +711,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                             model_reported: parsed.model_reported,
                             model_match: parsed.model_match,
                             model_failure_class: parsed.model_failure_class,
+                            model_check_skipped: parsed.model_check_skipped,
+                            transport_descriptor: transportDescriptor,
+                            cli_attested_model_raw: cliAttestedModelRaw,
+                            response_class: parsed.rate_limit ? 'rate_limit_induced_response' : null,
+                            retry_after_seconds: parsed.rate_limit?.retry_after_seconds ?? null,
                             protocol_violation: parsed.protocol_violation,
                             content: stdout,
                             stderr_tail: (stderr || '').slice(-400),
@@ -590,6 +732,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                             responded: roundPeers.length,
                             rejected: PEERS.length - roundPeers.length,
                         },
+                        rate_limited_peers: rateLimitedPeers,
                         protocol_violation: anyProtocolViolation,
                         duration_ms: durationMs,
                         completed_at: new Date().toISOString(),
@@ -622,6 +765,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
                                             responded: roundPeers.length,
                                             rejected: PEERS.length - roundPeers.length,
                                         },
+                                        rate_limited_peers: rateLimitedPeers,
                                         protocol_violation: anyProtocolViolation,
                                         duration_ms: durationMs,
                                     },
@@ -659,12 +803,14 @@ async function main() {
     log('stdio transport connected');
 }
 
-main().catch((err) => {
-    process.stderr.write(
-        `[cross-review-mcp] fatal: ${err?.stack || err?.message || err}\n`
-    );
-    process.exit(1);
-});
+if (!TEST_IMPORT) {
+    main().catch((err) => {
+        process.stderr.write(
+            `[cross-review-mcp] fatal: ${err?.stack || err?.message || err}\n`
+        );
+        process.exit(1);
+    });
+}
 
 // Exported only for test harness (unit tests that require() the module
 // without activating the stdio transport should set

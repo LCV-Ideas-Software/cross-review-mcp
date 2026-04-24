@@ -1,16 +1,14 @@
-# Cross-Review MCP Workflow Specification v4.8
+# Cross-Review MCP Workflow Specification v4.9
 
-**Status**: v4.8 is a spec-only revision of v4.7 via session 5fce39ce
-(2026-04-24, em revalidacao bilateral). v4.8 adds section 6.9.3
-"Subscription tier resilience and transient failure handling" with
-six subsections (absorbing operator directives D3 persistent tier
-downgrade + D4 moderation flags and rate limits + D5 outages and
-overload), a clarification paragraph to section 6.9.2 scoping
-"NO silent fallback" to mid-round behavior, and a new Section 7
-summary row. v4.8 touches NO code;
-code remains v0.4.0-alpha until the integrated F2 impl session
-delivers v0.5.0-alpha with both v4.7 triangular extension and v4.8
-probe + degradation mechanisms. Predecessors: v2 (session 7d745f38);
+**Status**: v4.9 is a spec + code revision approved by trilateral session
+c9508617 (2026-04-24, caller=claude + peers=codex+gemini, 3 rounds,
+outcome=converged, 3/3 READY). v4.9 adds three normative sections —
+§6.11 "Transport-aware model-check discipline" (Item A), §6.12
+"Strict-only convergence with persisted snapshot" (Item B), §6.13
+"Rate-limit class distinct from silent-downgrade" (Item C) — and
+retires the ambiguous probe `tier: 'fallback'` in favor of canonical
+`tier: 'ok' | 'offline'`. v4.9 ships integrated with code release
+v0.6.0-alpha. Predecessors: v2 (session 7d745f38);
 v3 (session 806a1c4f); v4 normative absorbing v0.4.0-alpha (session
 08cd61e6); v4.1 spec-only absorbing section 6.6 (session a847f897);
 v4.2 spec-only promoting section 6.7 (session f1fdbee4); v4.3 adding
@@ -25,6 +23,61 @@ Encoding: ASCII-only with transliteration of Portuguese accents where
 they appear (see section 6.4). Peer exchange and non-user-facing
 artifacts are authored in en-US (see section 6.10), trivially
 satisfying ASCII-only without transliteration.
+
+---
+
+## 0i. Delta v4.8 -> v4.9 (executive summary)
+
+- **Section 6.11 NEW** — Transport-aware model-check discipline (Item A).
+  `parsePeerOutputs` gate on `authoritativeModelAttestationAvailable`
+  (equivalently `transport_descriptor.auth === 'api-key'`). When the
+  gate is false (`cli-subscription` / `oauth-personal`), the sibling
+  `classifyModelMatch` check is SKIPPED; the round record carries
+  `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli',
+  auth, endpoint_class }` instead of a false-positive
+  `silent_model_downgrade` flag. `model_failure_class` stays null for
+  bypass rounds. The defense is opt-in by transport, not removed:
+  future api-key transports continue to run the check.
+- **Section 6.12 NEW** — Strict-only convergence with persisted
+  `convergence_snapshot` (Item B). Predicate normativo: `converged iff
+  caller_status === 'READY' AND every p in round.peers has p.peer_status
+  === 'READY'`. `status_missing` counts AGAINST. `appendRound` computes
+  and persists `round.convergence_snapshot` with `spec_version: 'v4.9'`
+  at append time; `checkConvergence` reads the persisted snapshot
+  (audit immutability under future predicate evolution). No
+  "loose-mode" toggle.
+- **Section 6.13 NEW** — Rate-limit class distinct from
+  silent-downgrade (Item C). New class `rate_limit_induced_response`
+  orthogonal to `silent_model_downgrade`. Provider-shaped lexeme set:
+  `{429, rate limit, usage limit, quota exceeded, insufficient_quota,
+  RESOURCE_EXHAUSTED, Retry-After}`. Generic `{rate, quota, limit}`
+  EXPLICITLY excluded. Spawn-level detection on non-zero exit +
+  stderr lexeme match → `saveFailedAttempt` with `failure_class =
+  'rate_limit_induced_response'` + `retry_after_seconds` + `detection_source`.
+  Response-level detection requires ALL THREE: status block absent,
+  body < 200 chars, provider-shaped lexeme present. `ask_peers` +
+  `ask_peer` response envelopes surface `rate_limited_peers[]`.
+  `retry_after_seconds` parsed from `Retry-After: N` when present,
+  `null` when absent (never fabricated).
+- **Section 6.9.3.4 CLARIFIED** — probe `tier` now takes canonical
+  values `ok | offline` only; `fallback` retired as ambiguous. Under
+  Item A bypass a responded cli-subscription/oauth-personal peer is
+  `tier: 'ok'` with `model_check_skipped` set.
+- **Section 7 summary table** updated with two new rows
+  (transport-aware bypass + strict-only convergence with persisted
+  snapshot + rate-limit class).
+- **Section 8** gains v4.9 entry per the v4.5 preamble rule.
+
+Deferred to v0.7+ / v4.10 per operator directive 2026-04-24:
+anti-hallucination safeguards (NEEDS_EVIDENCE discipline + exhaustive
+search + `evidence_sources` audit trail), open-source readiness
+(LICENSE / README / SECURITY / CODE_OF_CONDUCT), CLI stderr banner
+promoted from forensic-only to authoritative attestation.
+
+All v4.9 changes ship integrated with code release v0.6.0-alpha in a
+single session (session c9508617 design + subsequent implementation).
+Predecessor design sessions: F2 v0.5.0-alpha release (2492e99) +
+v0.5.0-alpha.1 Gemini pin (67e5138) under Google One AI Ultra.
 
 ---
 
@@ -1475,7 +1528,213 @@ now, no deferral).
 
 ---
 
-## 7. Summary of conventions for immediate use (UPDATED through v4.8)
+### 6.11 Transport-aware model-check discipline (NEW in v4.9)
+
+STATUS: trilateral-approved (session c9508617, 2026-04-24, 3 rounds,
+caller=claude + peers=codex+gemini, outcome=converged).
+
+**Problem.** The v0.5.0-alpha silent-downgrade defense
+(`classifyModelMatch`) compares the peer's text self-report model id
+against the pinned `-m` flag. Empirical evidence from session
+c9508617's capability probe (2026-04-24): BOTH Codex
+(`gpt-5.5 → "gpt-5"`) and Gemini (`→ "Pro"`) flagged
+`silent_model_downgrade` as false-positives. The Codex CLI stderr
+banner confirmed `model: gpt-5.5` was correctly honored at the CLI
+layer; the mismatch is in the model's own unreliable text self-report,
+not a real downgrade. Under any cli-subscription / oauth-personal
+transport the response does NOT expose an authoritative
+`response.modelVersion` field (that is an api-key-only SDK affordance);
+text self-identification by LLMs is known-unreliable.
+
+**Rule.** `parsePeerOutputs(stdout, peerModel, transportDescriptor)`
+gates the model-check on
+`authoritativeModelAttestationAvailable(descriptor) === true`
+(equivalently `descriptor.auth === 'api-key'`). When the gate is
+false, `classifyModelMatch` is SKIPPED; the round record carries:
+
+```
+model_check_skipped: {
+  reason: 'unreliable_text_self_report_on_cli',
+  auth: <descriptor.auth>,
+  endpoint_class: <descriptor.endpoint_class>
+}
+```
+
+`model_failure_class` stays `null` for bypass rounds; `failure_class`
+is reserved for real failures (spawn errors per 6.9.3.6, rate-limits
+per 6.13). `protocol_violation` stays `false` for the skipped cause
+(still `true` if `status_missing` trips, which is orthogonal).
+
+**Transport descriptor.** `spawnPeer` and `probeAgent` return:
+
+```
+transport_descriptor: { agent, auth, endpoint_class }
+```
+
+Canonical values:
+
+| agent  | auth              | endpoint_class                  |
+|--------|-------------------|---------------------------------|
+| codex  | cli-subscription  | chatgpt-pro-backend             |
+| claude | cli-subscription  | claude-pro-backend              |
+| gemini | oauth-personal    | v1internal                      |
+| gemini | api-key           | generativelanguage-v1beta       |
+
+Gemini `auth` is detected by precedence: `GEMINI_API_KEY` env →
+`api-key`; `~/.gemini/oauth_creds.json` present → `oauth-personal`;
+fallback → `oauth-personal` (matches CLI default).
+
+**Invariants.**
+- Defense is NOT removed; opt-in by transport. Future api-key transports
+  (post billing-veto lift) reinstate the check automatically.
+- Skip is AUDITABLE via `model_check_skipped`. Silent bypass is
+  rejected — a round carrying the skip WITHOUT the audit record is a
+  protocol violation itself (enforced at the `parsePeerOutputs` level).
+- Probe parity (6.9.3.4 update): `probeAgent` applies the same gate.
+  Under bypass a responded cli-subscription/oauth-personal peer is
+  `tier: 'ok'` with `model_check_skipped` set. `tier: 'fallback'` is
+  retired as ambiguous.
+
+**Forensic-only capture.** `cli_attested_model_raw` extracts the
+Codex CLI stderr banner line `model: <id>` via regex. Unparsed beyond
+trim; non-authoritative; record-only for audit trail. Promotion of
+the CLI banner to authoritative attestation (hard-gate comparison
+against `peer_model`) is DEFERRED to v4.10 / v0.7+ due to brittleness
+under ANSI codes + CLI version drift.
+
+**Rationale.** The v0.5.0-alpha defense was load-bearing against a
+real threat (a CLI silently accepting an invalid `-m` flag and
+serving a smaller model). Empirically, CLI banners now honor pins
+correctly across all three peers; the residual detection gap is the
+LLM's text self-report hallucinating. Bypassing the check for
+CLI-subscription transports replaces a noisy false-positive with an
+auditable skip reason, preserving the defense where it remains useful
+(api-key SDK transports with authoritative `modelVersion`).
+
+---
+
+### 6.12 Strict-only convergence with persisted snapshot (NEW in v4.9)
+
+STATUS: trilateral-approved (session c9508617, 2026-04-24, 3 rounds,
+outcome=converged).
+
+**Problem.** Informal memory and docs referenced "strict vs loose"
+convergence. The v0.5.0-alpha code is implicitly strict but the
+ambiguity is a latent footgun. `checkConvergence` recomputes the
+predicate on read, which creates a risk that future predicate
+changes rewrite historical session meaning.
+
+**Rule.** Convergence predicate normativo:
+
+```
+converged iff caller_status === 'READY'
+  AND every p in round.peers has p.peer_status === 'READY'
+```
+
+`status_missing` counts AGAINST convergence. No "loose-mode"
+toggle — the strict denominator is the only semantics. Peers
+excluded at probe time live in `meta.capability_snapshot` (NOT in
+denominator). Peers failed at runtime (this round) live in
+`meta.failed_attempts` (NOT in denominator).
+
+**Persistence.** `appendRound` computes AND persists
+`round.convergence_snapshot` at append time:
+
+```
+{
+  round_index: <N>,
+  spec_version: 'v4.9',
+  denominator_mode: 'strict',
+  caller_status,
+  responded_peers: [agent],
+  excluded_probe: [agent from capability_snapshot with tier in {offline,excluded}],
+  excluded_runtime: [agent from failed_attempts with round === N],
+  ready_peers: [agent],
+  blocking_peers: [{ agent, reason: 'NOT_READY' | 'NEEDS_EVIDENCE' | 'status_missing' }],
+  converged: boolean
+}
+```
+
+`checkConvergence` PREFERS the persisted snapshot; recomputes only
+for legacy (pre-v4.9) rounds that lack the field. Future predicate
+evolution does NOT rewrite old rounds — new rounds carry the new
+`spec_version`.
+
+**Invariant.** `protocol_violation` stays OUT of the convergence
+predicate. v0.5.0-alpha behavior preserved: a round where peers
+declared READY but tripped `silent_model_downgrade` false-positives
+(pre-v4.9) still converged on `peer_status`; with §6.11 applied
+those false-positives no longer fire at the source.
+
+---
+
+### 6.13 Rate-limit class distinct from silent-downgrade (NEW in v4.9)
+
+STATUS: trilateral-approved (session c9508617, 2026-04-24, 3 rounds,
+outcome=converged).
+
+**Problem.** v0.5.0-alpha classifies a rate-limited peer either as
+spawn failure (`failed_attempts` with undifferentiated reason) or as
+`status_missing → protocol_violation` with no retry signal. Operator
+has no way to distinguish "retry after backoff" from "abort the round".
+
+**Rule.** New `failure_class: 'rate_limit_induced_response'`,
+orthogonal to `silent_model_downgrade`, `probe_no_model_report`, and
+`unreliable_text_self_report_on_cli`. Two detection layers:
+
+**Spawn-level (preferred).** On non-zero exit, scan stderr (post-R14
+redaction) for a provider-shaped lexeme:
+
+```
+{ '429', 'rate limit', 'usage limit', 'quota exceeded',
+  'insufficient_quota', 'RESOURCE_EXHAUSTED', 'Retry-After' }
+```
+
+Generic `{rate, quota, limit}` are EXPLICITLY excluded to prevent
+false-positives on legitimate meta-discussion. Match → the rejection
+error carries `err.spawn_rate_limit = { retry_after_seconds,
+lexeme_matched, detection_source: 'spawn' }`; the `ask_peers` handler
+routes via `saveFailedAttempt(agent, 'rate_limit_induced_response', …)`.
+
+**Response-level (composed guardrail).** On zero exit with a
+truncated body, require ALL THREE:
+1. `</cross_review_status>` is ABSENT from stdout.
+2. stdout body is `< 200 chars`.
+3. Body matches at least one provider-shaped lexeme.
+
+Match → the per-peer round entry gets `response_class:
+'rate_limit_induced_response'` + `retry_after_seconds`; `peer_status`
+stays `null` (counts AGAINST strict convergence per §6.12).
+
+**`retry_after_seconds`.** Parsed from `Retry-After: N` in stderr or
+body when present. `null` when absent. NEVER fabricated.
+
+**Caller-facing surface.** `ask_peers` and `ask_peer` response
+envelopes include:
+
+```
+rate_limited_peers: [{ agent, retry_after_seconds,
+                       detection_source: 'spawn' | 'response',
+                       lexeme_matched }]
+```
+
+The caller decides retry-after-wait vs abort based on this surface.
+cross-review-mcp itself does NOT auto-retry (the retry semantic is
+orchestrated by the caller to preserve the billing/cost contract).
+
+**Ordering in parsePeerOutputs.** Rate-limit detection runs BEFORE
+the model-check gate — a rate-limited truncated body does not also
+trip a spurious model-mismatch signal.
+
+**Invariant.** Rate-limit + silent_model_downgrade are orthogonal.
+Both CAN fire on the same round (a legitimate degraded-fallback
+under rate-pressure on a future api-key transport). Under §6.11,
+model-check is skipped for CLI transports so the "both fire" case
+only manifests on api-key transports.
+
+---
+
+## 7. Summary of conventions for immediate use (UPDATED through v4.9)
 
 | Convention | Caller action |
 |------------|---------------|
@@ -1492,11 +1751,14 @@ now, no deferral).
 | Overflow | Yellow 50k / Red 100k chars in the transcript (section 6.6.1); non-destructive compression (section 6.6.4) with reference to the immutables; meta.json with no API change (section 6.6.3 YAGNI) |
 | Transition window | During server upgrade, peer emits both formats until reload is confirmed |
 | Triangular topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary introduced in F2 -- alpha normative (section 2.7); unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini"); canonical ids internally (claude / codex / gemini); caller selected dynamically via `CROSS_REVIEW_CALLER` with no hardcoded default (section 2.8) |
-| Tier + transient resilience | Pre-session capability probe per agent with per-provider `fallback_chain` walk (6.9.3.1, 6.9.3.2); graceful degrade triangular -> bilateral when exactly one peer is excluded, abort only when <2 peers viable (6.9.3.3); session-level `meta.capability_snapshot` + active-peer-only rounds (6.9.3.4); dual runtime vs advisory role of top-models.json (6.9.3.5); mid-round transient provider failures (prompt flag / rate limit / 5xx) treated with same-model retry-once-with-backoff; server-side auto-rephrase prohibited; silent mid-round model switch remains prohibited (6.9.3.6); `transient_failure` enum in response distinguishes transient from protocol failure |
+| Tier + transient resilience | Pre-session capability probe per agent with per-provider `fallback_chain` walk (6.9.3.1, 6.9.3.2); graceful degrade triangular -> bilateral when exactly one peer is excluded, abort only when <2 peers viable (6.9.3.3); session-level `meta.capability_snapshot` + active-peer-only rounds (6.9.3.4; `tier: ok \| offline` canonical in v4.9, retiring `fallback`); dual runtime vs advisory role of top-models.json (6.9.3.5); mid-round transient provider failures (prompt flag / rate limit / 5xx) treated with same-model retry-once-with-backoff; server-side auto-rephrase prohibited; silent mid-round model switch remains prohibited (6.9.3.6); `transient_failure` enum in response distinguishes transient from protocol failure |
+| Transport-aware model-check | `spawnPeer` / `probeAgent` return `transport_descriptor: { agent, auth, endpoint_class }` (6.11); `parsePeerOutputs` gate on `auth === 'api-key'` runs `classifyModelMatch`; otherwise SKIP with audit record `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli', auth, endpoint_class }` (eliminates v0.5.0-alpha false-positive `silent_model_downgrade` on CLI-subscription / oauth-personal peers); forensic-only `cli_attested_model_raw` captures Codex stderr banner unparsed |
+| Strict-only convergence + snapshot | `converged iff caller READY AND every responded peer READY` (6.12); `status_missing` counts AGAINST; no loose toggle; `appendRound` persists `round.convergence_snapshot` with `spec_version: 'v4.9'`; `checkConvergence` reads the persisted snapshot (audit immutability under future predicate evolution) |
+| Rate-limit class | New `rate_limit_induced_response` orthogonal to `silent_model_downgrade` (6.13); provider-shaped lexeme set excludes generic `{rate, quota, limit}`; spawn-level via non-zero exit + stderr match -> `saveFailedAttempt` + `retry_after_seconds`; response-level requires ALL THREE (status block absent + body < 200 chars + lexeme match); `retry_after_seconds` parsed from `Retry-After: N` when present, `null` otherwise (NEVER fabricated); `ask_peers` + `ask_peer` surface `rate_limited_peers[]` |
 
 ---
 
-## 8. Criterios de aceitacao (atualizados em v4.8)
+## 8. Criterios de aceitacao (atualizados em v4.9)
 
 **Regra editorial normativa (NOVO em v4.5):** Entradas nesta secao que usem
 linguagem de aprovacao bilateral, incluindo "Spec vX.Y foi aprovada
@@ -1594,6 +1856,24 @@ inconsistencia.
   "aprovada bilateralmente" happened in a separate post-sealing edit
   composed in the same commit, honoring the v4.5 preamble rule
   self-demonstratively. Authored in en-US per section 6.10.
+- Spec v4.9 was **trilaterally approved** (Claude Code + ChatGPT Codex
+  + Gemini CLI) in cross-review session c9508617 (2026-04-24, 3 rounds,
+  outcome=converged, 3/3 READY). v4.9 is a spec + code revision of
+  v4.8 that introduces three normative sections (6.11 transport-aware
+  model-check discipline, 6.12 strict-only convergence with persisted
+  snapshot, 6.13 rate-limit class distinct from silent-downgrade) and
+  retires the ambiguous probe `tier: 'fallback'` in favor of canonical
+  `tier: 'ok' | 'offline'`. v4.9 ships integrated with code release
+  v0.6.0-alpha in a single commit — the spec and the implementation
+  pass trilateral gates together. Items deferred to v4.10 / v0.7+ by
+  operator directive 2026-04-24: anti-hallucination safeguards,
+  open-source readiness (LICENSE / README / SECURITY), CLI stderr
+  banner promoted from forensic-only to authoritative attestation.
+  This entry is authored in en-US per section 6.10. Session c9508617
+  is also the first trilateral design session where the full tri-tool
+  stack (ultrathink + code-reasoning + spawnPeer) operated end-to-end
+  without any silent fallback under the billing-veto constraint of
+  CLI-only peer transport (`feedback_subscription_over_api_billing`).
 
 Once accepted and published:
 - Replaces the prior revision in-place.

@@ -1,3 +1,26 @@
+// v0.6.0-alpha / spec v4.9 additions (approved by session c9508617, 2026-04-24):
+//   - spawnPeer + probeAgent now return a `transport_descriptor`
+//     { agent, auth, endpoint_class } that `parsePeerOutputs` consults to
+//     decide whether the text self-report model-check applies. Non-api-key
+//     transports (cli-subscription, oauth-personal) do NOT expose an
+//     authoritative modelVersion; the check is skipped with an audit record
+//     (`model_check_skipped.reason = 'unreliable_text_self_report_on_cli'`)
+//     instead of false-positive-flagging `silent_model_downgrade`.
+//   - probeAgent retires `tier: 'fallback'` in favor of `tier: 'ok' | 'offline'`.
+//     Under bypass, a responded peer is `ok` with `model_check_skipped` set;
+//     `failure_class: 'silent_model_downgrade'` is no longer emitted from the
+//     probe for cli-subscription/oauth-personal peers.
+//   - Rate-limit detection: `detectSpawnRateLimit(stderr)` matches a
+//     provider-shaped lexeme set (429, rate limit, usage limit, quota
+//     exceeded, insufficient_quota, RESOURCE_EXHAUSTED, Retry-After) on the
+//     redacted stderr tail. When non-zero exit + lexeme → reject with
+//     `err.spawn_rate_limit = { retry_after_seconds, lexeme_matched, detection_source: 'spawn' }`.
+//     Generic `{rate, quota, limit}` is explicitly excluded to prevent
+//     false-positives on meta-discussion.
+//   - Forensic-only `cli_attested_model_raw`: extracts the Codex CLI stderr
+//     banner line `model: <id>` (unparsed, non-authoritative). CLI banner as
+//     authoritative attestation is DEFERRED to v0.7+.
+//
 // Spawn of the peer CLI with the definitive flag tree from the canonical
 // README.
 // - Codex: -a never -s read-only + mcp_servers.*.enabled=false (intersected
@@ -50,6 +73,7 @@
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
+const os = require('node:os');
 
 const CONFIGS_DIR = path.resolve(__dirname, '..', '..', 'reviewer-configs');
 const EXCLUSIONS_PATH = path.join(CONFIGS_DIR, 'peer-exclusions.json');
@@ -68,6 +92,109 @@ const GEMINI_MODEL = 'gemini-3.1-pro-preview';
 // peer can honor the tri-tool mandate (spec v4 section 6.2 per
 // feedback_tri_tool_cross_review).
 const GEMINI_ALLOWED_MCP_SERVERS = ['memory', 'ultrathink', 'code-reasoning'];
+
+// ---------------------------------------------------------------------------
+// v0.6.0-alpha / spec v4.9 — transport_descriptor + rate-limit detection
+// ---------------------------------------------------------------------------
+
+// Detect Gemini CLI auth mode. Precedence:
+//   1. GEMINI_API_KEY env var → 'api-key' (api-public transport, future path).
+//   2. ~/.gemini/oauth_creds.json present → 'oauth-personal' (current path).
+//   3. Fallback → 'oauth-personal' (matches CLI's own default).
+function detectGeminiAuth() {
+    if (process.env.GEMINI_API_KEY) return 'api-key';
+    const home = os.homedir() || '';
+    if (home) {
+        const oauthCreds = path.join(home, '.gemini', 'oauth_creds.json');
+        if (fs.existsSync(oauthCreds)) return 'oauth-personal';
+    }
+    return 'oauth-personal';
+}
+
+// Build a transport descriptor for the peer. The `auth` field gates the
+// Item A model-check bypass in parsePeerOutputs: only 'api-key' exposes an
+// authoritative modelVersion; cli-subscription / oauth-personal do not.
+function buildTransportDescriptor(agent) {
+    if (agent === 'codex') {
+        return {
+            agent: 'codex',
+            auth: 'cli-subscription',
+            endpoint_class: 'chatgpt-pro-backend',
+        };
+    }
+    if (agent === 'claude') {
+        return {
+            agent: 'claude',
+            auth: 'cli-subscription',
+            endpoint_class: 'claude-pro-backend',
+        };
+    }
+    if (agent === 'gemini') {
+        const auth = detectGeminiAuth();
+        return {
+            agent: 'gemini',
+            auth,
+            endpoint_class: auth === 'api-key' ? 'generativelanguage-v1beta' : 'v1internal',
+        };
+    }
+    return { agent: String(agent), auth: 'unknown', endpoint_class: 'unknown' };
+}
+
+// Gate: Item A bypass applies whenever the transport does NOT expose an
+// authoritative modelVersion attestation (anything except api-key SDK path).
+function authoritativeModelAttestationAvailable(descriptor) {
+    return descriptor?.auth === 'api-key';
+}
+
+// Provider-shaped rate-limit lexemes. Generic {rate, quota, limit} explicitly
+// excluded to avoid false-positives on legitimate meta-discussion.
+const RATE_LIMIT_LEXEMES = Object.freeze([
+    '429',
+    'rate limit',
+    'usage limit',
+    'quota exceeded',
+    'insufficient_quota',
+    'RESOURCE_EXHAUSTED',
+    'Retry-After',
+]);
+
+function matchRateLimitLexeme(text) {
+    if (typeof text !== 'string' || !text.length) return null;
+    const lower = text.toLowerCase();
+    for (const lex of RATE_LIMIT_LEXEMES) {
+        if (lower.includes(lex.toLowerCase())) return lex;
+    }
+    return null;
+}
+
+function extractRetryAfterSeconds(text) {
+    if (typeof text !== 'string') return null;
+    const m = text.match(/retry[-_ ]after[:\s]+(\d+)/i);
+    if (!m) return null;
+    const n = Number(m[1]);
+    return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+// Spawn-level rate-limit detection: non-zero exit + stderr lexeme match.
+// Returns null or { detection_source:'spawn', retry_after_seconds, lexeme_matched }.
+function detectSpawnRateLimit(stderr) {
+    const lexeme = matchRateLimitLexeme(stderr);
+    if (!lexeme) return null;
+    return {
+        detection_source: 'spawn',
+        retry_after_seconds: extractRetryAfterSeconds(stderr),
+        lexeme_matched: lexeme,
+    };
+}
+
+// Forensic-only (v0.6.0-alpha): extract Codex CLI stderr banner line
+// `model: <id>`. Unparsed beyond the trim; non-authoritative. CLI banner as
+// authoritative attestation is deferred to v0.7+.
+function extractCodexAttestedModelRaw(stderr) {
+    if (typeof stderr !== 'string' || !stderr.length) return null;
+    const m = stderr.match(/^model:\s*(\S[^\r\n]*)/m);
+    return m ? m[1].trim() : null;
+}
 
 function loadExclusions() {
     return JSON.parse(fs.readFileSync(EXCLUSIONS_PATH, 'utf8'));
@@ -205,9 +332,12 @@ function killProcessTree(proc) {
 
 // Probe stub: short-circuits probeAgent for smoke tests.
 // CROSS_REVIEW_PROBE_STUB format: comma-separated "agent:tier[:model]"
-// entries. Tier in {top, fallback, excluded}. Model defaults to
-// modelForPeer(agent). Unlisted agents fall through to real probe.
-// Example: "gemini:top:gemini-2.5-pro,codex:excluded,claude:fallback:claude-sonnet-4-6"
+// entries. Tier in {top, fallback, excluded, ok, offline}.
+//   - v0.5.0-alpha legacy: {top, fallback, excluded} — kept for smoke backward compat.
+//   - v0.6.0-alpha canonical: {ok, offline} — ok = responded (check passed or bypassed);
+//     offline = did not respond (spawn/probe error / rate-limit).
+// Model defaults to modelForPeer(agent). Unlisted agents fall through to real probe.
+// Example: "gemini:ok:gemini-3.1-pro-preview,codex:offline,claude:ok:claude-opus-4-7"
 function probeStubFor(agent) {
     const raw = process.env.CROSS_REVIEW_PROBE_STUB;
     if (!raw) return null;
@@ -219,22 +349,34 @@ function probeStubFor(agent) {
     for (const parts of entries) {
         const [a, tier, model] = parts;
         if (a !== agent) continue;
-        if (!['top', 'fallback', 'excluded'].includes(tier)) {
+        if (!['top', 'fallback', 'excluded', 'ok', 'offline'].includes(tier)) {
             return null;
         }
+        const offline = tier === 'excluded' || tier === 'offline';
+        const descriptor = buildTransportDescriptor(agent);
+        const reportedModel = model || modelForPeer(agent);
+        const attested = authoritativeModelAttestationAvailable(descriptor);
+        const modelMatch = reportedModel === modelForPeer(agent);
         return {
             agent,
             tier,
             requested_model: modelForPeer(agent),
-            model_reported: model || modelForPeer(agent),
-            model_match: (model || modelForPeer(agent)) === modelForPeer(agent),
+            model_reported: reportedModel,
+            model_match: attested ? modelMatch : null,
             probe_latency_ms: 0,
             probe_budget_ms: 30000,
-            exit_code: tier === 'excluded' ? 1 : 0,
-            failure_class: tier === 'excluded' ? 'probe_excluded_stub' : null,
+            exit_code: offline ? 1 : 0,
+            failure_class: offline ? 'probe_excluded_stub' : null,
             cli_version: null,
             timestamp: new Date().toISOString(),
             stderr_tail: '',
+            transport_descriptor: descriptor,
+            model_check_skipped: (!offline && !attested) ? {
+                reason: 'unreliable_text_self_report_on_cli',
+                auth: descriptor.auth,
+                endpoint_class: descriptor.endpoint_class,
+            } : null,
+            cli_attested_model_raw: null,
         };
     }
     return null;
@@ -302,7 +444,7 @@ function probeAgent(agent, options = {}) {
         } catch (err) {
             return finish({
                 agent,
-                tier: 'excluded',
+                tier: 'offline',
                 requested_model: requested,
                 model_reported: null,
                 model_match: false,
@@ -313,6 +455,9 @@ function probeAgent(agent, options = {}) {
                 cli_version: null,
                 timestamp: new Date().toISOString(),
                 stderr_tail: String(err?.message || err).slice(-400),
+                transport_descriptor: buildTransportDescriptor(agent),
+                model_check_skipped: null,
+                cli_attested_model_raw: null,
             });
         }
 
@@ -322,7 +467,7 @@ function probeAgent(agent, options = {}) {
             killProcessTree(proc);
             finish({
                 agent,
-                tier: 'excluded',
+                tier: 'offline',
                 requested_model: requested,
                 model_reported: null,
                 model_match: false,
@@ -333,6 +478,9 @@ function probeAgent(agent, options = {}) {
                 cli_version: null,
                 timestamp: new Date().toISOString(),
                 stderr_tail: stderr.slice(-400),
+                transport_descriptor: buildTransportDescriptor(agent),
+                model_check_skipped: null,
+                cli_attested_model_raw: null,
             });
         }, budgetMs);
 
@@ -342,7 +490,7 @@ function probeAgent(agent, options = {}) {
             clearTimeout(timer);
             finish({
                 agent,
-                tier: 'excluded',
+                tier: 'offline',
                 requested_model: requested,
                 model_reported: null,
                 model_match: false,
@@ -353,44 +501,98 @@ function probeAgent(agent, options = {}) {
                 cli_version: null,
                 timestamp: new Date().toISOString(),
                 stderr_tail: String(err?.message || err).slice(-400),
+                transport_descriptor: buildTransportDescriptor(agent),
+                model_check_skipped: null,
+                cli_attested_model_raw: null,
             });
         });
         proc.on('close', (code) => {
             clearTimeout(timer);
             const latency = Date.now() - started;
+            const stderrTail = stderr.slice(-400);
+            const descriptor = buildTransportDescriptor(agent);
+            const cli_attested_model_raw = agent === 'codex'
+                ? extractCodexAttestedModelRaw(stderr)
+                : null;
+
+            // Non-zero exit: classify. Spawn-level rate-limit takes
+            // precedence over generic probe_nonzero_exit.
             if (code !== 0) {
+                const rl = detectSpawnRateLimit(stderrTail);
                 return finish({
                     agent,
-                    tier: 'excluded',
+                    tier: 'offline',
                     requested_model: requested,
                     model_reported: null,
                     model_match: false,
                     probe_latency_ms: latency,
                     probe_budget_ms: budgetMs,
                     exit_code: code,
-                    failure_class: 'probe_nonzero_exit',
+                    failure_class: rl ? 'rate_limit_induced_response' : 'probe_nonzero_exit',
+                    retry_after_seconds: rl?.retry_after_seconds ?? null,
+                    lexeme_matched: rl?.lexeme_matched ?? null,
                     cli_version: null,
                     timestamp: new Date().toISOString(),
-                    stderr_tail: stderr.slice(-400),
+                    stderr_tail: stderrTail,
+                    transport_descriptor: descriptor,
+                    model_check_skipped: null,
+                    cli_attested_model_raw,
                 });
             }
-            // Extract model self-report from stdout tail. First non-empty
-            // line that looks like a model id.
+
+            // Zero exit: apply Item A bypass gate. api-key is the only
+            // transport that exposes an authoritative modelVersion;
+            // cli-subscription / oauth-personal text self-report is unreliable
+            // and MUST NOT trip silent_model_downgrade.
             const reported = extractReportedModel(stdout);
-            const match = reported != null && reported === requested;
+            const attested = authoritativeModelAttestationAvailable(descriptor);
+
+            if (attested) {
+                const match = reported != null && reported === requested;
+                return finish({
+                    agent,
+                    tier: match ? 'ok' : 'offline',
+                    requested_model: requested,
+                    model_reported: reported,
+                    model_match: match,
+                    probe_latency_ms: latency,
+                    probe_budget_ms: budgetMs,
+                    exit_code: code,
+                    failure_class: match
+                        ? null
+                        : (reported ? 'silent_model_downgrade' : 'probe_no_model_report'),
+                    cli_version: null,
+                    timestamp: new Date().toISOString(),
+                    stderr_tail: stderrTail,
+                    transport_descriptor: descriptor,
+                    model_check_skipped: null,
+                    cli_attested_model_raw,
+                });
+            }
+
+            // Item A bypass: responded + non-api-key transport → ok + audit
+            // record. `model_match` is null (not applicable under bypass)
+            // rather than false (which would imply a real mismatch).
             finish({
                 agent,
-                tier: match ? 'top' : (reported ? 'fallback' : 'excluded'),
+                tier: 'ok',
                 requested_model: requested,
                 model_reported: reported,
-                model_match: match,
+                model_match: null,
                 probe_latency_ms: latency,
                 probe_budget_ms: budgetMs,
                 exit_code: code,
-                failure_class: match ? null : (reported ? 'silent_model_downgrade' : 'probe_no_model_report'),
+                failure_class: null,
                 cli_version: null,
                 timestamp: new Date().toISOString(),
-                stderr_tail: stderr.slice(-400),
+                stderr_tail: stderrTail,
+                transport_descriptor: descriptor,
+                model_check_skipped: {
+                    reason: 'unreliable_text_self_report_on_cli',
+                    auth: descriptor.auth,
+                    endpoint_class: descriptor.endpoint_class,
+                },
+                cli_attested_model_raw,
             });
         });
 
@@ -435,7 +637,7 @@ function probeChain(agents, options = {}) {
             if (r.status === 'fulfilled') return r.value;
             return {
                 agent: agents[i],
-                tier: 'excluded',
+                tier: 'offline',
                 requested_model: null,
                 model_reported: null,
                 model_match: false,
@@ -446,6 +648,9 @@ function probeChain(agents, options = {}) {
                 cli_version: null,
                 timestamp: new Date().toISOString(),
                 stderr_tail: String(r.reason?.message || r.reason).slice(-400),
+                transport_descriptor: buildTransportDescriptor(agents[i]),
+                model_check_skipped: null,
+                cli_attested_model_raw: null,
             };
         })
     );
@@ -504,18 +709,28 @@ function resolveStub(stub) {
     const body = `[stub peer response; CROSS_REVIEW_PEER_STUB=${stub}]`;
     const stderr = '[stub] peer spawn skipped\n';
     const peer_model = 'stub';
+    // Stubs bypass the model-check entirely via peer_model==='stub' — the
+    // isStub short-circuit in parsePeerOutputs fires first. For the REAL_*
+    // stubs that DO exercise the model-check defense end-to-end (REAL_MATCH /
+    // REAL_DOWNGRADE / REAL_MISSING_MODEL return a real `peer_model`), we set
+    // auth='api-key' so the v4.9 transport-aware bypass does NOT skip the
+    // check — the defense must still fire in those tests. Coverage of the
+    // v4.9 bypass behavior lives in dedicated unit steps that call
+    // parsePeerOutputs directly with a non-api-key descriptor.
+    const transport_descriptor = { agent: 'stub', auth: 'api-key', endpoint_class: 'stub' };
+    const cli_attested_model_raw = null;
 
     if (stub === 'MISSING') {
-        return { stdout: `${body}\n`, stderr, peer_model };
+        return { stdout: `${body}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (LEGACY_STATUSES.has(stub)) {
-        return { stdout: `${body}\n\nSTATUS: ${stub}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\nSTATUS: ${stub}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub.startsWith('STRUCTURED:')) {
         const status = stub.slice('STRUCTURED:'.length);
         assertLegacy(status, 'STRUCTURED');
         const block = `<cross_review_status>${JSON.stringify({ status })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub.startsWith('STRUCTURED_EARLY_REGEX_LAST:')) {
         const rest = stub.slice('STRUCTURED_EARLY_REGEX_LAST:'.length);
@@ -523,7 +738,7 @@ function resolveStub(stub) {
         assertLegacy(structured, 'STRUCTURED_EARLY_REGEX_LAST structured');
         assertLegacy(regex, 'STRUCTURED_EARLY_REGEX_LAST regex');
         const block = `<cross_review_status>${JSON.stringify({ status: structured })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n\nmore prose here\n\nSTATUS: ${regex}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n\nmore prose here\n\nSTATUS: ${regex}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub.startsWith('STRUCTURED_LAST_REGEX_EARLY:')) {
         const rest = stub.slice('STRUCTURED_LAST_REGEX_EARLY:'.length);
@@ -531,24 +746,24 @@ function resolveStub(stub) {
         assertLegacy(regex, 'STRUCTURED_LAST_REGEX_EARLY regex');
         assertLegacy(structured, 'STRUCTURED_LAST_REGEX_EARLY structured');
         const block = `<cross_review_status>${JSON.stringify({ status: structured })}</cross_review_status>`;
-        return { stdout: `${body}\n\nSTATUS: ${regex}\n\nmore prose here\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\nSTATUS: ${regex}\n\nmore prose here\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'MALFORMED_STRUCTURED_TAIL') {
         const malformedBlock = '<cross_review_status>{not valid json</cross_review_status>';
-        return { stdout: `${body}\n\n${malformedBlock}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${malformedBlock}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'INVALID_STATUS_STRUCTURED_TAIL') {
         const block = `<cross_review_status>${JSON.stringify({ status: 'MAYBE' })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'LOWERCASE_STATUS') {
-        return { stdout: `${body}\n\nSTATUS: ready\n`, stderr, peer_model };
+        return { stdout: `${body}\n\nSTATUS: ready\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'PROSE_MENTION_STATUS') {
-        return { stdout: `${body}\n\nFor example, the peer could write \`STATUS: READY\` at the end.\n\nBut this response is not ended with the canonical marker.\n`, stderr, peer_model };
+        return { stdout: `${body}\n\nFor example, the peer could write \`STATUS: READY\` at the end.\n\nBut this response is not ended with the canonical marker.\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'PROSE_MENTION_BLOCK') {
-        return { stdout: `${body}\n\nExample of the canonical tag: <cross_review_status>{"status":"READY"}</cross_review_status>\n\nThis response ends with prose and does not terminate with the canonical tag.\n`, stderr, peer_model };
+        return { stdout: `${body}\n\nExample of the canonical tag: <cross_review_status>{"status":"READY"}</cross_review_status>\n\nThis response ends with prose and does not terminate with the canonical tag.\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub.startsWith('DOUBLE_STRUCTURED:')) {
         const rest = stub.slice('DOUBLE_STRUCTURED:'.length);
@@ -557,7 +772,7 @@ function resolveStub(stub) {
         assertLegacy(last, 'DOUBLE_STRUCTURED last');
         const b1 = `<cross_review_status>${JSON.stringify({ status: early })}</cross_review_status>`;
         const b2 = `<cross_review_status>${JSON.stringify({ status: last })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${b1}\n\nintermediate prose\n\n${b2}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${b1}\n\nintermediate prose\n\n${b2}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub.startsWith('MULTILINE_STRUCTURED:')) {
         const status = stub.slice('MULTILINE_STRUCTURED:'.length);
@@ -569,6 +784,8 @@ function resolveStub(stub) {
             stdout: `${body}\n\n<cross_review_status>\n${prettyPayload}\n</cross_review_status>\n`,
             stderr,
             peer_model,
+            transport_descriptor,
+            cli_attested_model_raw,
         };
     }
     // v0.4.0 stubs -- expanded schema and missing-close-tag gap.
@@ -579,28 +796,28 @@ function resolveStub(stub) {
             caller_requests: ['verify X', 'confirm Y'],
             follow_ups: ['cleanup Z in future session'],
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_BAD_UNCERTAINTY') {
         const block = `<cross_review_status>${JSON.stringify({
             status: 'READY',
             uncertainty: 'super-high',
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_BAD_CALLER_REQUESTS_SHAPE') {
         const block = `<cross_review_status>${JSON.stringify({
             status: 'NEEDS_EVIDENCE',
             caller_requests: 'this should be an array',
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_NON_STRING_ITEM') {
         const block = `<cross_review_status>${JSON.stringify({
             status: 'READY',
             follow_ups: ['ok', 123, 'also ok'],
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_TOO_MANY_CALLER_REQUESTS') {
         const requests = Array.from({ length: 21 }, (_, i) => `req ${i + 1}`);
@@ -608,7 +825,7 @@ function resolveStub(stub) {
             status: 'NEEDS_EVIDENCE',
             caller_requests: requests,
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_OVERSIZED_ITEM') {
         const bigString = 'x'.repeat(501);
@@ -616,7 +833,7 @@ function resolveStub(stub) {
             status: 'NEEDS_EVIDENCE',
             caller_requests: ['ok', bigString],
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_UNKNOWN_FIELD') {
         const block = `<cross_review_status>${JSON.stringify({
@@ -624,7 +841,7 @@ function resolveStub(stub) {
             extra: 'not in whitelist',
             another_unknown: 42,
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     if (stub === 'STRUCTURED_V4_EMPTY_ARRAYS') {
         const block = `<cross_review_status>${JSON.stringify({
@@ -632,7 +849,7 @@ function resolveStub(stub) {
             caller_requests: [],
             follow_ups: [],
         })}</cross_review_status>`;
-        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${block}\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     // v0.5.0-alpha stubs for server-level model-check (W8). Unlike the
     // other stubs that all return peer_model='stub' to bypass the
@@ -652,6 +869,8 @@ function resolveStub(stub) {
             stdout: `${body}\n\n${modelBlock}\n${statusBlock}\n`,
             stderr,
             peer_model: modelId,
+            transport_descriptor,
+            cli_attested_model_raw,
         };
     }
     if (stub.startsWith('REAL_DOWNGRADE:')) {
@@ -667,6 +886,8 @@ function resolveStub(stub) {
             stdout: `${body}\n\n${modelBlock}\n${statusBlock}\n`,
             stderr,
             peer_model: requested,
+            transport_descriptor,
+            cli_attested_model_raw,
         };
     }
     if (stub.startsWith('REAL_MISSING_MODEL:')) {
@@ -680,6 +901,8 @@ function resolveStub(stub) {
             stdout: `${body}\n\n${statusBlock}\n`,
             stderr,
             peer_model: requested,
+            transport_descriptor,
+            cli_attested_model_raw,
         };
     }
     if (stub === 'STRUCTURED_OPEN_NO_CLOSE') {
@@ -688,7 +911,7 @@ function resolveStub(stub) {
         // "STATUS: X" on the last line, returns null (protocol_violation
         // expected).
         const fakeOpen = '<cross_review_status>{"status":"READY"}';
-        return { stdout: `${body}\n\n${fakeOpen}\n\nprose after the unclosed opening.\n`, stderr, peer_model };
+        return { stdout: `${body}\n\n${fakeOpen}\n\nprose after the unclosed opening.\n`, stderr, peer_model, transport_descriptor, cli_attested_model_raw };
     }
     throw new Error(`stub: unknown CROSS_REVIEW_PEER_STUB form '${stub}'`);
 }
@@ -767,19 +990,38 @@ function spawnPeer(peerAgent, prompt, options = {}) {
         proc.on('close', (code) => {
             finished = true;
             clearTimeout(timer);
+            const descriptor = buildTransportDescriptor(peerAgent);
+            const cli_attested_model_raw = peerAgent === 'codex'
+                ? extractCodexAttestedModelRaw(stderr)
+                : null;
             if (code !== 0) {
-                return reject(
-                    new Error(
-                        `peer ${peerAgent} exit ${code}: ${stderr.slice(-400)}`
-                    )
+                // v0.6.0-alpha / spec v4.9: attach structured rate-limit hint
+                // to the rejection error so the ask_peers handler can
+                // classify via saveFailedAttempt with failure_class =
+                // 'rate_limit_induced_response' + retry_after_seconds.
+                const rl = detectSpawnRateLimit(stderr);
+                const err = new Error(
+                    `peer ${peerAgent} exit ${code}: ${stderr.slice(-400)}`
                 );
+                err.exit_code = code;
+                err.stderr_tail = stderr.slice(-400);
+                err.transport_descriptor = descriptor;
+                if (rl) err.spawn_rate_limit = rl;
+                return reject(err);
             }
             // spec v4 section 6.9.2: peer_model must be persisted per
             // round for auditability. Stub path sets it via resolveStub;
             // real path must set it here using the pinned ID for the
             // actual peer agent. Missing peer_model in the real resolve
             // path was a bug flagged by peer review 2026-04-24.
-            resolve({ stdout, stderr, peer_model: modelForPeer(peerAgent) });
+            // v0.6.0-alpha additions: transport_descriptor + cli_attested_model_raw.
+            resolve({
+                stdout,
+                stderr,
+                peer_model: modelForPeer(peerAgent),
+                transport_descriptor: descriptor,
+                cli_attested_model_raw,
+            });
         });
 
         proc.stdin.write(String(prompt));
@@ -823,4 +1065,13 @@ module.exports = {
     CLAUDE_MODEL,
     GEMINI_MODEL,
     GEMINI_ALLOWED_MCP_SERVERS,
+    // v0.6.0-alpha / spec v4.9 additions.
+    detectGeminiAuth,
+    buildTransportDescriptor,
+    authoritativeModelAttestationAvailable,
+    RATE_LIMIT_LEXEMES,
+    matchRateLimitLexeme,
+    extractRetryAfterSeconds,
+    detectSpawnRateLimit,
+    extractCodexAttestedModelRaw,
 };

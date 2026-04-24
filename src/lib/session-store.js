@@ -192,8 +192,104 @@ function writeMeta(sessionId, meta) {
     );
 }
 
+// v0.6.0-alpha / spec v4.9 (Item B): strict-only convergence + persisted
+// snapshot. The snapshot is computed at append time from the round data +
+// session context (capability_snapshot + failed_attempts), then attached
+// to the round as `round.convergence_snapshot`. checkConvergence prefers
+// the persisted snapshot; no recomputation for v4.9+ rounds. Rounds from
+// pre-v4.9 sessions fall through to derive-on-read legacy path.
+const CONVERGENCE_SPEC_VERSION = 'v4.9';
+
+function computeConvergenceSnapshot(roundIndex, round, context = {}) {
+    const excludedProbe = Array.isArray(context.excluded_probe)
+        ? [...context.excluded_probe]
+        : [];
+    const excludedRuntime = Array.isArray(context.excluded_runtime)
+        ? [...context.excluded_runtime]
+        : [];
+    const callerReady = round.caller_status === 'READY';
+
+    // N-ary path (ask_peers rounds).
+    if (Array.isArray(round.peers) && round.peers.length > 0 && !('peer_status' in round)) {
+        const respondedPeers = round.peers.map((p) => p.agent);
+        const readyPeers = round.peers
+            .filter((p) => p.peer_status === 'READY')
+            .map((p) => p.agent);
+        const blockingPeers = round.peers
+            .filter((p) => p.peer_status !== 'READY')
+            .map((p) => ({
+                agent: p.agent,
+                reason: classifyBlocking(p),
+            }));
+        const allPeersReady =
+            round.peers.length > 0 && round.peers.every((p) => p.peer_status === 'READY');
+        const converged = callerReady && allPeersReady;
+        return {
+            round_index: roundIndex,
+            spec_version: CONVERGENCE_SPEC_VERSION,
+            denominator_mode: 'strict',
+            caller_status: round.caller_status ?? null,
+            responded_peers: respondedPeers,
+            excluded_probe: excludedProbe,
+            excluded_runtime: excludedRuntime,
+            ready_peers: readyPeers,
+            blocking_peers: blockingPeers,
+            converged,
+        };
+    }
+
+    // Legacy bilateral path (ask_peer rounds with scalar `peer`/`peer_status`).
+    const peerReady = round.peer_status === 'READY';
+    const agent = round.peer || null;
+    const respondedPeers = agent ? [agent] : [];
+    const readyPeers = peerReady && agent ? [agent] : [];
+    const blockingPeers = peerReady
+        ? []
+        : [{
+              agent,
+              reason: classifyBlockingLegacy(round),
+          }];
+    return {
+        round_index: roundIndex,
+        spec_version: CONVERGENCE_SPEC_VERSION,
+        denominator_mode: 'strict',
+        caller_status: round.caller_status ?? null,
+        responded_peers: respondedPeers,
+        excluded_probe: excludedProbe,
+        excluded_runtime: excludedRuntime,
+        ready_peers: readyPeers,
+        blocking_peers: blockingPeers,
+        converged: callerReady && peerReady,
+    };
+}
+
+function classifyBlocking(peer) {
+    if (peer.peer_status === 'NEEDS_EVIDENCE') return 'NEEDS_EVIDENCE';
+    if (peer.peer_status === 'NOT_READY') return 'NOT_READY';
+    return 'status_missing';
+}
+
+function classifyBlockingLegacy(round) {
+    if (round.peer_status === 'NEEDS_EVIDENCE') return 'NEEDS_EVIDENCE';
+    if (round.peer_status === 'NOT_READY') return 'NOT_READY';
+    return 'status_missing';
+}
+
+function collectSessionExclusions(meta, roundIndex) {
+    const excludedProbe = (meta.capability_snapshot?.peers || [])
+        .filter((p) => p.tier === 'offline' || p.tier === 'excluded')
+        .map((p) => p.agent);
+    const excludedRuntime = (meta.failed_attempts || [])
+        .filter((fa) => Number(fa.round) === Number(roundIndex))
+        .map((fa) => fa.agent);
+    return { excluded_probe: excludedProbe, excluded_runtime: excludedRuntime };
+}
+
 function appendRound(sessionId, round) {
     const meta = readMeta(sessionId);
+    const roundIndex = meta.rounds.length + 1;
+    const context = collectSessionExclusions(meta, roundIndex);
+    round.convergence_snapshot = computeConvergenceSnapshot(roundIndex, round, context);
     meta.rounds.push(round);
     meta.last_updated_at = new Date().toISOString();
     writeMeta(sessionId, meta);
@@ -226,6 +322,17 @@ function saveFailedAttempt(sessionId, agent, reason, extras = {}) {
     if (extras.retry_attempt != null) {
         entry.retry_attempt = Number(extras.retry_attempt);
     }
+    // v0.6.0-alpha / spec v4.9 (Item C): rate-limit audit fields. Only
+    // persisted when set — absent entries preserve v0.5.0-alpha shape.
+    if (extras.retry_after_seconds != null) {
+        entry.retry_after_seconds = Number(extras.retry_after_seconds);
+    }
+    if (extras.detection_source != null) {
+        entry.detection_source = String(extras.detection_source);
+    }
+    if (extras.lexeme_matched != null) {
+        entry.lexeme_matched = String(extras.lexeme_matched);
+    }
     meta.failed_attempts.push(entry);
     meta.last_updated_at = new Date().toISOString();
     writeMeta(sessionId, meta);
@@ -245,13 +352,17 @@ function savePeerResponse(sessionId, roundNum, peerAgent, content, status) {
     return fname;
 }
 
-// Unanimity predicate (R17, F2 round 2):
+// Strict-only convergence predicate (v0.6.0-alpha / spec v4.9, Item B):
 //   converged iff caller_status === READY AND for every responded peer
-//   the peer_status === READY AND at least 2 peers responded (minimum
-//   bilateral quorum; N=1 with zero excluded also counts as legacy
-//   bilateral OK). Excluded peers (probe-level) never enter rounds;
-//   failed-spawn peers (runtime level) are recorded in failed_attempts
-//   and excluded from denominator.
+//   the peer_status === READY. status_missing counts AGAINST (strict).
+//   Excluded peers (probe-level) never enter rounds; failed-spawn peers
+//   (runtime level) are recorded in failed_attempts and excluded from
+//   denominator.
+//
+// v0.6.0-alpha change: appendRound persists `round.convergence_snapshot`
+// with spec_version 'v4.9' at append time. checkConvergence PREFERS the
+// persisted snapshot (immutable audit) and falls back to computing it
+// on-read only for pre-v4.9 rounds that lack the field.
 //
 // Supports two round shapes:
 //   LEGACY bilateral: {peer, peer_status, caller_status}
@@ -268,59 +379,82 @@ function checkConvergence(sessionId) {
         };
     }
     const last = meta.rounds[meta.rounds.length - 1];
-    const callerReady = last.caller_status === 'READY';
+    const lastIndex = meta.rounds.length;
 
-    // N-ary path: round carries peers[] array with per-peer status.
+    // Prefer persisted snapshot (v4.9+). Derive-on-read for legacy rounds
+    // that predate the snapshot.
+    const snapshot = last.convergence_snapshot
+        || computeConvergenceSnapshot(lastIndex, last, collectSessionExclusions(meta, lastIndex));
+
+    const reason = buildConvergenceReason(snapshot, last);
+
+    // Preserve the two response shapes (N-ary vs legacy bilateral) for
+    // backward-compat with pre-v0.6.0 callers, plus add convergence_snapshot.
     if (Array.isArray(last.peers) && last.peers.length > 0 && !('peer_status' in last)) {
-        const peerStatuses = last.peers.map((p) => p.peer_status);
-        const allPeersReady = peerStatuses.length > 0 && peerStatuses.every((s) => s === 'READY');
-        const anyNeedsEvidence = peerStatuses.some((s) => s === 'NEEDS_EVIDENCE');
-        const converged = callerReady && allPeersReady;
-        let reason;
-        if (converged) {
-            reason = `caller and all ${peerStatuses.length} peers declared READY in the same round`;
-        } else if (!callerReady) {
-            reason = `caller is ${last.caller_status ?? 'MISSING'}; caller must concur with peers`;
-        } else if (anyNeedsEvidence) {
-            const ne = last.peers.filter((p) => p.peer_status === 'NEEDS_EVIDENCE').map((p) => p.agent);
-            reason = `peer(s) ${ne.join(',')} declared NEEDS_EVIDENCE; attach requested evidence next round`;
-        } else {
-            const notReady = last.peers.filter((p) => p.peer_status !== 'READY').map((p) => `${p.agent}=${p.peer_status ?? 'MISSING'}`);
-            reason = `peer(s) not READY: ${notReady.join(', ')}`;
-        }
         return {
-            converged,
+            converged: snapshot.converged,
             caller_status: last.caller_status,
             peers: last.peers,
             last_round: last,
             reason,
+            convergence_snapshot: snapshot,
         };
     }
-
-    // Legacy bilateral path (pre-v0.5.0-alpha rounds or ask_peer).
-    const peerReady = last.peer_status === 'READY';
-    const peerNeedsEvidence = last.peer_status === 'NEEDS_EVIDENCE';
-    const converged = callerReady && peerReady;
-    let reason;
-    if (converged) {
-        reason = 'both caller and peer declared READY in the same round';
-    } else if (peerNeedsEvidence) {
-        reason = `peer declared NEEDS_EVIDENCE (caller=${last.caller_status ?? 'MISSING'}); attach the requested evidence next round instead of re-arguing merits`;
-    } else if (callerReady && !peerReady) {
-        reason = `caller READY but peer is ${last.peer_status ?? 'MISSING'}; needs another round`;
-    } else if (!callerReady && peerReady) {
-        reason = `peer READY but caller declared ${last.caller_status ?? 'MISSING'}; caller must concur`;
-    } else {
-        reason = `neither side READY (caller=${last.caller_status ?? 'MISSING'}, peer=${last.peer_status ?? 'MISSING'})`;
-    }
     return {
-        converged,
+        converged: snapshot.converged,
         caller_status: last.caller_status,
         peer_status: last.peer_status,
         peer_structured: last.peer_structured ?? null,
         last_round: last,
         reason,
+        convergence_snapshot: snapshot,
     };
+}
+
+function buildConvergenceReason(snapshot, round) {
+    const callerReady = snapshot.caller_status === 'READY';
+    const isLegacyBilateral =
+        round && !Array.isArray(round.peers) && 'peer_status' in round;
+
+    if (snapshot.converged) {
+        if (isLegacyBilateral) {
+            return 'both caller and peer declared READY in the same round';
+        }
+        const n = snapshot.ready_peers.length;
+        return `caller and all ${n} peer${n === 1 ? '' : 's'} declared READY in the same round`;
+    }
+
+    // Legacy bilateral: preserve the v0.5.0-alpha reason-text shapes so
+    // smoke regex assertions remain stable.
+    if (isLegacyBilateral) {
+        const peerStatus = round.peer_status ?? 'MISSING';
+        const callerStatus = snapshot.caller_status ?? 'MISSING';
+        if (peerStatus === 'NEEDS_EVIDENCE') {
+            return `peer declared NEEDS_EVIDENCE (caller=${callerStatus}); attach the requested evidence next round instead of re-arguing merits`;
+        }
+        if (callerReady && peerStatus !== 'READY') {
+            return `caller READY but peer is ${peerStatus}; needs another round`;
+        }
+        if (!callerReady && peerStatus === 'READY') {
+            return `peer READY but caller declared ${callerStatus}; caller must concur`;
+        }
+        return `neither side READY (caller=${callerStatus}, peer=${peerStatus})`;
+    }
+
+    // N-ary path.
+    if (!callerReady) {
+        return `caller is ${snapshot.caller_status ?? 'MISSING'}; caller must concur with peers`;
+    }
+    if (snapshot.blocking_peers.length === 0) {
+        return `no responded peers (responded=${snapshot.responded_peers.length}, excluded_runtime=${snapshot.excluded_runtime.length})`;
+    }
+    const needsEvidence = snapshot.blocking_peers.filter((b) => b.reason === 'NEEDS_EVIDENCE');
+    if (needsEvidence.length > 0) {
+        const ne = needsEvidence.map((b) => b.agent).join(',');
+        return `peer(s) ${ne} declared NEEDS_EVIDENCE; attach requested evidence next round`;
+    }
+    const parts = snapshot.blocking_peers.map((b) => `${b.agent}=${b.reason}`);
+    return `peer(s) not READY: ${parts.join(', ')}`;
 }
 
 function finalize(sessionId, outcome) {
@@ -352,4 +486,8 @@ module.exports = {
     clipStderrTail,
     REDACTION_PATTERNS,
     MAX_STDERR_TAIL_CHARS,
+    // v0.6.0-alpha / spec v4.9 additions.
+    computeConvergenceSnapshot,
+    collectSessionExclusions,
+    CONVERGENCE_SPEC_VERSION,
 };
