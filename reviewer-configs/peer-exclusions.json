@@ -1,0 +1,37 @@
+{
+  "_comment": "Dois controles por spawn do peer Codex: (1) 'codex_disable' vira '-c mcp_servers.<name>.enabled=false' para cada MCP externo; (2) 'codex_apps_disable' vira '-c apps.<id>.enabled=false' para cada conector/app OpenAI-curated (namespace [apps.*], nao [mcp_servers.*]); (3) 'codex_approve_tools' vira '-c mcp_servers.<server>.tools.<tool>.approval_mode=approve' para liberar tools MCP essenciais sob '-a never' sem precisar bypass. Valores documentados de approval_mode: auto | prompt | approve.",
+  "codex_disable": [
+    "cross-review",
+    "github",
+    "fetch",
+    "puppeteer",
+    "cloudflare-api",
+    "cloudflare-bindings",
+    "cloudflare-builds",
+    "sumup",
+    "google-developer-knowledge",
+    "jina-mcp-server",
+    "mcp-image",
+    "probe-p0"
+  ],
+  "codex_apps_disable": [
+    "canva",
+    "github",
+    "gmail",
+    "google_calendar",
+    "google_contacts",
+    "google_drive",
+    "linear_codex_agent"
+  ],
+  "codex_approve_tools": [
+    { "server": "memory", "tool": "search_nodes" },
+    { "server": "memory", "tool": "read_graph" },
+    { "server": "memory", "tool": "open_nodes" }
+  ],
+  "codex_keep_safe": [
+    "memory",
+    "ultrathink",
+    "code-reasoning",
+    "openaiDeveloperDocs"
+  ]
+}

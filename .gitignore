@@ -1,0 +1,5 @@
+node_modules/
+probe-results.json
+# Artefatos de sessao ficam em ~/.cross-review/ (fora deste repo)
+*.log
+*.tmp.*

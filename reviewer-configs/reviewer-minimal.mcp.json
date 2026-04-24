@@ -1,0 +1,24 @@
+{
+  "_comment": "MCP config minimo para spawn de Claude reviewer via '--strict-mcp-config --mcp-config <este-arquivo>'. Contem apenas servers de analise/leitura. Edite conforme necessario.",
+  "mcpServers": {
+    "memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/leona/AppData/Roaming/npm/node_modules/@modelcontextprotocol/server-memory/dist/index.js"]
+    },
+    "ultrathink": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/Users/leona/AppData/Roaming/npm/node_modules/@iflow-mcp/hyokunkwak-sequential-thinking-ultra/dist/index.js"]
+    },
+    "code-reasoning": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/code-reasoning/dist/src/server.js",
+        "--config-dir",
+        "C:/Users/leona/lcv-workspace/.code-reasoning"
+      ]
+    }
+  }
+}
