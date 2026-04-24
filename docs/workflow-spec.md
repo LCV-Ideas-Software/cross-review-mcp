@@ -1,16 +1,15 @@
-# Cross-Review MCP Workflow Specification v4.10
+# Cross-Review MCP Workflow Specification v4.11
 
-**Status**: v4.10 is a spec + code revision shipped integrated with code
-release v0.7.0-alpha on 2026-04-24, executing operator directive to
-land the remaining v4.9-backlog items without a new design session
-(anti-hallucination safeguards + CLI banner as authoritative attestation
-were already ratified as deferred items in session c9508617's approved
-scope). v4.10 adds §6.14 "Anti-hallucination / epistemic discipline"
-(Item D) and amends §6.11 with Item E "CLI banner as authoritative
-attestation" for cli-subscription transports when the banner is
-parseable. Predecessors: v4.9 trilateral-approved in session c9508617
-(2026-04-24, 3 rounds, 3/3 READY), code release v0.6.0-alpha at
-commit ae3df46. Predecessors: v2 (session 7d745f38);
+**Status**: v4.11 is a SPEC-ONLY revision of v4.10 (no code change, no
+version bump). Shipped 2026-04-24 as a small amendment to §6.11 closing
+the "Claude CLI stderr banner parsing" follow-up that was registered in
+v4.10 as deferred to v0.8+. The follow-up is resolved as a NEGATIVE
+empirical result: Claude CLI 2.1.119 does not emit a banner-equivalent
+on stderr. v4.11 touches NO code; the v0.7.0-alpha runtime (commit
+ae3df46 + 19974ee + 8300e0e) correctly handles the no-banner case via
+the existing §6.11 skip-only discipline. Predecessors: v4.10
+implementation-ratified with code release v0.7.0-alpha (2026-04-24);
+v4.9 trilaterally approved in session c9508617 (2026-04-24, 3/3 READY). Predecessors: v2 (session 7d745f38);
 v3 (session 806a1c4f); v4 normative absorbing v0.4.0-alpha (session
 08cd61e6); v4.1 spec-only absorbing section 6.6 (session a847f897);
 v4.2 spec-only promoting section 6.7 (session f1fdbee4); v4.3 adding
@@ -25,6 +24,32 @@ Encoding: ASCII-only with transliteration of Portuguese accents where
 they appear (see section 6.4). Peer exchange and non-user-facing
 artifacts are authored in en-US (see section 6.10), trivially
 satisfying ASCII-only without transliteration.
+
+---
+
+## 0k. Delta v4.10 -> v4.11 (executive summary)
+
+- **Section 6.11 amendment UPDATED** — Claude CLI stderr banner
+  parsing follow-up (registered in v4.10 as deferred to v0.8+) is
+  resolved NEGATIVELY. Empirical survey 2026-04-24 against Claude
+  CLI 2.1.119 with three probe variants (production-flag-tree valid
+  model, `--verbose` diagnostic, invalid-model-error path) shows the
+  CLI emits 0 bytes on stderr in every case. There is no
+  banner-equivalent to extract. The §6.11 skip-only discipline
+  applies to Claude unchanged; banner attestation remains
+  Codex-specific in practice, not just in v0.7.0-alpha. The
+  "deferred to v0.8+" follow-up is CLOSED.
+- **Section 8** gains v4.11 entry per the v4.5 preamble rule.
+
+v4.11 is spec-only. No code change. The v0.7.0-alpha runtime already
+implements the correct behavior (Claude falls through to §6.11
+`model_check_skipped` path because `cli_attested_model_raw` from
+`extractCodexAttestedModelRaw` is Codex-gated and returns null for
+Claude CLI invocations — the gate in `parsePeerOutputs` never sees a
+banner string for Claude, so the §6.11 skip path fires naturally).
+No test coverage changes needed; existing 117 smoke steps already
+exercise this path implicitly via `driveV7BannerAttestationUnit`'s
+"no banner → §6.11 skip path unchanged" assertion.
 
 ---
 
@@ -1877,10 +1902,27 @@ argument (sourced from `spawnPeer`'s `cli_attested_model_raw`):
 
 **Scope.**
 
-- v0.7.0-alpha implements banner parsing for Codex CLI only. Claude
-  CLI has no documented stderr banner format in the public CLI
-  surface; parsing is DEFERRED to v0.8+ pending an empirical format
-  survey across Claude CLI releases.
+- v0.7.0-alpha implements banner parsing for Codex CLI only.
+- **Claude CLI empirical survey (2026-04-24, v4.11 resolution):** CLI
+  version 2.1.119 was probed with three invocation variants using
+  the production flag tree (`-p --output-format text --model
+  claude-opus-4-7 --permission-mode default --strict-mcp-config
+  --mcp-config <reviewer-minimal.mcp.json> --disallowed-tools
+  Write,Edit,NotebookEdit`): (1) valid pin with short prompt; (2)
+  valid pin with `--verbose`; (3) invalid pin
+  (`claude-non-existent-99`) forcing an error path. In ALL three
+  cases, Claude CLI emitted exactly 0 bytes to stderr — model-identity
+  signals (valid self-report, invalid-pin error message) appear only
+  on stdout, not on a banner-like stderr channel. Conclusion:
+  Claude CLI offers NO banner-equivalent attestation in this CLI
+  generation. Claude falls through to §6.11 `model_check_skipped`
+  discipline — the same path it took under v0.6.0-alpha (§6.11
+  original) and v0.7.0-alpha (§6.11 amendment without Claude banner
+  support). The "deferred to v0.8+" follow-up is CLOSED as negative
+  result; no future release needs to revisit it unless a future
+  Claude CLI version introduces a banner channel, in which case the
+  same Codex-style extraction pattern can be copied into a
+  `extractClaudeAttestedModelRaw` sibling.
 - oauth-personal transports (Gemini via v1internal) have no banner
   equivalent and remain on §6.11 skip discipline regardless of what
   `cliAttestedModel` arg is passed.
@@ -1920,7 +1962,7 @@ v4.9 skipped the check entirely for cli-subscription).
 
 ---
 
-## 8. Criterios de aceitacao (atualizados em v4.10)
+## 8. Criterios de aceitacao (atualizados em v4.11)
 
 **Regra editorial normativa (NOVO em v4.5):** Entradas nesta secao que usem
 linguagem de aprovacao bilateral, incluindo "Spec vX.Y foi aprovada
@@ -2036,6 +2078,21 @@ inconsistencia.
   stack (ultrathink + code-reasoning + spawnPeer) operated end-to-end
   without any silent fallback under the billing-veto constraint of
   CLI-only peer transport (`feedback_subscription_over_api_billing`).
+- Spec v4.11 is a **spec-only** revision of v4.10 shipped on
+  2026-04-24 resolving the "Claude CLI stderr banner parsing"
+  follow-up registered in v4.10 as deferred to v0.8+. Resolution is
+  NEGATIVE: empirical survey against Claude CLI 2.1.119 across three
+  probe variants (valid pin + `--verbose` diagnostic + invalid-pin
+  error path) shows 0 bytes on stderr in every case. The §6.11
+  `model_check_skipped` discipline is the correct handling and is
+  already live in v0.7.0-alpha runtime without modification. v4.11
+  touches NO code and NO test coverage; `parsePeerOutputs` in
+  v0.7.0-alpha already falls through correctly when
+  `cliAttestedModel` is null (Claude's case). No version bump.
+  Authored in en-US per section 6.10. The "closed as negative
+  result" status is explicit — future Claude CLI versions may
+  introduce a banner channel, in which case a new spec revision and
+  code addition can reopen the item. No need to revisit otherwise.
 - Spec v4.10 is an **implementation-ratified** revision of v4.9,
   executing the two deferred scope items already approved in session
   c9508617's v4.9 design convergence: Item D (anti-hallucination /
