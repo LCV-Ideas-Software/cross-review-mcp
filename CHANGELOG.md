@@ -10,8 +10,23 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ## [Unreleased]
 
-### Adicionado
-- (em aberto — v0.8+ planejada: Claude CLI stderr banner parsing empírica; README hardening para v1.0 pre-cut; outras follow-ups registradas em `docs/workflow-spec.md` §8.)
+### Adicionado (v0.9.0-alpha pre-cut for v1.0 stable public GitHub)
+- **Public-facing documentation suite (pre-cut):**
+  - `README.md` reescrito em en-US como README primário público (18.6KB). Estrutura: What it does / Topology / Peers and transport / Install / Register with each peer / Running a session / Anti-hallucination discipline / Observe the session / Protocol contract (pointer to `docs/workflow-spec.md` §§1-8) / Architecture / Exposed tools (7 total) / Development / Contributing / Security / License / Acknowledgements / Links. Versão-table matrix cobrindo v0.5.0-alpha → v0.7.0-alpha (spec v4.7 → v4.11). Transport descriptor table (cli-subscription / oauth-personal / api-key). Fluxo de sessão passo-a-passo. Seção específica sobre anti-hallucination com os campos opcionais `confidence` e `evidence_sources` documentados.
+  - `README.pt-BR.md` preserva o conteúdo original em pt-BR (13.4KB) que documentava o desenvolvimento iterativo desde v0.3.0-alpha (Commit 1 hard gate, probe iterations, Commit 2 handoff). Mantido como arquivo histórico + referência para o operator.
+  - `CONTRIBUTING.md` (7.4KB) define três classes de contribuição:
+    - Class 1 trivial (single maintainer review + gates).
+    - Class 2 additive + deferred-scope implementation (cita seção do spec sendo implementada).
+    - Class 3 normative changes — **cross-review session trilateral obrigatória antes do merge**, citando session UUID e trail de aprovação.
+    - Gates obrigatórios: `npm test` (117+ smoke steps) + `npm run check-models`.
+    - Non-negotiables: tri-tool stack mandatório para Class 3, top-level models only, CLI transport (not SDK) per billing-veto, strict-only convergence, no fabrication (spec §6.14), ASCII-only on disk + en-US for peer-exchange artifacts, no secrets in repo.
+  - `CODE_OF_CONDUCT.md` (2KB) adota Contributor Covenant 2.1 via link canônico (não inlining) + reporting contact (`alert@lcvmail.com`, mesmo canal de SECURITY.md) + nota específica sobre a discordância estruturada do protocolo (peers respondendo `NOT_READY` com objeções técnicas é comportamento esperado e não é concern de CoC).
+- **Full-history secrets scan** concluído 2026-04-24 contra 10 padrões comuns (OpenAI sk-, Google AIza, GitHub gh[pousr]_, Anthropic sk-ant-, Cloudflare cfut_/CF_API_TOKEN, SumUp sup_sk_, JWT, Bearer, PEM blocks, env-style *_TOKEN/*_SECRET/*_PRIVATE_KEY/*_API_KEY). Resultado: **CLEAN** — todos os pattern matches são test fixtures do R14 redaction corpus em `scripts/functional-smoke.js` por design (designados a exercitar `driveSessionStoreUnit`'s redaction assertions). Nenhum secret real na história do git.
+
+### Pendente de decisão do operador (v0.9.0-alpha pre-cut)
+- **License model revisit.** Memória `project_cross_review_mcp_open_source_plan.md` recomenda Apache-2.0 para MCP ecosystem compatibility, while `LICENSE` atual é AGPLv3 (workspace default). Esta é uma decisão operator-personal e legalmente consequential — não pode ser feita sem input explícito. Será resolvida num PR subsequent quando o operator decidir; README.md atual documenta que "license model may be revisited before the v1.0 public cut".
+
+---
 
 ---
 

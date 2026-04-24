@@ -1,331 +1,330 @@
 # cross-review-mcp
 
-MCP server orquestrando revisao cruzada entre Claude Code e ChatGPT Codex.
+> MCP server orchestrating cross-review between Claude Code, ChatGPT Codex, and Gemini CLI.
 
-Nota editorial: este arquivo e consumido pelo peer em sessoes de cross-review.
-Por forca da regra canonica 6.4 da workflow-spec ("artifacts escritos para
-consumo do peer devem ser ASCII-only com transliteracao de acentos do
-portugues"), todo o conteudo abaixo e ASCII 7-bit puro.
+[![status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
+[![spec: v4.11](https://img.shields.io/badge/spec-v4.11-informational.svg)](./docs/workflow-spec.md)
+[![MCP](https://img.shields.io/badge/MCP-stdio-blue.svg)](https://modelcontextprotocol.io/)
 
-## Contrato de resposta do peer (desde 0.3.0-alpha)
+**Status.** Pre-v1.0 alpha. Current release: **v0.7.0-alpha** runtime paired with **spec v4.11** (spec-only revision). See [CHANGELOG.md](./CHANGELOG.md) for the release history. **Breaking changes are possible between alpha releases.** A v1.0 stable release with frozen protocol contract is planned once the v0.9.0-alpha pre-cut items land.
 
-O peer DEVE finalizar sua resposta com status parseavel. Formatos aceitos,
-em ordem de preferencia:
+The version history at a glance:
 
-1. **Bloco estruturado (preferido)**, com o closing tag como TAIL da resposta
-   (qualquer whitespace trailing e ignorado):
-   ```
-   <cross_review_status>{"status":"READY"}</cross_review_status>
-   ```
-   Valores validos de `status`: `READY` | `NOT_READY` | `NEEDS_EVIDENCE`.
-   Payload JSON parsed com `JSON.parse`; aceita multi-linha entre as tags,
-   desde que o closing tag seja a ultima sequencia nao-branca do texto.
-
-2. **Fallback legacy (backwards-compat)**: ULTIMA linha nao-vazia no formato
-   EXATO (case-sensitive):
-   ```
-   STATUS: READY
-   ```
-   (ou `NOT_READY` / `NEEDS_EVIDENCE`). Regex canonica:
-   `^STATUS: (READY|NOT_READY|NEEDS_EVIDENCE)$` aplicada sobre a ultima linha
-   apos trim.
-
-O parser inspeciona APENAS o tail da resposta. Mencoes de `STATUS: X` ou de
-`</cross_review_status>` dentro da prosa anterior NAO disparam falso positivo.
-
-Se o tail da resposta terminar com `</cross_review_status>` mas o JSON
-interno for invalido, ou o status estiver fora do enum
-`{READY, NOT_READY, NEEDS_EVIDENCE}`, o parser retorna status=null (nao cai
-no fallback regex, porque a ultima linha nao-vazia ja e o closing tag).
-
-Quando o parser identifica status, expoe ao caller o campo `status_source`
-(`structured` | `regex` | `null`) para auditoria. `peer_structured` carrega o
-objeto JSON parseado apenas quando o bloco estruturado venceu; nos demais
-casos, `null`.
-
-### Semantica dos estados
-
-- **READY**: peer nao tem achado material; concorda com o parecer do caller
-  (ou declaracao explicita de convergencia).
-- **NOT_READY**: peer tem achado tecnico, objecao, ou aplicou mudancas que
-  precisam de nova rodada. E tambem o estado correto para caller sem
-  evidencia dinamica (emitir NOT_READY + bloco CALLER_REQUEST conforme
-  workflow-spec 3.3).
-- **NEEDS_EVIDENCE**: peer nao consegue concluir sem evidencia dinamica que
-  nao foi anexada. Caller deve, na rodada seguinte, rodar os comandos
-  solicitados via `CALLER_REQUEST` (ver workflow-spec 3.3) e anexar output
-  bruto. Tratar como bloqueante, mas semanticamente distinto de `NOT_READY`:
-  nao e objecao tecnica, e pedido de prova.
-
-Convergencia bilateral exige `caller_status === 'READY' && peer_status ===
-'READY'` na mesma rodada. `NEEDS_EVIDENCE` nunca converge. `caller_status`
-e restrito a `READY|NOT_READY` (a assimetria e intencional per
-workflow-spec 3.3: caller sem evidencia usa NOT_READY + CALLER_REQUEST).
-
-## Status -- Commit 1 (hard gate de isolation)
-
-**Veredito arquitetural:** design do spawn do reviewer **aprovado** pela
-evidencia cruzada. Nao aprovado pelo probe local por falha de metodologia
-(ver abaixo).
-
-### O que o design aprovado diz
-
-Spawn do Codex reviewer:
-
-```
-codex -a never -s read-only exec
-  --skip-git-repo-check
-  -c mcp_servers.<mcp-externo-x>.enabled=false   (para cada excluido)
-  -c apps.<app-id>.enabled=false                  (para cada conector OpenAI-curated)
-  -c mcp_servers.<server>.tools.<tool>.approval_mode=approve   (para cada tool read-only essencial)
-  -
-```
-
-**Evidencia que sustenta:**
-
-- `apps.<id>.enabled=false` e `mcp_servers.<x>.enabled=false` sao namespaces
-  separados. Um nao interfere no outro. (Codex validou live em 0.124.0.)
-- `approval_mode=approve` com chave
-  `mcp_servers.<server>.tools.<tool>.approval_mode` libera a tool sob
-  `-a never -s read-only`. Codex validou em 0.124.0:
-  `mcp: memory/search_nodes (completed)`.
-- Tool name em underscore (`search_nodes`) esta correto;
-  `sequential-thinking-ultra` existe com dash no `config.toml` do usuario
-  porque e o nome canonico que aquele server especifico declara.
-- Values documentados de `approval_mode`: `auto | prompt | approve`.
-- `-a on-failure` esta deprecated; evitar.
-
-### O que o probe local mede errado
-
-O probe atual em `scripts/probe-reviewer-isolation.js` pede ao agente que
-"invoque a tool memory.search_nodes". Em 0.124.0 o agente, quando nao ve a
-tool diretamente no catalogo narrado, tenta invocar via shell subprocess
-(`codex mcp call memory search_nodes`), o que e bloqueado pelo sandbox
-`-s read-only`. Resultado: `AGENT_DID_NOT_ATTEMPT_CALL` no verdict, apesar
-da tool estar dispatchable.
-
-Isto e **falha da metodologia do probe**, nao falha do design. Narracao do
-agente != capacidade real do dispatcher.
-
-### Proximo passo do probe (tarefa residual, nao-bloqueante)
-
-Refatorar o probe para um formato que prove capacidade independente da
-narracao:
-
-- Opcao A: script Node que abre conexao MCP stdio direta com o server
-  `memory` (via `@modelcontextprotocol/sdk`) e invoca `search_nodes` sem
-  passar pelo agente. Observacao: o subcomando `codex mcp call` **nao
-  existe** no `codex-cli 0.124.0` (apenas `list/get/add/remove/login/
-  logout/help`), entao esse caminho precisa ser implementado em Node, nao
-  via wrapper CLI.
-- Opcao B: criar um MCP tool no proprio server cross-review-mcp que chama
-  `memory.search_nodes` internamente e reporta sucesso -- testa o
-  dispatcher a partir de outro MCP.
-- Opcao C: aceitar o parecer cruzado como evidencia suficiente (Codex ja
-  validou live) e seguir para Commit 2.
-
-### Commit 2 -- implementacao do server MCP propriamente dito
-
-**Desbloqueado.** O design do spawn tem evidencia suficiente para comecar.
-O probe refinado pode rodar em paralelo.
-
-## Estrutura do projeto
-
-```
-cross-review-mcp/
-|-- package.json
-|-- reviewer-configs/
-|   |-- peer-exclusions.json         # disables e approve_tools do Codex reviewer
-|   |-- reviewer-minimal.mcp.json    # MCP config para --strict-mcp-config do Claude reviewer
-|-- scripts/
-|   |-- probe-reviewer-isolation.js  # hard gate de isolamento (Commit 1)
-|   |-- functional-smoke.js          # smoke JSON-RPC stdio (Commit 3)
-|-- src/
-|   |-- server.js                    # entry MCP, 5 tools
-|   |-- lib/
-|       |-- session-store.js         # state em ~/.cross-review/; atomic I/O + lock
-|       |-- peer-spawn.js            # spawn contido do peer (Codex / Claude)
-|       |-- status-parser.js         # parser STATUS: READY / NOT_READY / NEEDS_EVIDENCE + bloco estruturado
-|-- probe-results.json                # ultima execucao do probe de isolamento
-|-- README.md                         # este arquivo
-```
-
-## Config canonico derivado do spike
-
-### Para o usuario (config persistente do Codex)
-
-`~/.codex/config.toml`:
-
-```toml
-[mcp_servers.cross-review]
-command = "node"
-args = ["C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js"]
-env = { CROSS_REVIEW_CALLER = "codex" }
-tool_timeout_sec = 1800
-```
-
-Approval mode por-tool (se o usuario quiser que Claude chame esses tools ao
-rodar em modo `-a never` via pipeline do server):
-
-```toml
-[mcp_servers.cross-review.tools.ask_peer]
-approval_mode = "approve"
-```
-
-### No spawn do peer (dentro do ask_peer)
-
-Baseline definitivo para o reviewer Codex:
-
-```
-codex -a never -s read-only exec --skip-git-repo-check
-  # MCPs externos destrutivos
-  -c mcp_servers.github.enabled=false
-  -c mcp_servers.fetch.enabled=false
-  -c mcp_servers.puppeteer.enabled=false
-  -c mcp_servers.cloudflare-api.enabled=false
-  -c mcp_servers.cloudflare-bindings.enabled=false
-  -c mcp_servers.cloudflare-builds.enabled=false
-  -c mcp_servers.sumup.enabled=false
-  -c mcp_servers.google-developer-knowledge.enabled=false
-  -c mcp_servers.jina-mcp-server.enabled=false
-  -c mcp_servers.mcp-image.enabled=false
-  # `-c mcp_servers.cross-review.enabled=false` -- adicionar SE E SOMENTE SE o server
-  # ja existir em ~/.codex/config.toml. Override sobre server inexistente produz
-  # "invalid transport" porque Codex tenta construir uma entrada incompleta.
-  # No spawn real do peer, essa linha deve ser gerada condicionalmente (ver
-  # intersecao com CONFIGURED_CODEX_SERVERS em scripts/probe-reviewer-isolation.js).
-  # Apps/conectores OpenAI-curated
-  -c apps.canva.enabled=false
-  -c apps.github.enabled=false
-  -c apps.gmail.enabled=false
-  -c apps.google_calendar.enabled=false
-  -c apps.google_contacts.enabled=false
-  -c apps.google_drive.enabled=false
-  -c apps.linear_codex_agent.enabled=false
-  # Approvals para tools read-only essenciais do reviewer
-  -c mcp_servers.memory.tools.search_nodes.approval_mode=approve
-  -c mcp_servers.memory.tools.read_graph.approval_mode=approve
-  -c mcp_servers.memory.tools.open_nodes.approval_mode=approve
-  -
-```
-
-### Para Claude reviewer
-
-```
-claude -p --output-format text
-  --permission-mode default
-  --strict-mcp-config --mcp-config C:/Users/leona/lcv-workspace/cross-review-mcp/reviewer-configs/reviewer-minimal.mcp.json
-  --disallowed-tools "Write,Edit,NotebookEdit"
-```
-
-## Historico das iteracoes do hard gate
-
-| Iteracao | Mudanca | Verdict observado | Parecer do Codex |
-|---|---|---|---|
-| 1 | Baseline: `-a never -s read-only` so com `mcp_servers.*.enabled=false` | CONTAINED_MODE_FAILED (memory auto-denied) + CODEX_APPS_LEAK (~130 tools via plugins) | F1 + F2 concretos |
-| 2 | + `apps.*.enabled=false` + `approval_mode=approve` + aggregator fix | INCONCLUSIVE (agente reportou "None directly visible") | F2 fechado; F1 agora ambiguo |
-| 3 | Probe reformulado pedindo invocacao explicita | AGENT_DID_NOT_ATTEMPT_CALL (agente caiu no shell fallback) | design confirmado; probe mede errado |
-
-Design aceito cruzadamente; Commit 2 pode iniciar.
+| Release | Spec | Scope |
+|---|---|---|
+| `v0.5.0-alpha` | v4.7 + v4.8 | Triangular topology + tier resilience + transient failure handling |
+| `v0.5.0-alpha.1` | v4.8 | Gemini pin bumped to `gemini-3.1-pro-preview` under Google One AI Ultra |
+| `v0.6.0-alpha` | v4.9 | Transport-aware model-check bypass + strict-only convergence with persisted snapshot + rate-limit class |
+| `v0.7.0-alpha` | v4.10 | Anti-hallucination / epistemic discipline + CLI banner as authoritative attestation (Codex-specific) |
+| `v0.7.0-alpha` | v4.11 | Spec-only: Claude CLI banner parsing follow-up CLOSED as negative empirical result |
 
 ---
 
-## Install + Uso
+## What it does
 
-### Pre-requisitos
-- Node.js 18+
-- `claude` (Claude Code CLI) e `codex` (Codex CLI) instalados, autenticados, no PATH
-- `cd C:/Users/leona/lcv-workspace/cross-review-mcp && npm install` (instala `@modelcontextprotocol/sdk`)
+`cross-review-mcp` is an **MCP stdio server** that orchestrates **structured review sessions** between three top-tier AI peers:
 
-### Registrar no Claude Code
+- **Claude Code** (Anthropic Claude Pro/Max subscription, model `claude-opus-4-7`)
+- **ChatGPT Codex** (ChatGPT Pro subscription, model `gpt-5.5` + `reasoning_effort=xhigh`)
+- **Gemini CLI** (Google One AI Ultra subscription, model `gemini-3.1-pro-preview` via oauth-personal)
 
-```powershell
-claude mcp add -e CROSS_REVIEW_CALLER=claude -s user cross-review -- node C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js
+Any one of the three serves as the **caller**; the other two (or one, for bilateral sessions) serve as **peers**. The server spawns peers under contained CLI invocations, collects their structured responses, and reports convergence via a unanimity predicate:
+
+> **converged iff caller_status === 'READY' AND every responded peer has peer_status === 'READY'**
+
+This is the canonical defense against single-model hallucinations: if one peer confabulates, the other two catch it. The protocol codifies the defense rather than rely on emergent behavior.
+
+---
+
+## Topology
+
+The server supports two session shapes:
+
+- **Bilateral** (`ask_peer`): legacy `claude<->codex` only. Gemini callers must use `ask_peers`.
+- **Trilateral / N-ary** (`ask_peers`): all complements spawn in parallel via `Promise.allSettled`. Per-peer identity is explicit (R12 invariant: never infer agent from array index). Failed spawns enter `meta.failed_attempts[]` (redacted per R14) and are excluded from the convergence denominator.
+
+Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No "loose mode" toggle. Round state is snapshotted at append time into `round.convergence_snapshot` with `spec_version: 'v4.9'` — audit immutability under future predicate evolution.
+
+---
+
+## Peers and transport
+
+All three peers are spawned via their **CLI** (not SDK). This is a deliberate billing-coverage choice: each CLI is covered by a subscription the operator already pays for. Migrating to the official SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`) would switch billing to per-token API metering, which is vetoed.
+
+**Transport descriptor** returned by `spawnPeer` / `probeAgent`:
+
+| agent  | auth              | endpoint_class                  | Notes |
+|--------|-------------------|---------------------------------|-------|
+| codex  | `cli-subscription`  | `chatgpt-pro-backend`             | Stderr banner `model: <id>` parsed for authoritative attestation (spec v4.10 §6.11 amendment). |
+| claude | `cli-subscription`  | `claude-pro-backend`              | No stderr banner in CLI 2.1.119 (empirically surveyed 2026-04-24, spec v4.11). Falls back to `model_check_skipped` path. |
+| gemini | `oauth-personal`    | `v1internal` (cloudcode-pa)       | No authoritative `modelVersion` header — §6.11 skip applies. Ultra tier unlocks 3.x preview models. |
+| gemini | `api-key`           | `generativelanguage-v1beta`       | Defensive-coded but not reachable under the current billing veto. |
+
+**Item A (spec v4.9 §6.11).** For non-api-key transports the model's text self-report is unreliable across all three providers; `parsePeerOutputs` gates `classifyModelMatch` on `authoritativeModelAttestationAvailable(descriptor)` (equivalent to `auth === 'api-key'`). When false, the check is SKIPPED with an audit record (`model_check_skipped`) instead of flagging false-positive `silent_model_downgrade`.
+
+**Item E (spec v4.10 §6.11 amendment).** For `cli-subscription` transports with a parseable CLI stderr banner, the banner is promoted from forensic-only to AUTHORITATIVE attestation. Banner MATCH → `cli_banner_attested: true` audit elevation. Banner MISMATCH → hard gate: `model_failure_class: 'cli_banner_attestation_mismatch'` + `protocol_violation: true`. Codex-specific in practice (spec v4.11 survey closed the Claude follow-up as negative).
+
+---
+
+## Install
+
+### Prerequisites
+
+- **Node.js 18+**
+- The three peer CLIs installed, authenticated, and on PATH:
+  - `claude` — Claude Code CLI (`npm install -g @anthropic-ai/claude-code` or equivalent)
+  - `codex` — Codex CLI (requires ChatGPT Pro subscription)
+  - `gemini` — Gemini CLI (requires Google account; Ultra tier recommended for 3.x preview access)
+- Active subscriptions covering each CLI (see [Peers and transport](#peers-and-transport)).
+
+### Clone and install
+
+```bash
+git clone https://github.com/lcv-leo/cross-review-mcp.git
+cd cross-review-mcp
+npm install
 ```
 
-Verificar: `claude mcp get cross-review` deve mostrar `Status: Connected`.
+The only runtime dependency is `@modelcontextprotocol/sdk`.
 
-### Registrar no ChatGPT Codex
+### Gate verification
 
-Adicionar ao final de `~/.codex/config.toml`:
+Before using the server or after any edit, confirm both gates pass:
+
+```bash
+npm test             # 117 smoke steps (unit + end-to-end stdio JSON-RPC)
+npm run check-models # model-drift audit against docs/top-models.json
+```
+
+Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema evolution, spawn contention, probe stubs, session-store atomicity, redaction, N-ary convergence, model-check MATCH/DOWNGRADE/MISSING, rate-limit detection, banner attestation, anti-hallucination confidence/evidence_sources field parsing, and operator escalation end-to-end.
+
+---
+
+## Register with each peer
+
+Each peer registers the MCP server with its own `CROSS_REVIEW_CALLER` env var. The server uses that var to determine identity at startup and compute `PEERS = VALID_AGENTS.filter(a => a !== CALLER)`.
+
+### Claude Code
+
+```bash
+claude mcp add -e CROSS_REVIEW_CALLER=claude -s user cross-review -- node /absolute/path/to/cross-review-mcp/src/server.js
+```
+
+Verify: `claude mcp get cross-review` should show `Status: Connected`.
+
+### ChatGPT Codex
+
+Add to `~/.codex/config.toml`:
 
 ```toml
 [mcp_servers.cross-review]
 command = "node"
-args = ["C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js"]
+args = ["/absolute/path/to/cross-review-mcp/src/server.js"]
 env = { CROSS_REVIEW_CALLER = "codex" }
 tool_timeout_sec = 1800
 ```
 
-Verificar: `codex mcp get cross-review` deve mostrar
-`enabled: true, transport: stdio`.
+Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdio`.
 
-### Recarregar as extensoes VS Code
-VS Code -> Command Palette -> "Developer: Reload Window", para cada janela
-com Claude Code ou Codex ativos.
+### Gemini CLI
 
-### Prompt template para sessao
+Add to `~/.gemini/settings.json` under `mcpServers`:
 
-Colar no chat de QUALQUER uma das duas extensoes (o server detecta
-identidade pelo env var):
-
-```
-Use o cross-review MCP para revisar <ARTEFATO>.
-
-Protocolo:
-1. Chame session_init com task=<descricao> e artifacts=[<paths absolutos>]
-   -> salve session_id.
-2. Leia os artefatos indicados. Produza seu parecer tecnico rigoroso com
-   severidades (critico/alto/medio/baixo) e verdict.
-3. Chame ask_peer passando:
-   - session_id
-   - prompt: seu parecer completo + esta instrucao ao peer: "Audite meu
-     parecer contra os arquivos em disco. Classifique achados por
-     severidade. Termine sua resposta com o bloco estruturado canonico como
-     tail (ultima sequencia nao-branca):
-     <cross_review_status>{\"status\":\"READY\"}</cross_review_status>
-     (se nenhum achado material),
-     <cross_review_status>{\"status\":\"NOT_READY\"}</cross_review_status>
-     (se ha achado material), ou
-     <cross_review_status>{\"status\":\"NEEDS_EVIDENCE\"}</cross_review_status>
-     (se voce nao consegue concluir sem evidencia dinamica -- comandos a
-     rodar, outputs a observar). Fallback legacy aceito: uma unica linha
-     final 'STATUS: READY', 'STATUS: NOT_READY', ou 'STATUS: NEEDS_EVIDENCE'
-     case-sensitive."
-   - caller_status: 'NOT_READY' na primeira rodada sempre
-4. Examine o peer_status retornado e o conteudo da resposta do peer:
-   - Se peer disse NOT_READY: incorpore achados validos, refute invalidos
-     com evidencia, volte ao passo 3 com caller_status='NOT_READY'.
-   - Se peer disse NEEDS_EVIDENCE: leia o bloco CALLER_REQUEST, rode os
-     comandos solicitados, anexe output bruto + fingerprint do artefato,
-     volte ao passo 3 com caller_status='NOT_READY'.
-   - Se peer disse READY e voce tambem concorda que nada mais falta:
-     proxima chamada de ask_peer com caller_status='READY' para travar a
-     convergencia.
-5. Chame session_check_convergence apos cada rodada.
-   - Se converged=true: chame session_finalize(outcome='converged') e
-     apresente o parecer consolidado.
-   - Se converged=false: continue iterando.
-6. Safety cap: maximo 10 rodadas. Ao atingir,
-   session_finalize(outcome='max-rounds').
+```json
+{
+  "mcpServers": {
+    "cross-review-mcp": {
+      "command": "node",
+      "args": ["/absolute/path/to/cross-review-mcp/src/server.js"],
+      "env": { "CROSS_REVIEW_CALLER": "gemini" }
+    }
+  }
+}
 ```
 
-### Observar a sessao em disco
+Verify: invoke `gemini` and confirm `cross-review-mcp` appears in the MCP list.
 
-Estado em tempo real: `~/.cross-review/<session-id>/`
-- `meta.json` -- indice completo dos turns, caller_status, peer_status,
-  peer_structured, status_source, duration_ms
-- `round-NN-prompt.md` -- prompt enviado ao peer
-- `round-NN-peer-<agent>.md` -- resposta crua do peer
+### Reload clients
 
-Util para debug quando a sessao desvia do esperado.
+After registering, reload each host (VS Code extensions: Command Palette → "Developer: Reload Window"; Gemini CLI: restart the REPL). For some changes a full application exit+relaunch is required to pick up PATH env changes (Reload Window alone is insufficient).
 
-### Desinstalar
+---
 
-```powershell
-claude mcp remove cross-review -s user
-codex mcp remove cross-review
+## Running a session
+
+A high-level session from the caller's perspective:
+
+1. **Initialize.** Call `session_init(task, artifacts[])`. The server runs a parallel capability probe (target 20-25s, hard ceiling 30s) and persists `meta.capability_snapshot` with per-agent tier (`ok` | `offline`).
+2. **Round 1: caller drafts.** Caller forms its parecer (opinion/analysis). Caller then calls `ask_peers(session_id, prompt, caller_status: 'NOT_READY')` sending the parecer to all peers in parallel. The server attaches a **tail directive** to the prompt requiring the peer to close with two structured blocks:
+   - `<cross_review_peer_model>{"model_id":"..."}</cross_review_peer_model>`
+   - `<cross_review_status>{"status":"READY|NOT_READY|NEEDS_EVIDENCE", ...}</cross_review_status>`
+   The status block MUST be the last non-empty token of the response.
+3. **Parse and examine.** The server parses each peer's stdout via two sibling parsers (`parsePeerResponse` + `parseDeclaredModel`) and attaches `transport_descriptor` + `cli_attested_model_raw` metadata. The response envelope surfaces `peers[]` with per-peer `peer_status`, `peer_structured` (clean JSON payload), `status_source` (`structured` | `regex` | `null`), `parser_warnings[]`, `model_check_skipped` (when applicable), `protocol_violation`, plus the round-level `rate_limited_peers[]` array.
+4. **Iterate.** If any peer is `NOT_READY` or `NEEDS_EVIDENCE`, address their findings (incorporate valid ones, refute invalid with evidence, run commands requested via `caller_requests[]`) and repeat step 2.
+5. **Converge.** When caller is satisfied AND all peers declared `READY`, call `ask_peers` with `caller_status: 'READY'`. Call `session_check_convergence(session_id)` to confirm `converged === true`. Finalize with `session_finalize(session_id, outcome: 'converged')`.
+6. **Safety cap.** Abort after a reasonable max-rounds (commonly 10) with `session_finalize(session_id, outcome: 'max-rounds')`.
+
+### Anti-hallucination discipline (spec v4.10 §6.14)
+
+When any participant lacks verified information to complete a claim:
+
+1. **Do not invent.** No plausible-sounding fabrication.
+2. **Exhaustively search first.** Re-read artifacts, re-query tools, consult primary sources (docs, CLI `--help`, live probes).
+3. **Emit `NEEDS_EVIDENCE`** with concrete `caller_requests` when a peer exchange can resolve it.
+4. **Escalate to the operator last** via the `escalate_to_operator(session_id, question, context)` tool when peer exchange alone cannot close the gap. This persists under `meta.escalations[]`; the caller orchestrator surfaces the question via chat.
+
+Optional structured fields to self-declare epistemic state:
+
+- `confidence: 'verified' | 'inferred' | 'unknown'` — `unknown` MUST pair with `status: 'NEEDS_EVIDENCE'`.
+- `evidence_sources: ["file:path.ext", "tool:name", "url:https://...", "cli:command --help"]` — concrete sources consulted. `verified` should include at least one entry.
+
+---
+
+## Observe the session
+
+Session state is live on disk under `~/.cross-review/<session-id>/`:
+
+- `meta.json` — full index: rounds, caller_status, peer statuses, peer_structured, status_source, duration_ms, `capability_snapshot`, `failed_attempts` (R14-redacted), `escalations`, `convergence_snapshot` per round.
+- `round-NN-prompt.md` — prompt sent to peers for that round.
+- `round-NN-peer-<agent>.md` — raw response from each peer.
+
+Useful for debugging when a session diverges from expectations.
+
+---
+
+## Protocol contract
+
+The full normative spec lives at **[`docs/workflow-spec.md`](./docs/workflow-spec.md)** (v4.11 at the time of writing; ~1800 lines; en-US per §6.10).
+
+Quick reference — section map:
+
+| Section | Topic |
+|---|---|
+| 1 | Session-opening contracts (artifacts, transcript, scope clause) |
+| 2 | STATUS protocol (format, positional anchor, structured block, triangular topology, dynamic role assignment) |
+| 3 | Tooling parity + CALLER_REQUEST operational valve |
+| 4 | FOLLOW-UP vs. blocker |
+| 5 | Noise (display names, parser warnings) |
+| 6.3 | NEEDS_EVIDENCE state + N-ary convergence |
+| 6.6 | Overflow / truncation (transcript, ledger, meta.json) |
+| 6.9 | Mandatory companion tooling (tri-tool: ultrathink + code-reasoning + cross-review) |
+| 6.9.2 | Top-level model pins per provider (no silent fallback) |
+| 6.9.3 | Subscription tier resilience + transient failure handling |
+| **6.11** | **Transport-aware model-check discipline** + CLI banner as authoritative attestation |
+| **6.12** | **Strict-only convergence + persisted snapshot** |
+| **6.13** | **Rate-limit class distinct from silent-downgrade** |
+| **6.14** | **Anti-hallucination / epistemic discipline** |
+| 7 | Summary of conventions (quick-reference table) |
+| 8 | Acceptance criteria (session-by-session approval trail) |
+
+---
+
+## Architecture
+
+```
+cross-review-mcp/
+|-- src/
+|   |-- server.js                    MCP stdio entrypoint; 7 tools
+|   |-- lib/
+|       |-- session-store.js         ~/.cross-review/ state; atomic write + lock
+|       |-- peer-spawn.js            Contained CLI spawn for each peer
+|       |-- status-parser.js         STATUS + v4/v4.10 structured block parser
+|       |-- model-parser.js          Sibling peer-model block parser (silent-downgrade defense)
+|-- scripts/
+|   |-- functional-smoke.js          JSON-RPC stdio smoke (117 steps)
+|   |-- audit-model-drift.js         Advisory drift audit (check-models)
+|   |-- probe-reviewer-isolation.js  Legacy Commit-1 hard gate; retained for regression
+|-- docs/
+|   |-- workflow-spec.md             Normative spec v4.11
+|   |-- top-models.json              Schema v2 runtime + advisory table
+|-- reviewer-configs/
+|   |-- peer-exclusions.json         Codex MCP/apps disable list + approve_tools
+|   |-- reviewer-minimal.mcp.json    Minimal --mcp-config for Claude peer spawn
+|-- AGENTS.md                        Contract for agents operating inside this repo
+|-- CHANGELOG.md                     Release history (pt-BR; operator-facing)
+|-- SECURITY.md                      Responsible disclosure + controls
+|-- LICENSE                          AGPLv3
+|-- README.md                        This file (en-US; public-facing)
+|-- README.pt-BR.md                  Historical pt-BR README (operator preservation)
 ```
 
-(ou remover o bloco `[mcp_servers.cross-review]` manualmente de
-`~/.codex/config.toml`)
+### Exposed tools (7 total, MCP stdio)
+
+| Tool | Since | Purpose |
+|---|---|---|
+| `session_init(task, artifacts)` | v0.3.0-alpha | Create session dir; run capability probe; persist `capability_snapshot`. |
+| `session_read(session_id)` | v0.3.0-alpha | Return full `meta.json` (rounds, snapshot, escalations, failed_attempts). |
+| `session_check_convergence(session_id)` | v0.3.0-alpha | Read the persisted `convergence_snapshot` (or compute for legacy rounds). |
+| `session_finalize(session_id, outcome)` | v0.3.0-alpha | Seal with `converged` / `aborted` / `max-rounds`. |
+| `ask_peer(session_id, prompt, caller_status)` | v0.3.0-alpha | Bilateral `claude<->codex` only. |
+| `ask_peers(session_id, prompt, caller_status)` | v0.5.0-alpha | N-ary parallel spawn; canonical for triangular. |
+| `escalate_to_operator(session_id, question, context)` | v0.7.0-alpha | Record anti-hallucination escalation under `meta.escalations[]`. |
+
+---
+
+## Development
+
+### Make a change, verify gates
+
+```bash
+npm test              # 117 smoke steps must stay GREEN
+npm run check-models  # advisory drift audit; must stay clean
+```
+
+Edits to `src/lib/peer-spawn.js` that change model pins also require updating `docs/top-models.json` in the same commit (the `check-models` gate enforces this).
+
+### Run a single smoke driver
+
+The smoke script is organized into small drivers; you can extract one to debug by calling it directly. See `scripts/functional-smoke.js` around the `runAll()` function.
+
+### Test-import guard
+
+`src/server.js` honors `CROSS_REVIEW_TEST_IMPORT=1` to skip `main()` on load + relax `CROSS_REVIEW_CALLER` validation. This lets unit drivers `require('../src/server.js')` for pure-function tests. Spawned-server tests must explicitly `delete childEnv.CROSS_REVIEW_TEST_IMPORT` to avoid env leak into subprocesses.
+
+### Spec-versioning convention
+
+Code releases use SemVer (`0.7.0-alpha`, `0.8.0-alpha`, …). Spec revisions use their own `vN.M` sequence (`v4.7`, `v4.8`, `v4.9`, `v4.10`, `v4.11`). A spec-only revision (pure documentation) does NOT bump the code version; an integrated release ships both.
+
+---
+
+## Contributing
+
+Cross-review-mcp uses its own protocol as the contribution model. See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the trilateral design-review workflow required before scope-introducing PRs.
+
+In short:
+
+- Bug fixes + trivial refactors → standard PR with smoke + check-models green.
+- New normative spec sections / API-shape changes / protocol semantics → open a trilateral cross-review session first. Implementation-ratified releases are acceptable for deferred scope from a prior approved session (see spec §8 preamble / v4.5 rule).
+
+Community participation is scoped by the code of conduct at **[CODE_OF_CONDUCT.md](./CODE_OF_CONDUCT.md)** (Contributor Covenant 2.1).
+
+---
+
+## Security
+
+See **[SECURITY.md](./SECURITY.md)** for responsible disclosure. Short form:
+
+- Vulnerabilities: report privately to **alert@lcvmail.com**. Please do NOT open a public issue.
+- Runtime hardening: R14 redaction on persisted stderr + failed-attempt payloads (OpenAI `sk-`, Google `AIza`, GitHub `gh[pousr]_`, Slack `xox[baprs]-`, JWT, Bearer, PEM blocks, URL userinfo, env-style `*_TOKEN`/`*_SECRET`/`*_API_KEY` assignments).
+- Full-history secrets scan completed 2026-04-24 against 10 common patterns — clean (all matches are R14 test fixtures by design).
+
+---
+
+## License
+
+**AGPLv3** — see [LICENSE](./LICENSE). The license model may be revisited before the v1.0 public cut (`v0.9.0-alpha` pre-cut: operator decision pending on Apache-2.0 alternative for MCP ecosystem compatibility). Check the LICENSE file for the authoritative license at the time of your clone.
+
+---
+
+## Acknowledgements
+
+- The spec protocol draws from practical cross-review sessions run 2026-04 between Claude Code (caller) and ChatGPT Codex (peer), later extended to include Gemini CLI via Google One AI Ultra oauth-personal.
+- The tri-tool mandate (ultrathink + code-reasoning + cross-review) is the defense-in-depth backbone: structured sequential reasoning + structured code reasoning + structured peer review together reduce the hallucination surface below any single tool's baseline.
+
+## Links
+
+- Spec: [`docs/workflow-spec.md`](./docs/workflow-spec.md)
+- Release history: [`CHANGELOG.md`](./CHANGELOG.md)
+- Security: [`SECURITY.md`](./SECURITY.md)
+- Agents contract: [`AGENTS.md`](./AGENTS.md)
+- pt-BR README (historical): [`README.pt-BR.md`](./README.pt-BR.md)
