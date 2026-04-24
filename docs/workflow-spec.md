@@ -812,9 +812,64 @@ eliminando auto-discovery dinamico via CLI. Interpretando "auto-discovery
 controlado" como "deteccao auditavel de drift", o follow-up e satisfeito
 por secao 6.9.2.1 sem tocar em comportamento de runtime.
 
+### 6.10 Language policy for peer exchange and internal artifacts (NEW in v4.6)
+
+STATUS: aprovada bilateral (sessao b1700438, 2026-04-24, 5 rodadas,
+outcome=converged).
+
+Rule. All cross-review peer exchange (prompts sent via `ask_peer`, peer
+responses, session transcripts persisted under `~/.cross-review/`) and
+all non-user-facing project artifacts (this spec body, tooling scripts
+and their inline comments, JSON description/notes fields, project memory
+files, reports authored for peer consumption) MUST be in en-US.
+
+Exceptions. User-facing content MAY remain in the user's native language
+(pt-BR for this project). The scope of "user-facing" is restricted to:
+(a) assistant chat output produced for direct consumption by the end
+user; (b) historically sealed entries in section 8 (v4, v4.1, v4.2,
+v4.3, v4.4, v4.5) authored in pt-BR before this clause --
+non-retroactive; (c) documents explicitly authored for direct user
+consumption (e.g. a PR description written to be read by the user, or a
+CHANGELOG entry surfaced in release notes).
+
+Rationale. (i) Peer models (Codex, Claude) tokenize English more
+densely, reducing round cost per cross-review session; (ii) non-ASCII
+Latin-1 accent codepoints (U+00E7, U+00E3, U+00E9, U+00F3, and similar)
+have repeatedly required silent transliteration under section 6.4 and
+in some sessions triggered protocol violations when the peer emitted
+pt-BR text in structured blocks across v4.x sessions (9c56005b,
+bd8c3cfb, 42130c72, bb38cd79, 843d57eb all observed the pattern in
+varying degrees); (iii) en-US
+trivially satisfies the ASCII-only requirement of section 6.4 with no
+transliteration step; (iv) MCP ecosystem conventions and SDK interfaces
+are predominantly English; (v) source code identifiers and JSON schema
+keys are already en-US -- this clause extends consistency to prose,
+comments, docs, and memory.
+
+Bulk translation authorization. Translation of existing pt-BR
+non-user-facing content to en-US as a direct consequence of this clause
+does NOT require a separate cross-review session per artifact. A single
+bulk commit (or a small set of related commits) referencing this clause
+(v4.6 section 6.10) as authority is sufficient. Gates
+(`npm run smoke`, `npm run check-models`) must remain green across the
+translation. Historical already-sealed section 8 entries remain in
+their authored language (non-retroactive).
+
+Forward discipline. Starting from v4.6, every new `ask_peer` prompt
+composed by the caller MUST be in en-US; peer responses are expected
+in en-US; every newly authored non-user-facing artifact (memory,
+reports, spec additions, code comments) MUST be in en-US. Mixed-language
+drift is treated the same as ASCII-only drift under section 6.4: a soft
+violation that should be corrected on the next edit touching the file.
+
+Motivation recorded (user directive 2026-04-24): "so e importante que
+seja em pt-BR o que vier para eu ler; se nao for para eu ler, que seja
+TUDO em en-US." User explicitly chose full-scope migration (all phases
+now, no deferral).
+
 ---
 
-## 7. Resumo das convencoes para uso imediato (ATUALIZADO ate v4.5)
+## 7. Resumo das convencoes para uso imediato (ATUALIZADO ate v4.6)
 
 | Convencao | Acao do caller |
 |-----------|---------------|
@@ -826,14 +881,14 @@ por secao 6.9.2.1 sem tocar em comportamento de runtime.
 | Ruido | Consumir content + peer_status + peer_structured + status_source + parser_warnings + peer_model |
 | Warnings | `parser_warnings` nao eh telemetria morta: inspecionar e agir (peer drift ou schema violation) |
 | Modelo | Peer sempre invocado com top-level (codex=gpt-5.5 xhigh, claude=claude-opus-4-7); sem fallback silencioso; drift audit advisory via `npm run check-models` (secao 6.9.2.1) |
-| Encoding | ASCII-only em arquivos em disco; prompts podem ter acentos |
+| Encoding | ASCII-only em arquivos em disco; peer exchange e artefatos internos em en-US (secao 6.10 v4.6); apenas chat assistant-user e entradas historicas seladas permanecem pt-BR |
 | Continuidade | Ledger opcional (§6.5); quando adotado, manter ASCII-only e anexar em sessoes subsequentes |
 | Overflow | Yellow 50k / Red 100k chars no transcript (§6.6.1); compressao non-destructive (§6.6.4) com referencia aos imutaveis; meta.json sem mudanca de API (§6.6.3 YAGNI) |
 | Janela de transicao | Durante upgrade do server, peer emite ambos formatos ate reload confirmado |
 
 ---
 
-## 8. Criterios de aceitacao (atualizados em v4.5)
+## 8. Criterios de aceitacao (atualizados em v4.6)
 
 **Regra editorial normativa (NOVO em v4.5):** Entradas nesta secao que usem
 linguagem de aprovacao bilateral, incluindo "Spec vX.Y foi aprovada
@@ -879,13 +934,24 @@ inconsistencia.
   promocao desta entrada de "em revalidacao bilateral" para "aprovada
   bilateralmente" foi feita em edit separado pos-sealing, honrando
   auto-demonstrativamente a clausula que esta entrada estabelece.
+- Spec v4.6 foi aprovada bilateralmente (Claude + Codex) na sessao
+  cross-review b1700438 (2026-04-24, 5 rodadas). v4.6 adds new section
+  6.10 "Language policy for peer exchange and internal artifacts" and
+  authorizes bulk translation of existing pt-BR non-user-facing content
+  to en-US under this clause. SPEC-only plus subsequent bulk-translation
+  commits that reference v4.6 section 6.10 as authority; core runtime
+  (src/server.js, src/lib/*.js, scripts/functional-smoke.js) remains
+  unchanged. This entry is written in pt-BR because it takes its place
+  among the historically-sealed section 8 entries authored in pt-BR
+  (v4-v4.5); from v4.7 onward, new section 8 entries MAY be authored
+  in en-US per section 6.10.
 
 Uma vez aceita e publicada:
 - Substitui revisao anterior in-place.
 - Referenciada como a spec ativa em novas sessoes.
 - Fica congelada ate nova sessao de spec ser aberta (sem amend silencioso).
 
-Follow-ups pos-v4.5 (registrados mas fora do escopo desta release):
+Follow-ups pos-v4.6 (registrados mas fora do escopo desta release):
 - Pre-spawn existence check defensivo (abort-only se modelo descontinuado
   pelo provider): registrado como follow_up separado nesta sessao
   9c56005b; fora de escopo de secao 6.9.2.1 que eh exclusivamente
