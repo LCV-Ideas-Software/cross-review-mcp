@@ -826,4 +826,154 @@ Open for Codex review. A dedicated cross-review session may be opened
 via `session_init` if any substantive feedback, retrospective, or
 further evolution is desired.
 
+---
+
+## 13. Post-audit errata (added 2026-04-24, response to Codex review)
+
+Codex performed a read-only audit of the state at the time sections 1
+through 12 were drafted and flagged five findings. This section records
+each finding, the fix applied, and the post-fix verification. The
+original sections above are preserved verbatim as historical snapshot;
+this errata is the authoritative current state on top of them.
+
+### 13.1 HIGH -- `peer_model` missing in real `spawnPeer()` resolve path
+
+**Finding:** Spec v4 section 6.9.2 and the `ask_peer` tool description
+promised `peer_model` per round for auditability. The stub path in
+`src/lib/peer-spawn.js` set `peer_model` via `resolveStub()`, but the
+real (non-stub) path resolved only `{ stdout, stderr }`. In real E2E,
+`meta.json.rounds[i].peer_model` came back undefined. The smoke suite
+covered only the stub path, so the bug was invisible to CI.
+
+**Fix:** `src/lib/peer-spawn.js` real-path `proc.on('close')` resolve
+changed to `resolve({ stdout, stderr, peer_model: modelForPeer(peerAgent) })`.
+The pre-existing helper `modelForPeer(peerAgent)` was made an exported
+member of the module (together with `CODEX_MODEL`,
+`CODEX_REASONING_EFFORT`, `CLAUDE_MODEL`) for audit and test use.
+
+**Regression guard:** two new smoke steps added to
+`scripts/functional-smoke.js`:
+1. Unit assertion that `modelForPeer('codex')` returns `CODEX_MODEL`
+   and `modelForPeer('claude')` returns `CLAUDE_MODEL`.
+2. Structural assertion that the `proc.on('close')` resolve block in
+   `src/lib/peer-spawn.js` contains both `peer_model` and
+   `modelForPeer(peerAgent)`. Source-level guard against silent
+   regression.
+
+Smoke total: 60 -> 62 steps, all GREEN.
+
+### 13.2 MEDIUM/HIGH -- local `refs/original` retained pre-rewrite history with private email
+
+**Finding:** After `git filter-branch` rewrote the fifteen initial
+commits to use the no-reply email, a backup ref
+`refs/original/refs/heads/main` remained pointing at `12da50d` (the
+pre-rewrite tip), keeping the old private-email commits locally
+reachable. Not exposed on the remote (`git ls-remote origin` showed
+only `main` at the rewritten tip), but a risk for mirrors, backups, or
+wider push.
+
+**Fix:**
+```
+git update-ref -d refs/original/refs/heads/main
+git reflog expire --expire=now --all
+git gc --prune=now --aggressive
+```
+
+**Verification:**
+- `git for-each-ref refs/original` -> empty.
+- `git log --all --format="%ae" | sort -u` -> single email
+  `268063598+lcv-leo@users.noreply.github.com`.
+- `git log --all --format="%ae" | grep -c leonardocardozovargas@gmail.com` -> `0`.
+- Object count dropped from 33 loose to 0 loose (packed).
+
+### 13.3 MEDIUM -- report was a historical snapshot, not current state
+
+**Finding:** Section 11 listed 16 commits with the latest at
+`3acccc2`; the actual HEAD when Codex audited was `2901f67`, 21 commits
+in total, further ahead. The report also reported "CI runs: 1" and
+Dependabot "queued" as of first push; by audit time, several CI runs
+had completed green and Dependabot checks had queued again after
+subsequent pushes. The "Node.js 20 actions deprecation" item at section
+8 was listed as open; it had already been corrected in commit
+`e5ec531`.
+
+**Fix:** This errata section. Section 11 stays verbatim as historical
+snapshot; the current post-audit state is recorded here. See section
+13.6 for the current commit table.
+
+### 13.4 LOW -- misleading `functional-smoke.js` JSDoc
+
+**Finding:** The file header said `functional-smoke.js` "Deliberately
+SKIPS ask_peer because it involves a real peer CLI spawn and LLM cost;
+that path is validated in manual E2E." The truth is that `ask_peer` IS
+covered via `CROSS_REVIEW_PEER_STUB` stubs (the large block starting
+around line 190), just without spawning a real CLI or incurring LLM
+cost.
+
+**Fix:** JSDoc reworded to: "ask_peer is covered through
+`CROSS_REVIEW_PEER_STUB` stubs (no real CLI spawn, no LLM cost)... Real
+peer CLI paths are validated in manual E2E sessions, not here." No
+functional change.
+
+### 13.5 LOW -- `MEMORY.md` residual "outside the workspace"
+
+**Finding:** The Claude Code workspace memory index (`~/.claude/
+projects/c--Users-leona-lcv-workspace/memory/MEMORY.md`) still
+described the cross-review-mcp source as "(outside the workspace)",
+inconsistent with the post-move state. The detailed reference
+`reference_cross_review_mcp_source.md` already had the corrected
+phrasing.
+
+**Fix:** `MEMORY.md` line updated to: "cross-review MCP source is at
+`C:/Users/leona/lcv-workspace/cross-review-mcp/` (independent git repo
+inside the workspace folder, moved there from `C:/Scripts` on
+2026-04-24); structure and entry points".
+
+### 13.6 Current commit table (replaces section 11 for "current" reference)
+
+Post-errata HEAD is beyond `2901f67`; final hashes are determined by
+the commits landed during this errata cycle. See the real HEAD via:
+
+```
+git log --oneline main
+```
+
+All commits from 2026-04-24 authored with the no-reply email
+`268063598+lcv-leo@users.noreply.github.com`. Pre-rewrite commits do
+not exist in any ref tree anymore (see section 13.2).
+
+### 13.7 Updated validation matrix (current)
+
+- `git status --short --branch`: clean, `main...origin/main`.
+- `node --check` on all tracked `.js` files: no errors.
+- `npm run smoke`: 62 steps, all GREEN (was 60 pre-errata).
+- `npm run check-models`: exit 0, `OK: no drift, no staleness`.
+- `npm audit --audit-level=moderate`: 0 vulnerabilities.
+- `git log --all --format='%ae' | sort -u`: single no-reply email.
+- `git for-each-ref refs/original`: empty.
+- CI on GitHub: latest push success.
+- Dependabot: enabled, latest checks queued.
+- Real E2E MCP (per Codex audit): `claude -> codex` and `codex ->
+  claude` converged `READY/READY` with `status_source: structured`,
+  `protocol_violation: false`.
+
+### 13.8 Lessons consolidated in the audit
+
+- **A peer review after a multi-phase day found a real bug the smoke
+  suite did not catch.** This is exactly the value proposition of
+  cross-review captured in `feedback_peer_review_rigor.md`.
+- **Structural source-level assertions complement behavior tests.**
+  The new structural guard in the smoke suite prevents future
+  refactors from silently breaking the `peer_model` contract even in
+  environments where running a real CLI is impossible.
+- **`git filter-branch` leaves `refs/original` backup refs that must
+  be cleaned explicitly.** This is documented by git itself but easy
+  to forget; the full sequence is `update-ref -d` + `reflog expire` +
+  `gc --prune=now --aggressive`.
+- **Historical snapshot reports must be clearly labelled as such or
+  kept in sync with state.** Future reports should either include a
+  "current state" section that the author commits to updating, or be
+  treated as immutable historical documents (this report now has
+  both: sections 1 through 12 are historical; section 13 is current).
+
 --- End of report ---

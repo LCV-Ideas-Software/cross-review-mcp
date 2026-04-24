@@ -5,8 +5,12 @@
  *
  * Drive the MCP server via stdio JSON-RPC and exercise the state tools
  * (session_init, session_read, session_check_convergence,
- * session_finalize). Deliberately SKIPS ask_peer because it involves a
- * real peer CLI spawn and LLM cost; that path is validated in manual E2E.
+ * session_finalize) plus ask_peer.
+ *
+ * ask_peer is covered through CROSS_REVIEW_PEER_STUB stubs (no real CLI
+ * spawn, no LLM cost): see the block of tests starting at the
+ * "ask_peer tests via CROSS_REVIEW_PEER_STUB" marker. Real peer CLI
+ * paths are validated in manual E2E sessions, not here.
  *
  * Success: every tool responds with the expected shape + the correct
  * files are created in ~/.cross-review/<id>/.
@@ -803,7 +807,41 @@ async function runAll() {
     all.push(...s24.results);
     const s25 = await drivePeerModelAndWarningsPersisted();
     all.push(...s25.results);
+    const s26 = await drivePeerSpawnRealPathModel();
+    all.push(...s26.results);
     return all;
+}
+
+// Regression test for the peer review finding 2026-04-24 (HIGH): the real
+// (non-stub) resolve path of spawnPeer must include peer_model per spec
+// section 6.9.2 auditability. Stub path already covered elsewhere. Here
+// we cover: (a) modelForPeer returns the pinned IDs; (b) source of
+// peer-spawn.js contains peer_model in its real-path resolve block
+// (structural assertion, since we cannot actually spawn a CLI in smoke).
+async function drivePeerSpawnRealPathModel() {
+    const results = [];
+    const { modelForPeer, CODEX_MODEL, CLAUDE_MODEL } = require('../src/lib/peer-spawn.js');
+
+    assert(typeof modelForPeer === 'function', 'modelForPeer exported from peer-spawn.js');
+    assert(modelForPeer('codex') === CODEX_MODEL, `modelForPeer('codex') === CODEX_MODEL (${CODEX_MODEL})`);
+    assert(modelForPeer('claude') === CLAUDE_MODEL, `modelForPeer('claude') === CLAUDE_MODEL (${CLAUDE_MODEL})`);
+    results.push({ step: `modelForPeer maps codex->${CODEX_MODEL}, claude->${CLAUDE_MODEL}`, ok: true });
+
+    // Structural: real-path resolve in peer-spawn.js must include peer_model.
+    // Prevents silent regression of the 2026-04-24 fix (see CHANGELOG).
+    const fs = require('fs');
+    const src = fs.readFileSync(require.resolve('../src/lib/peer-spawn.js'), 'utf8');
+    const closeBlockMatch = src.match(/proc\.on\('close'[\s\S]*?resolve\(\s*\{[^}]*\}/);
+    assert(closeBlockMatch, 'peer-spawn.js: proc.on(close) resolve block present');
+    const resolveBlock = closeBlockMatch[0];
+    assert(resolveBlock.includes('peer_model'), 'peer-spawn.js real-path resolve includes peer_model (spec section 6.9.2 auditability)');
+    assert(
+        resolveBlock.includes('modelForPeer(peerAgent)'),
+        'peer-spawn.js real-path resolve uses modelForPeer(peerAgent) to populate peer_model'
+    );
+    results.push({ step: 'peer-spawn.js real-path resolve contains peer_model: modelForPeer(peerAgent) (regression guard for 2026-04-24 peer review fix)', ok: true });
+
+    return { results };
 }
 
 runAll()

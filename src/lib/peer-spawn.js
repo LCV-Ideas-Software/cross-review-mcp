@@ -380,7 +380,12 @@ function spawnPeer(peerAgent, prompt, options = {}) {
                     )
                 );
             }
-            resolve({ stdout, stderr });
+            // spec v4 section 6.9.2: peer_model must be persisted per
+            // round for auditability. Stub path sets it via resolveStub;
+            // real path must set it here using the pinned ID for the
+            // actual peer agent. Missing peer_model in the real resolve
+            // path was a bug flagged by peer review 2026-04-24.
+            resolve({ stdout, stderr, peer_model: modelForPeer(peerAgent) });
         });
 
         proc.stdin.write(String(prompt));
@@ -394,4 +399,10 @@ module.exports = {
     buildClaudeArgs,
     listCodexConfiguredServers,
     loadExclusions,
+    // Exported for audit/test use only. Exposes the pinned top-level
+    // model IDs per spec section 6.9.2 + 6.9.2.1.
+    modelForPeer,
+    CODEX_MODEL,
+    CODEX_REASONING_EFFORT,
+    CLAUDE_MODEL,
 };
