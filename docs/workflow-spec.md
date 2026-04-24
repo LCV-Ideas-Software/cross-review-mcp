@@ -814,7 +814,7 @@ por secao 6.9.2.1 sem tocar em comportamento de runtime.
 
 ---
 
-## 7. Resumo das convencoes para uso imediato (ATUALIZADO ate v4.3)
+## 7. Resumo das convencoes para uso imediato (ATUALIZADO ate v4.4)
 
 | Convencao | Acao do caller |
 |-----------|---------------|
@@ -833,7 +833,7 @@ por secao 6.9.2.1 sem tocar em comportamento de runtime.
 
 ---
 
-## 8. Criterios de aceitacao (atualizados em v4.3)
+## 8. Criterios de aceitacao (atualizados em v4.4)
 
 - Spec v4 foi aprovada bilateralmente (Claude + Codex) na sessao
   cross-review 08cd61e6 (2026-04-24, 2 rodadas).
@@ -851,13 +851,19 @@ por secao 6.9.2.1 sem tocar em comportamento de runtime.
   `scripts/audit-model-drift.js` + npm script `check-models`) SEM
   alterar runtime de peer-spawn.js nem processo de troca de modelo
   definido em secao 6.9.2.
+- Spec v4.4 foi aprovada bilateralmente (Claude + Codex) na sessao
+  cross-review bd8c3cfb (2026-04-24, 2 rodadas). v4.4 eh revisao
+  spec-only de v4.3 formalizando a suspensao por YAGNI do follow-up
+  "Schema v5 com objetos" de 08cd61e6 -- nao toca em codigo, nao muda
+  o contrato do bloco estruturado, nao altera parser. Registra criterio
+  de reabertura baseado em falha concreta v4-era.
 
 Uma vez aceita e publicada:
 - Substitui revisao anterior in-place.
 - Referenciada como a spec ativa em novas sessoes.
 - Fica congelada ate nova sessao de spec ser aberta (sem amend silencioso).
 
-Follow-ups pos-v4.3 (registrados mas fora do escopo desta release):
+Follow-ups pos-v4.4 (registrados mas fora do escopo desta release):
 - Pre-spawn existence check defensivo (abort-only se modelo descontinuado
   pelo provider): registrado como follow_up separado nesta sessao
   9c56005b; fora de escopo de secao 6.9.2.1 que eh exclusivamente
@@ -868,9 +874,23 @@ Follow-ups pos-v4.3 (registrados mas fora do escopo desta release):
   de v4.3 por decisao bilateral; v4.3 transliterou apenas as suas
   proprias novas ocorrencias. Tratamento sugerido: sessao dedicada ou
   housekeeping pass antes de v4.4.
-- Secao 2.3.1: reconsideracao de `caller_requests`/`follow_ups` como arrays
-  de objetos (em vez de strings) caso strings se mostrem insuficientes em
-  uso real (registrado como follow_up do Codex na sessao 08cd61e6).
+- Schema v5 com objetos para `caller_requests`/`follow_ups` em vez de
+  arrays de strings -- SUSPENSO por YAGNI na sessao bd8c3cfb
+  (2026-04-24, outcome=converged em 2 rodadas). Evidencia empirica: v4
+  parser em uso desde reload do VS Code em 2026-04-24; zero instancias
+  de string-inadequacy emitidas pelo peer v4-era na sessao 9c56005b
+  (8 caller_requests/follow_ups, todos strings acionaveis); peer Codex
+  nao conseguiu nomear UM caller_request v4-era que tenha falhado por
+  limitacao de string. A precondicao literal do follow-up original
+  registrado em 08cd61e6 ("se strings se mostrarem insuficientes em uso
+  real" + "Nao priorizado ate emergir use case concreto") permanece
+  nao-satisfeita. Criterio de reabertura: peer v4-era nomeando um
+  caller_request concreto que tenha FALHADO por limitacao de string
+  (substancia nao transmitida, ambiguidade causadora de round extra,
+  guidance nao-acionavel). "Poderia ser melhor como objeto" NAO conta.
+  Cobertura de teste ja existente: `STRUCTURED_V4_NON_STRING_ITEM` em
+  functional-smoke documenta o drop + indexed warning para itens
+  nao-string, confirmando que o comportamento atual eh intencional.
 - Drift de versao entre `package.json` (0.3.0-alpha), `package-lock.json`
   (0.2.0-alpha) e `src/server.js` (0.4.0-alpha) -- saneamento de higiene de
   versionamento em sessao separada (registrado como follow_up do Codex na
