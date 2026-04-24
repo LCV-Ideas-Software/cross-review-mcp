@@ -5,6 +5,7 @@
 [![status: alpha](https://img.shields.io/badge/status-alpha-orange.svg)](#status)
 [![spec: v4.11](https://img.shields.io/badge/spec-v4.11-informational.svg)](./docs/workflow-spec.md)
 [![MCP](https://img.shields.io/badge/MCP-stdio-blue.svg)](https://modelcontextprotocol.io/)
+[![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
 
 **Status.** Pre-v1.0 alpha. Current release: **v0.7.0-alpha** runtime paired with **spec v4.11** (spec-only revision). See [CHANGELOG.md](./CHANGELOG.md) for the release history. **Breaking changes are possible between alpha releases.** A v1.0 stable release with frozen protocol contract is planned once the v0.9.0-alpha pre-cut items land.
 
@@ -243,7 +244,8 @@ cross-review-mcp/
 |-- AGENTS.md                        Contract for agents operating inside this repo
 |-- CHANGELOG.md                     Release history (pt-BR; operator-facing)
 |-- SECURITY.md                      Responsible disclosure + controls
-|-- LICENSE                          AGPLv3
+|-- LICENSE                          Apache-2.0
+|-- NOTICE                           Apache-2.0 attribution + third-party notices
 |-- README.md                        This file (en-US; public-facing)
 |-- README.pt-BR.md                  Historical pt-BR README (operator preservation)
 ```
@@ -312,7 +314,11 @@ See **[SECURITY.md](./SECURITY.md)** for responsible disclosure. Short form:
 
 ## License
 
-**AGPLv3** — see [LICENSE](./LICENSE). The license model may be revisited before the v1.0 public cut (`v0.9.0-alpha` pre-cut: operator decision pending on Apache-2.0 alternative for MCP ecosystem compatibility). Check the LICENSE file for the authoritative license at the time of your clone.
+**Apache License 2.0** — see [LICENSE](./LICENSE) and [NOTICE](./NOTICE).
+
+Apache-2.0 was chosen at the v0.9.0-alpha pre-cut (2026-04-24) over MIT and AGPLv3 for ecosystem compatibility with the broader MCP reference-server set (most of which are MIT or Apache-2.0) and for the explicit patent grant that Apache-2.0 provides over MIT. Third-party integrations, vendoring, and derivative works are permitted under the Apache-2.0 terms; please preserve the NOTICE file's attribution when redistributing.
+
+Copyright 2026 Leonardo Cardozo Vargas.
 
 ---
 

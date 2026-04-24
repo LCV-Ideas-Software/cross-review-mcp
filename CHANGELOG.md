@@ -10,23 +10,48 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ## [Unreleased]
 
-### Adicionado (v0.9.0-alpha pre-cut for v1.0 stable public GitHub)
-- **Public-facing documentation suite (pre-cut):**
-  - `README.md` reescrito em en-US como README primário público (18.6KB). Estrutura: What it does / Topology / Peers and transport / Install / Register with each peer / Running a session / Anti-hallucination discipline / Observe the session / Protocol contract (pointer to `docs/workflow-spec.md` §§1-8) / Architecture / Exposed tools (7 total) / Development / Contributing / Security / License / Acknowledgements / Links. Versão-table matrix cobrindo v0.5.0-alpha → v0.7.0-alpha (spec v4.7 → v4.11). Transport descriptor table (cli-subscription / oauth-personal / api-key). Fluxo de sessão passo-a-passo. Seção específica sobre anti-hallucination com os campos opcionais `confidence` e `evidence_sources` documentados.
-  - `README.pt-BR.md` preserva o conteúdo original em pt-BR (13.4KB) que documentava o desenvolvimento iterativo desde v0.3.0-alpha (Commit 1 hard gate, probe iterations, Commit 2 handoff). Mantido como arquivo histórico + referência para o operator.
-  - `CONTRIBUTING.md` (7.4KB) define três classes de contribuição:
-    - Class 1 trivial (single maintainer review + gates).
-    - Class 2 additive + deferred-scope implementation (cita seção do spec sendo implementada).
-    - Class 3 normative changes — **cross-review session trilateral obrigatória antes do merge**, citando session UUID e trail de aprovação.
-    - Gates obrigatórios: `npm test` (117+ smoke steps) + `npm run check-models`.
-    - Non-negotiables: tri-tool stack mandatório para Class 3, top-level models only, CLI transport (not SDK) per billing-veto, strict-only convergence, no fabrication (spec §6.14), ASCII-only on disk + en-US for peer-exchange artifacts, no secrets in repo.
-  - `CODE_OF_CONDUCT.md` (2KB) adota Contributor Covenant 2.1 via link canônico (não inlining) + reporting contact (`alert@lcvmail.com`, mesmo canal de SECURITY.md) + nota específica sobre a discordância estruturada do protocolo (peers respondendo `NOT_READY` com objeções técnicas é comportamento esperado e não é concern de CoC).
-- **Full-history secrets scan** concluído 2026-04-24 contra 10 padrões comuns (OpenAI sk-, Google AIza, GitHub gh[pousr]_, Anthropic sk-ant-, Cloudflare cfut_/CF_API_TOKEN, SumUp sup_sk_, JWT, Bearer, PEM blocks, env-style *_TOKEN/*_SECRET/*_PRIVATE_KEY/*_API_KEY). Resultado: **CLEAN** — todos os pattern matches são test fixtures do R14 redaction corpus em `scripts/functional-smoke.js` por design (designados a exercitar `driveSessionStoreUnit`'s redaction assertions). Nenhum secret real na história do git.
-
-### Pendente de decisão do operador (v0.9.0-alpha pre-cut)
-- **License model revisit.** Memória `project_cross_review_mcp_open_source_plan.md` recomenda Apache-2.0 para MCP ecosystem compatibility, while `LICENSE` atual é AGPLv3 (workspace default). Esta é uma decisão operator-personal e legalmente consequential — não pode ser feita sem input explícito. Será resolvida num PR subsequent quando o operator decidir; README.md atual documenta que "license model may be revisited before the v1.0 public cut".
+### Adicionado
+- (em aberto — próximos follow-ups após v0.9.0-alpha: v1.0 stable cut pendente de field-use validation + comunidade inicial + eventual novo round trilateral de review. Registered issues rastreadas via `docs/workflow-spec.md` §8 e GitHub issues.)
 
 ---
+
+## [0.9.0-alpha] — 2026-04-24
+
+Release: **pre-cut for v1.0 stable public GitHub**. Spec v4.11 (unchanged; absorved from commit `21a416b`). Two classes de change: (1) license change AGPLv3 → Apache-2.0 (operator decision registered this release), (2) public-facing documentation suite consolidada.
+
+### Alterado — License change (operator decision 2026-04-24)
+- **`LICENSE` swapped from AGPLv3 (workspace default) to Apache-2.0.** Canonical Apache License 2.0 text fetched from `https://www.apache.org/licenses/LICENSE-2.0.txt` (11.3KB). Operator considered three candidates mid-session 2026-04-24:
+  - (A) Keep AGPLv3 — consistent with workspace default; strong copyleft protecting against closed-source SaaS wrappers. Rejected in favor of ecosystem compatibility.
+  - (C) MIT — most permissive; briefly chosen then reconsidered.
+  - (B) **Apache-2.0 — final choice.** Adopted for MCP ecosystem compatibility (most MCP reference servers use MIT or Apache-2.0) + explicit patent grant over MIT. Third-party vendoring and commercial integrations are permitted; `NOTICE` preservation required on redistribution.
+- **`NOTICE` file NEW (Apache-2.0 standard pattern).** Copyright attribution (`Copyright 2026 Leonardo Cardozo Vargas`) + pointer to LICENSE + third-party dependencies note (`@modelcontextprotocol/sdk` MIT as only direct runtime dep at v0.9.0-alpha).
+- `README.md` updated: license badge MIT/AGPLv3 candidate placeholders removed in favor of Apache-2.0 SVG badge; license section rewritten to explain the choice (ecosystem compatibility + patent grant) and reference both LICENSE and NOTICE; architecture-tree line now shows `LICENSE ... Apache-2.0` + `NOTICE ... Apache-2.0 attribution + third-party notices`.
+
+### Adicionado — Public-facing documentation suite (pre-cut for v1.0 public GitHub)
+- **`README.md`** reescrito em en-US como README primário público (18.6KB; commit `9be587e`). Estrutura: What it does / Topology / Peers and transport / Install / Register with each peer / Running a session / Anti-hallucination discipline / Observe the session / Protocol contract (pointer to `docs/workflow-spec.md` §§1-8) / Architecture / Exposed tools (7 total) / Development / Contributing / Security / License / Acknowledgements / Links. Versão-table matrix cobrindo v0.5.0-alpha → v0.7.0-alpha → v0.9.0-alpha (spec v4.7 → v4.11). Transport descriptor table (cli-subscription / oauth-personal / api-key). Fluxo de sessão passo-a-passo.
+- **`README.pt-BR.md`** preserva o conteúdo original em pt-BR (13.4KB; commit `9be587e`) que documentava o desenvolvimento iterativo desde v0.3.0-alpha. Mantido como arquivo histórico + referência para o operator.
+- **`CONTRIBUTING.md`** (7.4KB; commit `9be587e`) define três classes de contribuição:
+  - Class 1 trivial: single maintainer review + gates.
+  - Class 2 additive + deferred-scope implementation: cita spec section.
+  - Class 3 normative: **cross-review session trilateral obrigatória antes do merge**, citando session UUID + trail de aprovação; implementation-ratified acceptable somente para pre-ratified deferred scope per §8 v4.5 preamble rule.
+  - Gates obrigatórios: `npm test` (117+ smoke steps) + `npm run check-models`.
+  - Non-negotiables: tri-tool stack (ultrathink + code-reasoning + cross-review), top-level models only, CLI transport (not SDK) per billing-veto, strict-only convergence, no fabrication (§6.14), ASCII-only on disk + en-US for peer-exchange artifacts, no secrets in repo.
+- **`CODE_OF_CONDUCT.md`** (2KB; commit `9be587e`) adota Contributor Covenant 2.1 via link canônico + reporting contact (`alert@lcvmail.com`, mesmo canal de SECURITY.md) + nota específica sobre a discordância estruturada do protocolo (peers respondendo `NOT_READY` com objeções técnicas é comportamento esperado e não é CoC concern).
+
+### Confirmado — Security posture
+- **Full-history secrets scan** (commit `9be587e`) concluído 2026-04-24 contra 10 padrões comuns (OpenAI `sk-`, Google `AIza`, GitHub `gh[pousr]_`, Anthropic `sk-ant-`, Cloudflare `cfut_`/`CF_API_TOKEN`, SumUp `sup_sk_`, JWT, Bearer, PEM private-key blocks, env-style `*_TOKEN`/`*_SECRET`/`*_PRIVATE_KEY`/`*_API_KEY` assignments). Resultado: **CLEAN** — todos os pattern matches são test fixtures do R14 redaction corpus em `scripts/functional-smoke.js` por design (exercitam `driveSessionStoreUnit`'s redaction assertions). Nenhum secret real na história do git.
+- **R14 redaction patterns** (definidos em `src/lib/session-store.js` REDACTION_PATTERNS) continuam aplicados sobre `stderr_tail` de `failed_attempts` e outras superfícies persistidas. Zero change em v0.9.0-alpha.
+
+### Alterado — Version
+- `src/server.js` VERSION bumpado `0.7.0-alpha` → `0.9.0-alpha`. Nota: versão pula de `0.7.0-alpha` para `0.9.0-alpha` (não existe `0.8.0-alpha` como release — foi substituído por spec v4.11 spec-only revision que fechou o Claude CLI banner follow-up como negative result sem tocar código).
+- `package.json` version bumpado `0.7.0-alpha` → `0.9.0-alpha`.
+
+### Spec delta absorbed
+- Spec v4.11 (commit `21a416b`) absorbed into v0.9.0-alpha release. No additional spec changes in this release. Spec title `Cross-Review MCP Workflow Specification v4.11` remains current.
+
+### Trade-offs documentados / deferred to v1.0+
+- **Claude CLI banner parsing:** CLOSED 2026-04-24 como negative empirical result (CLI 2.1.119 emits 0 bytes stderr). Reabre apenas se future Claude CLI version introduzir banner channel.
+- **Future pre-v1.0 work:** field-use validation em production sessions + community onboarding (issue templates, PR templates, contributing agent badge) + eventual round trilateral adicional para v1.0 spec freeze decision. Sem timelines pré-committed.
 
 ---
 
