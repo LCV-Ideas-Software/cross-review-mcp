@@ -1,14 +1,32 @@
-# Cross-Review MCP Workflow Specification v4.1
+# Cross-Review MCP Workflow Specification v4.2
 
-**Status**: v4.1 eh revisao spec-only de v4 via sessao a847f897 (2026-04-24,
-aprovada bilateral). v4.1 altera APENAS politica de processo -- NAO toca em
+**Status**: v4.2 eh revisao spec-only de v4.1 via sessao f1fdbee4 (2026-04-24,
+aprovada bilateral). v4.2 altera APENAS politica de processo -- NAO toca em
 schema, parser, server, session-store, peer-spawn ou qualquer codigo. Logo,
-v4.1 NAO requer bump do `cross-review-mcp` (permanece em v0.4.0-alpha).
+v4.2 NAO requer bump do `cross-review-mcp` (permanece em v0.4.0-alpha).
 Precursores: v2 (sessao 7d745f38); v3 (sessao 806a1c4f); v4 normativa
-absorvendo v0.4.0-alpha (sessao 08cd61e6).
+absorvendo v0.4.0-alpha (sessao 08cd61e6); v4.1 spec-only absorvendo
+§6.6 normativa (sessao a847f897).
 
 Encoding: ASCII-only com transliteracao de acentos do portugues. Motivo
 operacional em secao 6.4.
+
+---
+
+## 0c. Delta v4.1 -> v4.2 (sumario executivo)
+
+- **Secao 6.7 PROMOVIDA DE FOLLOW-UP PARA NORMATIVA**: matriz minima de
+  evidencia por classe de artefato em formato tabular, cobrindo classes
+  empiricamente observadas em sessoes historicas (JS, TS, JSON, Markdown,
+  cross-review-mcp proprio). Link normativo com §3: peers usam a matriz
+  como baseline para decisao NEEDS_EVIDENCE. Regra "classe nao listada"
+  como fallback documentado. `wrangler deploy --dry-run` removido (ver
+  `feedback_no_wrangler_deploy`: deploy verification eh responsabilidade
+  de CI/GHA, nao pre-ask_peer gate).
+- **Secao 8 AJUSTADA**: registra aprovacao bilateral da sessao f1fdbee4.
+
+Toda mudanca em v4.2 eh policy/documentacao. Nenhum contrato programatico
+foi alterado.
 
 ---
 
@@ -587,30 +605,71 @@ Compactacao/compressao ocorre EXCLUSIVAMENTE em:
 Ambos artefatos montados pelo caller, ambos fora da arvore
 `~/.cross-review/<sid>/` gerenciada pelo server.
 
-### 6.7 Matriz minima de evidencia por classe de artefato (ATUALIZADO como FOLLOW-UP nao-bloqueante)
+### 6.7 Matriz minima de evidencia por classe de artefato (NORMATIVA em v4.2)
 
-Continua FOLLOW-UP (nao-normativo), mas a primeira aproximacao foi revisada
-em v3 para refletir mudancas operacionais (test script generico em vez de
-vitest especifico; cross-review-mcp proprio ganha entrada dedicada).
+Promovido de FOLLOW-UP para contrato normativo via sessao f1fdbee4
+(2026-04-24, aprovada bilateral). Policy-only -- nenhum code change
+em cross-review-mcp foi feito, e nenhum eh justificado pelos dados
+empiricos coletados ate aqui.
 
+Esta matriz define o que o caller DEVE executar como evidencia dinamica
+(referencia cruzada: §3.1, §3.2) antes de cada ask_peer. Peers usam esta
+matriz como **baseline normativa** ao decidir NEEDS_EVIDENCE: ausencia de
+evidencia mandatoria para classe listada, sem declaracao de limitacao
+operacional cobrivel por §3.5, eh bloqueio automatico.
 
-```
-FOLLOW-UP: definir matriz minima de evidencia por classe de artefato.
-- por que: evitar negociacao ad-hoc sobre "o que o caller deveria ter rodado".
-- escopo apropriado: documento anexo a este spec, iterado conforme novos
-  tipos de arquivo aparecem.
-- urgencia: desejavel.
-- primeira aproximacao:
-  - JavaScript/Node source: node --check + linter (biome/eslint) se
-    configurado + vitest/test script se ha testes + tsc --noEmit se
-    typescript.
-  - TypeScript source: tsc --noEmit + linter + vitest/test script.
-  - Markdown: sem validacao dinamica (so revisao semantica).
-  - JSON: parser (node -e "JSON.parse(require('fs').readFileSync(path,'utf8'))").
-  - YAML: parser yaml dedicado.
-  - wrangler.json: npx wrangler deploy --dry-run se aplicavel.
-  - cross-review-mcp proprio: `npm test` (= functional-smoke, 40 steps).
-```
+Empirismo: as classes listadas abaixo correspondem a arquivos efetivamente
+revisados em sessoes historicas ate 2026-04-24 (sessao fa283f6c contem
+`.tsx`; sessoes gerais contem `.md`, `.js`, `.json`). Classes nao
+observadas (YAML, Python, Rust, Go, shell, validacao semantica Cloudflare
+de `_headers`/`_routes.json`/`.dev.vars`) NAO entram na matriz ate
+emergirem em uso real -- mesma disciplina que §6.5 (ledger) e §6.6.3
+(meta.json).
+
+#### Matriz
+
+| Classe | Evidencia MANDATORIA | Comando canonico | Evidencia opcional (ativa quando aplicavel) |
+|--------|----------------------|------------------|---------------------------------------------|
+| JavaScript (.js, .cjs, .mjs) | parse-sanity | `node --check <path>` | linter se `biome.json`/`.eslintrc*` presente; test script se `package.json:scripts.test` definido |
+| TypeScript (.ts, .tsx) | type-check | `tsc --noEmit` (usando o `tsconfig.json` mais proximo) | linter; test script |
+| JSON (.json) | parse-sanity | `node -e "JSON.parse(require('fs').readFileSync('<path>','utf8'))"` | schema validation se schema local disponivel |
+| Markdown (.md) | revisao semantica | N/A (leitura direta) | N/A |
+| cross-review-mcp proprio (esta spec + src/ + scripts/) | full smoke | `npm test` (alias de `node scripts/functional-smoke.js`) | inspecao direta do parser/server. Contagem de steps eh dinamica por release (v0.4.0: 60 steps); peer deve confirmar `all GREEN` independente do count exato |
+
+#### Notas
+
+**wrangler.json e configs Cloudflare**: `wrangler.json` e arquivos como
+`_routes.json` sao JSON e validam pela regra JSON acima (parse-sanity via
+`node -e`). Validacao semantica Cloudflare (schema proprietario, impacto
+em bindings, dry-run de deploy) **NAO** entra nesta matriz: eh
+responsabilidade de CI/GitHub Actions conforme diretiva operacional do
+workspace `feedback_no_wrangler_deploy` (NUNCA usar `wrangler deploy`
+direto, mesmo `--dry-run`; deploy so via GHA). Peer NAO deve exigir
+`wrangler deploy --dry-run` ou equivalente como evidencia mandatoria.
+
+**Evidencia opcional ativa-se condicionalmente**: a regra geral eh "o
+comando opcional entra quando a classe do artefato o exige OU quando a
+conclusao do peer depender dele". Exemplo: `tsc --noEmit` eh opcional
+para JS puro mesmo que um `tsconfig.json` exista no repo; so vira
+mandatoria quando o artefato sob revisao eh TS/TSX, ou quando o peer
+declara que precisa do type graph para concluir (nesse caso emite
+NEEDS_EVIDENCE).
+
+**Fingerprint**: toda evidencia anexada inclui SHA-256 do artefato no
+momento do comando (§3.4). Fingerprint do artefato diferente do momento
+da evidencia = stale = rerodar.
+
+**Classe nao listada** (regra operacional, nao eh entry da matriz):
+- Caller DEVE declarar a classe no prompt e justificar a evidencia
+  escolhida (ou ausencia de evidencia dinamica com rationale).
+- Peer pode rejeitar via NEEDS_EVIDENCE se a justificativa for
+  insuficiente.
+- Classe nao declarada + evidencia nao-justificada = violacao de §3.1
+  (assercao factual sem evidencia anexada).
+
+**Matriz eh empirica, nao exaustiva**: novas classes sao promovidas para
+a tabela normativa quando aparecerem em sessoes reais de review. Nao
+adicionar classes especulativas por antecipacao.
 
 ### 6.8 Schema expandido do bloco estruturado -- IMPLEMENTADO em v0.4.0-alpha
 
@@ -721,15 +780,17 @@ caro de OpenAI e Anthropic; nao ha gating de plano para modelos top.
 - Spec v4.1 foi aprovada bilateralmente (Claude + Codex) na sessao
   cross-review a847f897 (2026-04-24). v4.1 eh revisao spec-only de v4 --
   nao toca em codigo.
+- Spec v4.2 foi aprovada bilateralmente (Claude + Codex) na sessao
+  cross-review f1fdbee4 (2026-04-24). v4.2 eh revisao spec-only de v4.1
+  promovendo §6.7 (matriz minima de evidencia) de FOLLOW-UP para
+  normativa -- nao toca em codigo.
 
 Uma vez aceita e publicada:
 - Substitui revisao anterior in-place.
 - Referenciada como a spec ativa em novas sessoes.
 - Fica congelada ate nova sessao de spec ser aberta (sem amend silencioso).
 
-Follow-ups pos-v4.1 (registrados mas fora do escopo desta release):
-- Secao 6.7 (matriz minima de evidencia por classe de artefato) -- proxima
-  sessao dedicada.
+Follow-ups pos-v4.2 (registrados mas fora do escopo desta release):
 - Secao 6.9.2: auto-discovery controlado de modelo top-level com
   auditabilidade (registrado como follow_up do Codex na sessao 08cd61e6).
 - Secao 2.3.1: reconsideracao de `caller_requests`/`follow_ups` como arrays
@@ -742,3 +803,8 @@ Follow-ups pos-v4.1 (registrados mas fora do escopo desta release):
 - Gatilho opcional para `rounds_limit`/`session_digest` em `session_read` --
   somente se/quando meta.json real atingir pressao de overflow mensuravel
   (§6.6.3).
+- Considerar promover o padrao "em revalidacao durante sessao; aprovada
+  apenas pos-READY bilateral" como clausula operacional normativa em
+  revisao futura de Secao 8 ou Secao 6.9 (registrado como follow_up do
+  Codex na sessao f1fdbee4; padrao aplicado de facto em v4.2 mas nao
+  normativado).
