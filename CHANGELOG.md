@@ -15,6 +15,28 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.0.3] — 2026-04-25
+
+**Security patch: ReDoS hardening em parser helpers.** GitHub CodeQL (`js/polynomial-redos`, severity `high`) flagou dois sites usando `/\s+$/` para right-trim em texto de input não-controlado vindo de peers. Em inputs com cluster de whitespace seguido de não-whitespace (`"   X"`-style) o regex tem complexidade O(N²) por backtracking polinomial; `String.prototype.trimEnd()` resolve em O(N) com semântica idêntica. Frozen surfaces v1.x preservados (zero observable change para inputs válidos).
+
+### Corrigido
+- **`src/lib/model-parser.js:47`** (`rightTrim`): `s.replace(/\s+$/, '')` → `s.trimEnd()`. CodeQL alert #1 resolvido.
+- **`src/lib/status-parser.js:255`** (`parsePeerResponse`): `text.replace(/\s+$/, '')` → `text.trimEnd()`. CodeQL alert #2 resolvido.
+
+### Alterado — Version
+- `src/server.js` VERSION bumpado `1.0.2` → `1.0.3`.
+- `package.json` + `package-lock.json` bumpados via `npm version 1.0.3 --no-git-tag-version`.
+
+### Validação
+- Smoke gate: 125 steps GREEN — `trimEnd()` é runtime-equivalente para inputs válidos; nenhum teste afetado.
+- check-models: no drift.
+- Comportamento observável idêntico para todos os inputs reais; diferença mensurável apenas em inputs adversariais com whitespace bomb.
+
+### Não validado por trilateral
+v1.0.3 é security patch sob v1.x semver patch policy (preserva frozen surfaces; zero behavioral change). Não exige sessão trilateral. CodeQL re-scan automático após push deve auto-resolver os alertas.
+
+---
+
 ## [1.0.2] — 2026-04-25
 
 **First npm publish.** Package renomeado para scope `@lcv-leo/cross-review-mcp` e publicado em ambos os registries (npmjs.com primário + GitHub Packages mirror) com provenance attestation. Zero behavioral change; runtime e schemas idênticos a v1.0.1. v1.x semver patch policy preservado (frozen surfaces inalterados).

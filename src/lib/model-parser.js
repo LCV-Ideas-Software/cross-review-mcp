@@ -44,7 +44,7 @@ const MODEL_CLOSE_TAG = '</cross_review_peer_model>';
 const MAX_MODEL_ID_CHARS = 120;
 
 function rightTrim(s) {
-    return s.replace(/\s+$/, '');
+    return s.trimEnd();
 }
 
 // Return { prefix, stripped } where:

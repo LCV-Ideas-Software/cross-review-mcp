@@ -252,7 +252,7 @@ function parsePeerResponse(text) {
     if (typeof text !== 'string' || !text.length) {
         return empty;
     }
-    const rtrimmed = text.replace(/\s+$/, '');
+    const rtrimmed = text.trimEnd();
     if (!rtrimmed.length) {
         return empty;
     }
