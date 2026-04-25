@@ -15,6 +15,39 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.0.1] — 2026-04-25
+
+**Patch release: doc-only refresh of user-visible MCP tool descriptions.** v1.0.0 cut left stale alpha labels and stale spec references in the `description` strings emitted via `ListToolsRequestSchema`. MCP clients reading those descriptions saw "v0.5.0-alpha" / "spec v4.7" / "spec v4.8" / "v0.7.0-alpha / spec v4.10" even though the running server was tagged v1.0.0 and the head spec is v4.11. Operator caught the contradiction post-cut. Zero behavioral change; frozen surfaces (tool names + input schemas) unchanged per v1.x semver patch policy.
+
+### Alterado
+- `session_init` description: removed "In v0.5.0-alpha" preamble; "spec v4.8 section 6.9.3" → "spec v4.11 section 6.9.3".
+- `session_read` description: "spec v4.8 section 6.9.3.6" → "spec v4.11 section 6.9.3.6".
+- `session_check_convergence` description: removed "(ask_peers round, v0.5.0-alpha)" alpha label; "spec v4.7 section 2.8" → "spec v4.11 section 2.8".
+- `ask_peer` description: simplified "Peer response contract (v0.5.0-alpha; v0.4.0 schema preserved + peer-model block added)" → "Peer response contract"; removed "(NEW in v0.5.0)" annotation; "(spec v4.8 + F2 R15)" → explicit reference to spec v4.11 §6.11 transport-class bypass discipline (skip for cli-subscription / oauth-personal; strict for api-key).
+- `ask_peer.prompt` field description: "v0.5.0-alpha tail directive" → "tail directive".
+- `ask_peers` description: "(v0.5.0-alpha, spec v4.7)" → "(spec v4.11)"; "R14 redaction" → "redaction" (the F2 R14 internal-design-session anchor was opaque to MCP clients).
+- `escalate_to_operator` description: "v0.7.0-alpha / spec v4.10 Item D" → "(spec v4.11 §6.14 Item D)" with reordered first sentence for clarity.
+
+### Preservado intencionalmente (escopo deliberado fora deste patch)
+- **Code comments** in `src/lib/peer-spawn.js`, `src/lib/model-parser.js`, `src/lib/session-store.js`, `scripts/audit-model-drift.js` documenting WHEN behavior was introduced (e.g. "Introduced in v0.5.0-alpha") — these are historical anchors for source archaeology, not user-visible strings.
+- **`CHANGELOG.md`** historical entries — by definition versioned per release.
+- **`README.md`** version-history table — historical record.
+- **`AGENTS.md`** narrative referring to "v0.5.0-alpha → v0.9.0-alpha.1" — describes release lineage.
+- **`docs/workflow-spec.md`** v4.7→v4.8→v4.9→v4.10→v4.11 delta sections — the spec is incremental by design; head version is v4.11 and prior delta sections remain for context.
+
+### Alterado — Version
+- `src/server.js` VERSION bumpado `1.0.0` → `1.0.1`.
+- `package.json` version bumpado `1.0.0` → `1.0.1` (via `npm version 1.0.1 --no-git-tag-version` to keep package-lock.json synced atomically).
+- `package-lock.json` root + `packages[""]` versions bumpados `1.0.0` → `1.0.1`.
+
+### Validação
+- Smoke gate: 125 steps GREEN (zero behavioral change; smoke does not depend on tool-description strings).
+
+### Não validado por trilateral
+v1.0.1 é doc-only patch sob v1.x semver patch policy (preserves frozen surfaces); não exige nova sessão de cross-review trilateral. Zero behavioral change, zero schema change, zero new field.
+
+---
+
 ## [1.0.0] — 2026-04-25
 
 **Stable release.** Cut ratified by 10-session field-use validation gate + trilateral final approval session `fca13b80-14c7-456d-bedf-4ede16646e24` (2026-04-25, 2 rounds, 3/3 READY: caller=claude + peers=codex+gemini). Implementation-ratified per `docs/workflow-spec.md` §8 v4.5 preamble — design scope was approved trilaterally in sessions `c9508617` (v0.6.0-alpha / spec v4.9) and `6cf09af3` (v1.0 frozen surface declaration + v1.x semver policy); v1.0.0 ships those decisions without introducing new normative scope.

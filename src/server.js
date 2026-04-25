@@ -57,7 +57,7 @@ const {
     MODEL_CLOSE_TAG,
 } = require('./lib/model-parser.js');
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 
 // v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
 // Requires ALL THREE of (1) status block absent, (2) body < 200 chars,
@@ -128,14 +128,14 @@ function attachPromptTailDirective(prompt) {
 1. \`${MODEL_OPEN_TAG}{"model_id":"<your exact canonical model id>"}${MODEL_CLOSE_TAG}\`
 2. \`<cross_review_status>{"status":"READY|NOT_READY|NEEDS_EVIDENCE", ...}</cross_review_status>\`
 
-The peer-model block enables the caller to detect silent CLI downgrade (spec v4.9 section 6.11 — transport-aware model-check discipline). Under non-api-key transports (cli-subscription / oauth-personal) the text self-report is unreliable and the check is SKIPPED with an audit record; under api-key transports the check is authoritative and a mismatch terminates the round as protocol_violation (class: silent_model_downgrade).
+The peer-model block enables the caller to detect silent CLI downgrade (spec v4.11 §6.11 — transport-aware model-check discipline). Under non-api-key transports (cli-subscription / oauth-personal) the text self-report is unreliable and the check is SKIPPED with an audit record; under api-key transports the check is authoritative and a mismatch terminates the round as protocol_violation (class: silent_model_downgrade).
 
-**Anti-hallucination (spec v4.10 section 6.14 — NEW in v0.7.0-alpha):** If you lack verified information to answer a claim or complete a step:
+**Anti-hallucination (spec v4.11 §6.14):** If you lack verified information to answer a claim or complete a step:
 - DO NOT fabricate. No plausible-sounding guesses presented as fact, no hallucinated function signatures / CLI flags / model IDs / file contents / commit SHAs.
 - Exhaustively search first (re-read artifacts, re-query tools, consult primary sources: official docs, CLI \`--help\`, live probes). If a peer exchange can resolve it, respond with status=\`NEEDS_EVIDENCE\` and list specific \`caller_requests\`.
 - If after exhaustive search the gap remains, mark status=\`NEEDS_EVIDENCE\` with a \`caller_requests\` item explicitly requesting operator escalation; the caller orchestrator will surface it.
 
-Optional structured fields (spec v4.10 section 6.14):
+Optional structured fields (spec v4.11 §6.14):
 - \`confidence: 'verified' | 'inferred' | 'unknown'\` — self-declared epistemic state for this response.
 - \`evidence_sources: ["file:path.ext", "tool:name", "url:https://...", "cli:command --help"]\` — concrete sources consulted. Under \`confidence='verified'\` SHOULD include at least one entry.
 - Hard-pair rule: \`confidence='unknown'\` MUST pair with \`status='NEEDS_EVIDENCE'\`. Violating the pairing emits a parser warning and signals a protocol discipline break.`;
@@ -287,7 +287,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         {
             name: 'session_init',
             description:
-                'Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. In v0.5.0-alpha this also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.8 section 6.9.3.',
+                'Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. Also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.11 section 6.9.3.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -308,7 +308,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         {
             name: 'session_read',
             description:
-                'Return the full session metadata (meta.json) including all rounds recorded so far, capability_snapshot, and any failed_attempts (spec v4.8 section 6.9.3.6 audit trail, secrets redacted).',
+                'Return the full session metadata (meta.json) including all rounds recorded so far, capability_snapshot, and any failed_attempts (spec v4.11 section 6.9.3.6 audit trail, secrets redacted).',
             inputSchema: {
                 type: 'object',
                 properties: { session_id: { type: 'string' } },
@@ -318,7 +318,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         {
             name: 'session_check_convergence',
             description:
-                "Return whether convergence holds in the last round. Bilateral (ask_peer round): converged iff BOTH caller_status and peer_status are READY. N-ary (ask_peers round, v0.5.0-alpha): converged iff caller_status is READY AND every responded peer declared READY (unanimity; spec v4.7 section 2.8). Peers excluded at probe time live in capability_snapshot and are NOT in the round's peer list. Peers that failed at spawn time are in failed_attempts and are also excluded from the denominator. peer_status values: READY | NOT_READY | NEEDS_EVIDENCE.",
+                "Return whether convergence holds in the last round. Bilateral (ask_peer round): converged iff BOTH caller_status and peer_status are READY. N-ary (ask_peers round): converged iff caller_status is READY AND every responded peer declared READY (unanimity; spec v4.11 section 2.8). Peers excluded at probe time live in capability_snapshot and are NOT in the round's peer list. Peers that failed at spawn time are in failed_attempts and are also excluded from the denominator. peer_status values: READY | NOT_READY | NEEDS_EVIDENCE.",
             inputSchema: {
                 type: 'object',
                 properties: { session_id: { type: 'string' } },
@@ -344,7 +344,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
         {
             name: 'escalate_to_operator',
             description:
-                'v0.7.0-alpha / spec v4.10 Item D. Record an anti-hallucination escalation: the caller or peer has exhausted peer-exchange evidence gathering and still cannot answer the question without fabrication. The MCP server persists the escalation under meta.escalations[]; the caller orchestrator (Claude Code) surfaces the question to the operator via chat. Returns the escalation record with escalation_id. Does NOT auto-dispatch to the operator — the caller is responsible for the chat surface.',
+                'Anti-hallucination escalation (spec v4.11 §6.14 Item D). Record that the caller or peer has exhausted peer-exchange evidence gathering and still cannot answer the question without fabrication. The MCP server persists the escalation under meta.escalations[]; the caller orchestrator (Claude Code) surfaces the question to the operator via chat. Returns the escalation record with escalation_id. Does NOT auto-dispatch to the operator — the caller is responsible for the chat surface.',
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -367,11 +367,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 Legacy bilateral surface: ask_peer is claude<->codex only (R23). Gemini callers MUST use ask_peers instead.
 
-Peer response contract (v0.5.0-alpha; v0.4.0 schema preserved + peer-model block added):
-  - <cross_review_peer_model>{"model_id":"<canonical id>"}</cross_review_peer_model>  (NEW in v0.5.0)
+Peer response contract:
+  - <cross_review_peer_model>{"model_id":"<canonical id>"}</cross_review_peer_model>
   - <cross_review_status>{"status":"READY", ...}</cross_review_status>
 
-The peer-model block MUST appear immediately before the status block; the status block MUST be the last non-empty token. A mismatch between the declared model_id and the pinned CODEX_MODEL/CLAUDE_MODEL/GEMINI_MODEL constant fails the round as protocol_violation with failure_class='silent_model_downgrade'. This defense is not retried (spec v4.8 + F2 R15).
+The peer-model block MUST appear immediately before the status block; the status block MUST be the last non-empty token. A mismatch between the declared model_id and the pinned CODEX_MODEL/CLAUDE_MODEL/GEMINI_MODEL constant fails the round as protocol_violation with failure_class='silent_model_downgrade'. This check is conditionally skipped per spec v4.11 §6.11 transport-class bypass for cli-subscription / oauth-personal endpoints; api-key endpoints retain the strict check. The defense is not retried.
 
 The v3 legacy line-form (STATUS: READY | STATUS: NOT_READY | STATUS: NEEDS_EVIDENCE) remains supported for status but does NOT substitute for the peer-model block.
 
@@ -383,7 +383,7 @@ Response payload includes peer_structured (clean JSON when the structured block 
                     prompt: {
                         type: 'string',
                         description:
-                            'Full prompt for the peer. The server automatically appends the v0.5.0-alpha tail directive so the peer emits both the peer-model and status blocks in the correct order.',
+                            'Full prompt for the peer. The server automatically appends the tail directive so the peer emits both the peer-model and status blocks in the correct order.',
                     },
                     caller_status: {
                         type: 'string',
@@ -397,7 +397,7 @@ Response payload includes peer_structured (clean JSON when the structured block 
         },
         {
             name: 'ask_peers',
-            description: `N-ary peer spawn (v0.5.0-alpha, spec v4.7): send the same prompt to all complements (caller=${CALLER}, peers=${PEERS.join(',')}) in parallel and return the aggregated per-peer responses. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (R14 redaction applied) and are excluded from the round's unanimity denominator. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. Convergence (N-ary): caller READY AND every responded peer READY. This is the canonical tool for triangular sessions.`,
+            description: `N-ary peer spawn (spec v4.11): send the same prompt to all complements (caller=${CALLER}, peers=${PEERS.join(',')}) in parallel and return the aggregated per-peer responses. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (redaction applied) and are excluded from the round's unanimity denominator. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. Convergence (N-ary): caller READY AND every responded peer READY. This is the canonical tool for triangular sessions.`,
             inputSchema: {
                 type: 'object',
                 properties: {
@@ -532,7 +532,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
             case 'ask_peer': {
                 if (LEGACY_PEER == null) {
                     throw new Error(
-                        `ask_peer is a bilateral-only surface (claude<->codex). Caller=${CALLER} MUST use ask_peers instead (R23, spec v4.7).`
+                        `ask_peer is a bilateral-only surface (claude<->codex). Caller=${CALLER} MUST use ask_peers instead (spec v4.11 §6.11 / triangular topology).`
                     );
                 }
                 const sessionId = args.session_id;
