@@ -95,11 +95,11 @@ The only runtime dependency is `@modelcontextprotocol/sdk`.
 Before using the server or after any edit, confirm both gates pass:
 
 ```bash
-npm test             # 117 smoke steps (unit + end-to-end stdio JSON-RPC)
+npm test             # 125 smoke steps (unit + end-to-end stdio JSON-RPC)
 npm run check-models # model-drift audit against docs/top-models.json
 ```
 
-Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema evolution, spawn contention, probe stubs, session-store atomicity, redaction, N-ary convergence, model-check MATCH/DOWNGRADE/MISSING, rate-limit detection, banner attestation, anti-hallucination confidence/evidence_sources field parsing, and operator escalation end-to-end.
+Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema evolution, spawn contention, probe stubs, session-store atomicity, redaction, N-ary convergence, model-check MATCH/DOWNGRADE/MISSING, rate-limit detection, banner attestation, anti-hallucination confidence/evidence_sources field parsing, operator escalation end-to-end, and Gemini auth-detection precedence regression coverage. Exact count evolves with each release — check the last line of `npm test` output for the current total.
 
 ---
 
@@ -197,7 +197,7 @@ Useful for debugging when a session diverges from expectations.
 
 ## Protocol contract
 
-The full normative spec lives at **[`docs/workflow-spec.md`](./docs/workflow-spec.md)** (v4.11 at the time of writing; ~1800 lines; en-US per §6.10).
+The full normative spec lives at **[`docs/workflow-spec.md`](./docs/workflow-spec.md)** (v4.11 at the time of writing; ~2200 lines; en-US per §6.10).
 
 Quick reference — section map:
 
@@ -234,7 +234,7 @@ cross-review-mcp/
 |       |-- status-parser.js         STATUS + v4/v4.10 structured block parser
 |       |-- model-parser.js          Sibling peer-model block parser (silent-downgrade defense)
 |-- scripts/
-|   |-- functional-smoke.js          JSON-RPC stdio smoke (117 steps)
+|   |-- functional-smoke.js          JSON-RPC stdio smoke (125 steps at v0.9.0-alpha.1)
 |   |-- audit-model-drift.js         Advisory drift audit (check-models)
 |   |-- probe-reviewer-isolation.js  Legacy Commit-1 hard gate; retained for regression
 |-- docs/
@@ -271,7 +271,7 @@ cross-review-mcp/
 ### Make a change, verify gates
 
 ```bash
-npm test              # 117 smoke steps must stay GREEN
+npm test              # 125 smoke steps must stay GREEN (count may grow across releases; check the last line of output)
 npm run check-models  # advisory drift audit; must stay clean
 ```
 

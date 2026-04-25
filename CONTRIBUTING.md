@@ -46,7 +46,7 @@ Contributions fall into three classes. Each has a different review bar.
 - Changes to the convergence predicate or denominator rule.
 - Changes to the protocol contract visible to peers (new/renamed structured fields, new tool surfaces, new failure classes that peers are expected to produce).
 - Changes to model pins (requires updating `docs/top-models.json` and passing `check-models`).
-- Changes to peer transport (billing-bearing — see `feedback_subscription_over_api_billing.md` in workspace memory).
+- Changes to peer transport (billing-bearing: peer spawn stays on CLI-subscription — migrating to official SDKs [`@anthropic-ai/sdk`, `openai`, `@google/genai`] switches billing from subscription-covered to per-token API metering and is vetoed; this applies even if the SDK exposes an authoritative `response.modelVersion` field that would clean up §6.11 audit output).
 
 **Bar:** **trilateral cross-review session required before PR merge**. The process:
 
@@ -67,13 +67,13 @@ The operator and maintainers MAY also require escalations via `escalate_to_opera
 Every PR must pass both gates locally and in CI:
 
 ```bash
-npm test              # 117+ smoke steps; add new assertions if you add public behavior
+npm test              # 125+ smoke steps (count at v0.9.0-alpha.1); add new assertions if you add public behavior
 npm run check-models  # advisory drift + staleness + fallback_chain invariant audit
 ```
 
 ### When gates block you
 
-- **Smoke regression.** Debug the specific step that failed. Do NOT disable assertions to unblock merge. `feedback_fix_dont_remove.md` (workspace memory) applies here: fix the root cause, never remove checks to silence warnings.
+- **Smoke regression.** Debug the specific step that failed. Do NOT disable assertions to unblock merge. The project-wide rule is fix the root cause, never remove checks to silence warnings — deleting a failing assertion is avoidance, not engineering.
 - **check-models drift.** If you bumped a pin in `src/lib/peer-spawn.js` without updating `docs/top-models.json`, fix the JSON in the same PR. If you intentionally changed the pin, the PR must also cite a ratifying session (see Class 3).
 - **check-models staleness.** Bumping `last_verified` in `top-models.json` is allowed without a ratifying session IF the model id hasn't changed (you're just attesting that the pin is still valid).
 
@@ -83,9 +83,9 @@ npm run check-models  # advisory drift + staleness + fallback_chain invariant au
 
 These are workspace-level rules codified in memory and enforced by convention:
 
-- **Tri-tool stack is mandatory for substantive work.** Ultrathink + code-reasoning + cross-review. See spec `§6.9.1` and `feedback_tri_tool_internal_to_mcp.md`. One of the three alone is NOT sufficient for Class 3 changes.
+- **Tri-tool stack is mandatory for substantive work.** Ultrathink + code-reasoning + cross-review. See spec `§6.9.1`. The three operate end-to-end at every pipeline stage: structured sequential reasoning (ultrathink) + structured code reasoning (code-reasoning) + structured peer review (cross-review) together. One of the three alone is NOT sufficient for Class 3 changes — the tri-tool pairing MUST hold throughout, independently of which peer transport is active (CLI-subscription today, api-key hypothetically in the future).
 - **Top-level models only, no silent fallback.** Spec `§6.9.2`. Peer spawn invokes the top-tier model explicitly via `-m`. Tier resilience (§6.9.3) is audited, not silent.
-- **CLI transport, not SDK.** Peer transport stays on CLI (subscription-billed) per `feedback_subscription_over_api_billing.md`. Migrating to official SDKs switches billing to per-token API metering and is vetoed.
+- **CLI transport, not SDK.** Peer transport stays on CLI (subscription-billed). Migrating to official SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`) would switch billing from subscription-covered to per-token API metering. Vetoed for the project's baseline configuration, even when SDK adoption would clean up audit output (e.g. authoritative `response.modelVersion`). Any PR that proposes SDK migration MUST explicitly name the billing-model change and wait for maintainer approval — do NOT ship silently.
 - **Strict-only convergence.** Spec `§6.12`. `status_missing` counts AGAINST. No loose-mode toggle.
 - **No fabrication.** Spec `§6.14`. If you lack verified information, answer with `NEEDS_EVIDENCE` and concrete `caller_requests` — never fill gaps with plausible-sounding guesses.
 - **ASCII-only on disk + en-US for peer-exchange + non-user-facing artifacts.** Spec `§6.4` + `§6.10`. User-facing prose (README.pt-BR.md, CHANGELOG, operator-directed chat) MAY stay in pt-BR; everything the peer consumes MUST be en-US ASCII.
