@@ -475,6 +475,78 @@ against actual v1.2.4 (not stale snapshot), AND the auditor used en-US
 peer exchange per v1.2.2 §6.10 enforcement. Both factors increased the
 yield meaningfully.
 
+### Round-7 follow-up: caller-memory correction + verdict-criterion note (post-v1.2.8 ship)
+
+Operator commissioned a fresh round of audits on v1.2.8. Gemini and
+Codex both audited; they agreed on the technical residuals (request-
+boundary DoS caps, Windows shell:true partial reap, behavioral
+peer-emulator harness, TOCTOU realpath race) — all already documented
+as v1.3.x deferrals in §6.18.3 + this audit doc. They diverged on the
+ship-readiness LABEL: Gemini returned NOT_READY, Codex returned READY
+with documented residuals. Codex then meta-evaluated Gemini's report.
+
+#### 1. Caller-memory correction (the actionable round-7 outcome)
+
+Codex's audit surfaced a wrong claim in the caller's workspace memory
+(`.ai/memory.md` Pt.2 v1.2.5 marathon entry): the caller had recorded
+`convergence_snapshot.spec_version='v4.9'` in v4.14-era sessions as a
+"bug, follow-up v1.3+." This was incorrect.
+
+Reading `src/lib/session-store.js:303-311` shows the design is
+intentional with two distinct constants:
+
+- `CONVERGENCE_SPEC_VERSION = "v4.9"` — stamps the convergence-snapshot
+  semantic. Frozen at v4.9 because the strict-quorum predicate has not
+  changed since v4.9 introduced it.
+- `SESSION_SPEC_VERSION = "v4.14"` — stamps the session-level spec
+  version. Evolves per spec amendment.
+
+The source comment between the two declarations explicitly states:
+"Independent from CONVERGENCE_SPEC_VERSION (which marks the
+convergence-snapshot semantic) so they can evolve at different cadences."
+
+Persisted `convergence_snapshot.spec_version='v4.9'` is therefore
+correct, not a bug. The caller's memory note has been corrected.
+Recording here so the audit trail captures the round-7 finding +
+correction in one place.
+
+#### 2. Verdict-criterion note (no peer-blaming intended)
+
+Gemini and Codex applied different ship-readiness criteria:
+
+- Gemini (implicit in NOT_READY): "ready = full mitigation of every
+  identified residual risk." Under this bar, no project release ships
+  before all v1.3.x deferrals close.
+- Codex (explicit, matching this project's documented stance):
+  "ready = ship-worthy under the §6.21 single-user trusted-host threat
+  model with residuals on-roadmap."
+
+This project's canonical ship criterion is the second one. v1.2.8 is
+READY-with-residuals against the documented threat model. Both peers'
+TECHNICAL findings about the residuals are correct; the LABEL choice
+follows from the criterion choice.
+
+Codex's two precision corrections to Gemini's narrative are also
+canonical for this audit trail:
+
+- "Vai órfã" (deterministic) → "pode órfã" (probabilistic). When
+  `taskkill /T /F` fails and `proc.kill('SIGKILL')` reaps cmd.exe, the
+  grandchild MAY orphan (Windows lacks automatic process-group
+  cleanup), but the outcome depends on what cmd.exe does on terminate.
+  The §6.18.3 v1.2.7 amendment correctly uses "may orphan."
+- "shell:true obrigatório" → "deliberate architectural deferral
+  (§6.21)." Spec §6.21 explicitly treats shell:true as a v1.3.x
+  deferral target driven by Windows PATHEXT + .cmd shim resolution,
+  not as an absolute architectural constraint.
+
+#### 3. No new ship
+
+Round-7 is purely an audit-trail recording exercise. No code change,
+no spec change, no version bump. Runtime remains v1.2.8. Cross-review
+session was conducted on the audit-doc edit per the
+`feedback_cross_review_mandatory_pre_commit.md` directive (commit-time
+gate, not version-bump-time gate).
+
 ## Operator action item (still open from rounds 1-2)
 
 Gemini CLI trust-directory issue persists in the audit environment:
