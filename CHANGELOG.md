@@ -15,6 +15,35 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.8] — 2026-04-26
+
+**Doc-only clarification: F4 fallback wording tightened from overstated "real reap" to honest "best-effort proc-handle reap" + new explicit deferral bullet for tree-kill completeness under `shell: true`.** Round-6 audit on v1.2.7 (Gemini-orchestrated, codex meta-eval) approved v1.2.7 as READY but both peers correctly observed in their own meta-eval that the §6.18.3 v1.2.7 amendment overstates F4 closure: under §6.21 `shell: true`, the proc handle Node holds is `cmd.exe`, so on Windows the v1.2.7 fallback `proc.kill('SIGKILL')` reaps the shell but does NOT walk the tree to the actual peer-CLI grandchild. Full tree-kill is what `taskkill /T /F` does; when `taskkill` fails the fallback is harm reduction over log-and-leak, not equivalent.
+
+This release does NOT change runtime semantics — the kill code is unchanged. It aligns three doc surfaces with what the code actually does and adds operator visibility into the limitation when it fires.
+
+### Alterado — wording fixes (no contract change; MUST clauses remain procedural)
+- `docs/workflow-spec.md` §6.18.3 v1.2.7 amendment item 2: "real reap when it didn't" → "best-effort reap of the proc handle when it didn't" + 7-line caveat block explaining the shell:true grandchild-orphan limitation.
+- `CHANGELOG.md` v1.2.7 F4 entry: same overstatement removed; pointer to v1.2.8 caveat added.
+- `README.md` v1.2.7 history-table row: "real kill on still-live ones" → "best-effort proc-handle reap on still-live ones".
+- `src/lib/peer-spawn.js` close-handler comment: "real kill on still-live ones" → "best-effort proc-handle reap on still-live ones" + 4-line v1.2.8 caveat.
+
+### Adicionado — operator-visible log message caveat
+- `src/lib/peer-spawn.js` ALL THREE Windows fallback log paths get the same caveat suffix (R1 codex catch — initially missed the synchronous `taskkill` spawn-error path):
+  1. `killer.on('close', ...)` non-zero-exit branch (line ~470).
+  2. `killer.on('error', ...)` runtime-error branch (line ~488).
+  3. Synchronous `try { spawn('taskkill', ...) } catch (err)` branch (line ~447) — fires when `taskkill` itself is missing from PATH or the spawn call throws.
+- New log text: "falling back to proc.kill" → "falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)". When ANY of the three failure paths fires, operators reading their own host stderr see the limitation explicitly.
+
+### Adicionado — v1.3.x deferral list: F4 fallback completeness under shell:true
+- New 4th bullet in spec §6.18.3 v1.2.7 amendment deferral list (alongside R3 MCP request caps, R4 behavioral harness, §2 TOCTOU). Codifies the residual that gemini's v1.2.7 re-audit + codex meta-eval both flagged. Full closure of the cmd.exe-shell-orphan layer tied to §6.21 `shell: false` migration (PATHEXT resolution + direct exe spawn → handle-level kill closes the immediate-shell layer). Important nuance (R2 codex polish): even under `shell: false`, handle-level kill is NOT a general descendant tree walk — if the peer CLI itself spawns sub-processes that don't inherit a kill signal, those may still orphan. Broader peer-CLI-descendant containment requires `taskkill /T /F` (the primary reaper that the fallback exists to back up) or an OS-level job object on Windows; that broader containment is out of scope under the current single-user trusted-host threat model. Interim mitigations considered and rejected for v1.2.x: retry `taskkill` (likely re-fails same way), `wmic` tree walker (same shell-out failure modes).
+
+### Validação
+- `npm test` 179 GREEN (no smoke change required — MUST clause unchanged so anti-drift assertions still hold).
+- `npm run check-models` GREEN.
+- No new MCP tools, no semantic change, no peer cross-review session required (peers explicitly accepted the v1.2.7 wording knowing it was best-effort; doc clarification that admits what peers explicitly accepted is not a new contract requiring re-validation).
+
+---
+
 ## [1.2.7] — 2026-04-26
 
 **External-audit round-5 closure: F3 stream listener detach + F4 Windows taskkill fallback + codex comment drift fix.** Round-5 (Gemini-orchestrated against v1.2.6, codex-corroborated in independent audit) found two real implementation gaps in the §6.18.3 RAM cap and §2 process-reaping paths. v1.2.6 was a CodeQL-only static-analysis fix; v1.2.7 closes the runtime semantics that codex initially went READY on but reversed when shown gemini's evidence (codex miss-profile note: 0 real bugs caught vs gemini's 2 — atypical for the rigor profile, recorded in audit doc).
@@ -26,7 +55,7 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ### Corrigido — §6.18.3 v1.2.7 amendment F4: Windows taskkill nonzero-exit fallback (process reaping)
 - **Pre-v1.2.7 bug:** `killer.on('close', code)` handler logged on `code !== 0` but had no recovery path. `taskkill` failures (AV interference, permission inheritance bugs, race with normal exit) leaked the child process — the parent's promise had already rejected, but the child kept running. The `killer.on('error', err)` path also only logged.
-- **Fix:** both handlers now invoke `proc.kill('SIGKILL')` in a try-catch (swallows ESRCH for already-dead processes) AFTER the log line. Strict improvement: harmless when child already exited; real reap when it didn't.
+- **Fix:** both handlers now invoke `proc.kill('SIGKILL')` in a try-catch (swallows ESRCH for already-dead processes) AFTER the log line. Strict improvement over log-and-leak: harmless when child already exited; best-effort proc-handle reap when it didn't. **Caveat clarified in v1.2.8:** under §6.21 `shell: true`, on Windows `proc` is `cmd.exe` and the SIGKILL only reaps the shell, not the peer-CLI grandchild — full tree-kill completeness when `taskkill` itself fails is a v1.3.x deferral tied to the `shell: false` migration.
 
 ### Corrigido — codex round-5 catch: stale comment at session-store.js:498-500
 - **Pre-v1.2.7 bug:** comment described the convergence predicate as "failed-spawn peers ... excluded from denominator," which was the pre-v1.2.3 semantics. v1.2.3 §6.18.1 strict-quorum closure changed it: failed-spawn peers ARE counted in `round.quorum.rejected` and DO count AGAINST convergence (predicate requires `round.quorum.rejected === 0`). The comment was 4 releases stale.

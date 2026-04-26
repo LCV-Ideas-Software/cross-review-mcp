@@ -397,6 +397,79 @@ pre-existing biome warnings on the modified files:
   updated to be formatter-agnostic on quote choice so future biome
   migrations don't break gates.
 
+### Round-6 follow-up: v1.2.8 wording clarification (post-v1.2.7 ship)
+
+After v1.2.7 shipped, the operator commissioned a fresh Gemini audit
+against the v1.2.7 source (using the same `ultrathink` +
+`code-reasoning` + `cross-review-mcp` orchestration as round-5).
+Gemini's session `03ad4808` returned APPROVED on F3 closure but flagged
+that the F4 `proc.kill('SIGKILL')` fallback is **partial** under §6.21
+`shell: true` — Node holds the `cmd.exe` shell handle, so SIGKILL on
+`proc` reaps the shell but does NOT walk the tree to the actual peer
+CLI grandchild. Codex independently re-audited (session
+`5eb86b0d-b502-43f5-a5ea-07b9457c9886`) and converged READY in R1, then
+in a separate meta-evaluation explicitly concurred with gemini's
+partial-fallback observation: "v1.2.7 fecha F4 apenas como melhoria
+best-effort, não como garantia completa de kill tree quando taskkill
+falha."
+
+**v1.2.8 closes a wording overstatement, not a runtime gap.** The
+v1.2.7 spec amendment item 2 said the SIGKILL fallback was "a real
+reap when [the child] didn't [exit]" — true on POSIX (where `proc` IS
+the peer CLI under non-shell spawn) but misleading on Windows shell:true
+(where `proc` is `cmd.exe`). Both peers explicitly accepted the v1.2.7
+wording as best-effort during cross-review session `fe401edf`, so this
+is not a contract change requiring re-validation; it is doc alignment
+with what the code actually does.
+
+**Changes shipped in v1.2.8 (doc-only + log message):**
+
+1. Spec §6.18.3 v1.2.7 amendment item 2: "real reap when it didn't" →
+   "best-effort reap of the proc handle when it didn't" + 7-line caveat
+   block explaining the shell:true grandchild-orphan limitation.
+2. CHANGELOG v1.2.7 F4 entry: same overstatement removed; pointer to
+   v1.2.8 caveat added.
+3. README v1.2.7 history-table row: "real kill on still-live ones" →
+   "best-effort proc-handle reap on still-live ones".
+4. `src/lib/peer-spawn.js` close-handler comment: "real kill on still-
+   live ones" → "best-effort proc-handle reap" + 4-line v1.2.8 caveat.
+5. **Operator-visible log message enhancement (all 3 fallback paths).**
+   Initial v1.2.8 R1 patch missed the synchronous `taskkill` spawn-error
+   `try/catch` branch (caught by codex R1 in the v1.2.8 cross-review
+   session). v1.2.8 R2 closure: ALL THREE Windows fallback paths now
+   emit the same caveat suffix:
+   - synchronous `try { spawn('taskkill', ...) } catch (err)` branch
+     at ~`peer-spawn.js:447-455`,
+   - `killer.on('close', code !== 0)` branch at ~`peer-spawn.js:470`,
+   - `killer.on('error', err)` branch at ~`peer-spawn.js:488`.
+   New log text: "falling back to proc.kill" → "falling back to
+   proc.kill (best-effort; on Windows shell:true, peer CLI grandchild
+   may orphan if cmd.exe was the immediate child — see spec §6.18.3
+   v1.2.8 caveat)". Increases operational visibility when ANY of the
+   three failure paths fires.
+6. New 4th deferral bullet in spec §6.18.3 amendment: "F4 fallback
+   completeness under shell:true" with explicit interim-mitigation
+   rejection notes (retry-`taskkill`: likely re-fails same way;
+   `wmic`-based tree walker: same shell-out failure modes). Proper
+   closure tied to §6.21 `shell: false` migration (PATHEXT + direct
+   exe spawn → handle-level kill closes the cmd.exe-shell-orphan layer
+   specifically). Note: even under `shell: false`, handle-level kill is
+   not a general descendant tree walk — peer CLI sub-processes can
+   still orphan; broader containment requires `taskkill /T /F` (which
+   the fallback path is itself backing up) or an OS-level job object
+   on Windows. v1.2.8 narrows the residual to the cmd.exe-shell layer
+   only; broader peer-CLI-descendant containment is out of scope under
+   the current threat model.
+
+No semantic change. No new MCP tools. Smoke 179 GREEN unchanged. Peer
+cross-review session `a8e7be3e-0f6d-4999-aec3-5da71a8bd41f` ran R1 →
+R2 → R3 (R1 caught the missed 3rd fallback path; R2 caught residual
+"handle-level kill IS tree kill" overstatement that survived in this
+audit doc + CHANGELOG; R3 closes both). Operator-directed cross-review
+even for doc-only release proved its value catching real drift the
+caller missed — operator override of caller's "no cross-review needed"
+judgment was correct.
+
 Round 4 had the operator restarting Gemini's MCP host so the audit ran
 against actual v1.2.4 (not stale snapshot), AND the auditor used en-US
 peer exchange per v1.2.2 §6.10 enforcement. Both factors increased the

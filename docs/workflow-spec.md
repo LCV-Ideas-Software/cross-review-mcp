@@ -2487,8 +2487,20 @@ and the related §2 process-reaping path. Closed in v1.2.7:
    `killer.on('error', err)` path also only logged. Implementations MUST
    invoke `proc.kill('SIGKILL')` (in a try-catch that swallows ESRCH for
    already-dead processes) on BOTH the nonzero-`close` path AND the
-   `error` path. This is a strict improvement: harmless when the child
-   already exited (catch absorbs the error) and a real reap when it didn't.
+   `error` path. This is a strict improvement over log-and-leak —
+   harmless when the child already exited (catch absorbs the error) and
+   a best-effort reap of the proc handle when it didn't. **Important
+   caveat (v1.2.8 wording clarification, post-round-5 closure):** under
+   `shell: true` (§6.21), `proc` references the immediate child
+   `cmd.exe` shell on Windows, NOT the actual peer CLI. Killing
+   `cmd.exe` does not walk the process tree; the peer CLI grandchild
+   may orphan when `taskkill /T /F` (which DOES walk the tree) has
+   already failed. The `proc.kill('SIGKILL')` fallback is therefore
+   harm reduction over log-and-leak — it strictly improves the
+   handle-level reap — but is NOT a guaranteed tree kill on Windows.
+   Full tree-kill completeness when `taskkill` fails is a separate
+   v1.3.x deferral item (see deferral list below) and is properly tied
+   to the `shell: false` migration.
 
 **Test coverage (v1.2.7).** New structural anti-drift driver
 `driveV414StreamListenerDetachUnit` asserts both detach helpers
@@ -2520,6 +2532,28 @@ v1.2.7 scope:
   threat model. Eliminating it would require POSIX `O_NOFOLLOW`-style
   per-operation gates not currently in Node's stable fs surface; not a
   v1.3.x ship target, filed as known limitation.
+- **F4 fallback completeness under `shell: true`** (round-5 round-6
+  follow-up; gemini's v1.2.7 re-audit + codex meta-eval both flagged this
+  as the residual after F4 closure). When `taskkill /T /F` fails and the
+  v1.2.7 fallback `proc.kill('SIGKILL')` fires, on Windows `proc`
+  references the immediate `cmd.exe` shell child (because §6.21 spawns
+  with `shell: true`), so the kill terminates `cmd.exe` but does NOT walk
+  the tree to the actual peer CLI grandchild — orphan possible. The
+  proper closure is the §6.21 `shell: false` migration (PATHEXT
+  resolution + direct exe spawn → `proc` IS the peer CLI → handle-level
+  kill closes the cmd.exe-shell-orphan layer specifically). Note: even
+  under `shell: false`, handle-level kill is not a general descendant
+  tree walk — if the peer CLI itself spawns sub-processes that do not
+  inherit a kill signal, those may still orphan; full tree-kill in
+  fallback paths would still require `taskkill /T /F` (the primary
+  reaper that this fallback exists to back up) or an OS-level job
+  object on Windows. The v1.2.8 caveat narrows the residual to
+  the cmd.exe-shell layer specifically; broader peer-CLI-descendant
+  containment is out of scope for the current threat model. Interim
+  mitigations considered and rejected for v1.2.x: (a) retry `taskkill`
+  once on first failure (likely re-fails same way); (b) `wmic`-based
+  tree walker (same shell-out failure modes). Held as v1.3.x ship
+  target alongside `shell: false` migration.
 
 #### 6.18.4 Long-idle session purge (NEW in v1.2.5, external audit round-4 §4.2 closure)
 

@@ -444,8 +444,13 @@ function killProcessTree(proc) {
 		} catch (err) {
 			// taskkill itself unavailable on PATH. Fall back to direct kill,
 			// log the cleanup-tooling problem so the operator can investigate.
+			// v1.2.8 caveat: same shell:true grandchild-orphan limitation as
+			// the close-nonzero and error handlers below — proc IS the cmd.exe
+			// shell, so SIGKILL reaps the shell handle but does NOT walk the
+			// tree to the actual peer CLI grandchild. Full tree-kill is a
+			// v1.3.x deferral tied to the shell:false migration.
 			process.stderr.write(
-				`[cross-review-mcp] taskkill spawn error PID=${proc.pid}: ${err.message}; falling back to proc.kill\n`,
+				`[cross-review-mcp] taskkill spawn error PID=${proc.pid}: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 			);
 			try {
 				proc.kill("SIGKILL");
@@ -465,15 +470,19 @@ function killProcessTree(proc) {
 		killer.on("close", (code) => {
 			if (code !== 0) {
 				process.stderr.write(
-					`[cross-review-mcp] taskkill PID=${proc.pid} exit=${code}: ${stderrTail.slice(-400)}; falling back to proc.kill\n`,
+					`[cross-review-mcp] taskkill PID=${proc.pid} exit=${code}: ${stderrTail.slice(-400)}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 				);
 				// v1.2.7 / external-audit round-5 F4: nonzero-exit fallback.
 				// Pre-v1.2.7 we only logged. taskkill rarely fails (typical
 				// causes: AV interference, permission inheritance bug, race
 				// with normal exit), but when it does we'd leak the process.
 				// proc.kill('SIGKILL') is a no-op on dead processes (catch
-				// covers ESRCH) and a real kill on still-live ones — strictly
-				// an improvement over log-and-leak.
+				// covers ESRCH) and a best-effort proc-handle reap on still-
+				// live ones — strict improvement over log-and-leak. v1.2.8
+				// caveat: under shell:true (§6.21), proc IS the cmd.exe shell
+				// on Windows, so this kills the shell handle but does NOT
+				// walk the tree; full tree-kill completeness is a v1.3.x
+				// deferral tied to the shell:false migration.
 				try {
 					proc.kill("SIGKILL");
 				} catch {}
@@ -481,9 +490,11 @@ function killProcessTree(proc) {
 		});
 		killer.on("error", (err) => {
 			process.stderr.write(
-				`[cross-review-mcp] taskkill PID=${proc.pid} runtime error: ${err.message}; falling back to proc.kill\n`,
+				`[cross-review-mcp] taskkill PID=${proc.pid} runtime error: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 			);
 			// v1.2.7 / external-audit round-5 F4: same fallback for runtime errors.
+			// v1.2.8 caveat: same shell:true grandchild-orphan limitation as
+			// the close-nonzero path above; full tree-kill is v1.3.x.
 			try {
 				proc.kill("SIGKILL");
 			} catch {}
