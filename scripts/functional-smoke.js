@@ -4813,29 +4813,47 @@ async function driveSessionStoreUnit() {
 	const results = [];
 	const store = require("../src/lib/session-store.js");
 
-	// redactSensitive: known patterns. Fixture strings interpolate
-	// small string literals via template syntax so the static source
-	// never contains a contiguous payload that matches GitHub Secret
-	// Scanning regexes (Google API Key, GitHub PAT, JWT, Slack, etc.).
-	// The runtime values still exercise the redaction code paths
-	// identically — separation is purely syntactic.
+	// redactSensitive: known patterns. Keep fixture payloads split into
+	// fragments so static secret scanners do not see contiguous token-like
+	// values in repository source, while runtime redaction coverage stays
+	// equivalent.
+	const openAiFixture = ["sk", "-"].join("") + "a".repeat(24);
+	const googleFixture = ["AI", "za"].join("") + "A".repeat(35);
+	const jwtFixture = [
+		"ey",
+		"J",
+		"hbGciOiJIUzI1NiJ9",
+		"eyJzdWIifX0",
+		"sig-xyz",
+	].join(".");
+	const githubFixture = ["gh", "p", "_"].join("") + "A".repeat(24);
+	const slackFixture = ["xox", "b", "-", "abc", "-", "def", "-", "ghi"].join(
+		"",
+	);
+	const userPassFixture = ["p4", "ssw0rd"].join("");
+	const envFixture = ["top", "secret"].join("");
+	const envKeyFixture = ["PRIVATE", "_API", "_KEY"].join("");
+	const urlWithUserFixture = ["https", "://", "alice", ":"].join("");
 	const raw = [
-		`token=${"sk-"}abcdefghijklmnopqrstuv`,
-		`${"AI"}zaAbCdEfGhIjKlMnOpQrStUvWxYz012345678`,
-		`Authorization: Bearer ${"eyJ"}hbGciOiJIUzI1NiJ9.eyJzdWIifX0.sig-xyz`,
-		`gh_token=${"ghp"}_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123`,
-		`slack=${"xoxb"}-abc-def-ghi-jklmn`,
-		"PRIVATE_API_KEY=topsecret",
-		`https://alice:${"p4"}ssw0rd@internal.lcv.app.br/path`,
+		`token=${openAiFixture}`,
+		googleFixture,
+		`Authorization: Bearer ${jwtFixture}`,
+		`gh_token=${githubFixture}`,
+		`slack=${slackFixture}`,
+		`${envKeyFixture}=${envFixture}`,
+		`${urlWithUserFixture}${userPassFixture}@internal.lcv.app.br/path`,
 	].join("\n");
 	const redacted = store.redactSensitive(raw);
-	assert(!redacted.includes("sk-abcdefghij"), "redact: sk- OpenAI");
-	assert(!redacted.includes("AIzaAbCdEfGhIj"), "redact: Google AIza");
-	assert(!redacted.includes("eyJhbGciOi"), "redact: JWT");
-	assert(!redacted.includes("ghp_ABCDE"), "redact: GitHub gh");
-	assert(!redacted.includes("xoxb-abc-def"), "redact: Slack xox");
-	assert(!redacted.includes("topsecret"), "redact: env-style PRIVATE_API_KEY");
-	assert(!redacted.includes("alice:p4ssw0rd"), "redact: URL userinfo");
+	assert(!redacted.includes(openAiFixture.slice(0, 12)), "redact: sk- OpenAI");
+	assert(!redacted.includes(googleFixture.slice(0, 14)), "redact: Google AIza");
+	assert(!redacted.includes(jwtFixture.slice(0, 10)), "redact: JWT");
+	assert(!redacted.includes(githubFixture.slice(0, 8)), "redact: GitHub gh");
+	assert(!redacted.includes(slackFixture.slice(0, 12)), "redact: Slack xox");
+	assert(
+		!redacted.includes(envFixture),
+		"redact: env-style PRIVATE_API_KEY",
+	);
+	assert(!redacted.includes(`alice:${userPassFixture}`), "redact: URL userinfo");
 	results.push({
 		step: "session-store.redactSensitive masks OpenAI/Google/JWT/GitHub/Slack/env-style/URL-userinfo (R14)",
 		ok: true,
@@ -4910,7 +4928,7 @@ async function driveSessionStoreUnit() {
 	// saveFailedAttempt with secret in stderr_tail -> redacted.
 	store.saveFailedAttempt(id, "gemini", "rate_limit_exceeded", {
 		stderr_tail:
-			"Error: quota exceeded. token=sk-1234567890abcdefghij; retry later.",
+			`Error: quota exceeded. token=${["sk", "-"].join("")}${"1".repeat(20)}; retry later.`,
 		failure_class: "rate_limit_exceeded",
 		round: 1,
 		retry_attempt: 0,
@@ -4927,7 +4945,7 @@ async function driveSessionStoreUnit() {
 		"attempt carries agent + failure_class",
 	);
 	assert(
-		!attempt.stderr_tail.includes("sk-1234567890"),
+		!attempt.stderr_tail.includes(["sk", "-"].join("") + "1".repeat(10)),
 		"stderr_tail redacted (R14)",
 	);
 	assert(attempt.stderr_tail.includes("[REDACTED]"), "REDACTED marker present");
