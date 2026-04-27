@@ -15,6 +15,34 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.11] — 2026-04-26
+
+**Doc-only narrative correction: round-7 audit-doc closing paragraph annotated with a `**v1.2.11 update**` clarification block.** The original round-7 closing paragraph in `docs/external-audit-2026-04-26-gemini.md` stated "no version bump / runtime remains v1.2.8 / commit-time gate, not version-bump-time gate." Those claims were accurate at round-7 commit time, but became stale after v1.2.9 (bookkeeping bump retroactive to commit `11d95a0`) retired the "commit-time gate" framing in favor of strict workspace `.agents/workflows/version-control.md` §6 patch-bump-on-any-modification. v1.2.11 preserves the original paragraph as the historical record of round-7's decision and appends an in-place clarification block. v1.2.10 + v1.2.11 both bump on doc-only edits under the same §6 rule.
+
+Single-source verified at audit time (pre-release source audit, before this CHANGELOG entry and the README v1.2.11 row were written): a repo-wide grep for the stale phrasings ("remains v1.2.8" / "no version bump" / "commit-time gate" / "version-bump-time gate" / "audit-trail recording exercise") returned three hits — only the audit-doc paragraph (line 544-548) carried the stale narrative. The CHANGELOG:284 and README:27 hits at audit time were inside the v1.2.2 `§6.10.1 clarification` row, which is an accurate historical record of v1.2.2's actual handling and was NOT a duplication of the stale claim. Note: this CHANGELOG entry and the README v1.2.11 row deliberately quote the stale phrases as contextualized correction text, so post-release the same grep returns additional matches inside the v1.2.11 release notes themselves; those additional matches are intentional citations of the corrected wording, not unfixed instances.
+
+No semantic runtime change. Spec unchanged. Runtime kill/stream/spawn/parser logic is byte-equivalent to v1.2.10. v1.2.11 ships: (a) the audit-doc append; (b) the five-surface bookkeeping bump (server.js + package.json + lock + README current-release + README history table + this CHANGELOG entry); (c) **pre-existing biome cleanup carry-over**: `scripts/probe-reviewer-isolation.js` got 3 `useNodejsImportProtocol` autofixes (`require('child_process')` → `require('node:child_process')`, same for `fs` and `path`) + 1 manual `noAssignInExpressions` rewrite (the `while ((m = re.exec(content)) !== null)` loop refactored to an unconditional `while (true)` with a separate `re.exec` + `null` break, semantically identical), and `src/lib/{model-parser,status-parser}.js` got biome's default formatter pass (CRLF→LF + single → double quotes + line-wrap). Biome cleanup surfaced because v1.2.11's own gate ran `biome check src scripts` (broader than v1.2.7's per-file scope), and per `feedback_fix_preexisting_errors.md` pre-existing errors must be fixed even when discovered in an unrelated ship. Smoke 179 GREEN re-verified after parser reformat (anchoring regexes use unchanged JS string-value semantics under quote flip).
+
+### Alterado
+- `docs/external-audit-2026-04-26-gemini.md` round-7 §3 "No new ship": appended a `**v1.2.11 update (post-round-7 correction):**` block immediately after the original closing paragraph. Original paragraph preserved verbatim as historical record.
+- `README.md` "Current release" line: `v1.2.10` → `v1.2.11`.
+- `README.md` "the version history at a glance" table: new `v1.2.11` row prepended at the top (with bold marker); previous `**v1.2.10**` row demoted to non-bold (still second-from-top per newest-first ordering established in v1.2.10).
+- `src/server.js` `VERSION`: `1.2.10` → `1.2.11`.
+- `package.json` + `package-lock.json` (root + nested): `1.2.10` → `1.2.11`.
+- `scripts/probe-reviewer-isolation.js`: 3 `node:` import protocol additions + 1 `while`-loop refactor to remove assign-in-expression. Behavior identical.
+- `src/lib/model-parser.js` + `src/lib/status-parser.js`: biome default formatter pass (line endings + quote style + line wrap). Zero semantic change.
+
+### Verificado
+- Smoke suíte (`npm test`) ainda 179 GREEN.
+- `npm run check-models` GREEN.
+- Biome clean (no new diagnostics).
+- Grep para "remains v1\.2\.8|no version bump|commit-time gate|version-bump-time gate|Runtime remains|audit-trail recording exercise" returnou 3 hits no audit time pre-release (audit-doc target + v1.2.2 row em CHANGELOG + v1.2.2 row em README — os dois últimos são accurate v1.2.2 historical records). Post-release a mesma grep retorna matches adicionais dentro do próprio v1.2.11 release notes (esta entry + a v1.2.11 row no README); essas são intentional citations das stale phrases para contextualizar a correção, não unfixed instances.
+
+### Auditoria
+- Audit-doc round-7 closure → accurate post-v1.2.9 policy state. Decisão registrada nos memorandos do agente (`feedback_workspace_rules_supersede_advisor.md`).
+
+---
+
 ## [1.2.10] — 2026-04-26
 
 **Cosmetic: README version-history table inverted to newest-first ordering.** Operator-requested. The table at the top of `README.md` previously listed releases in chronological order (oldest at top, newest at bottom). Reordered so readers see the current state immediately and walk back through history. No content change to any row text — every row preserved verbatim, only the row order swapped (and the bold marker moved from `v1.2.9` to the new `v1.2.10` row). Per workspace `version-control.md` §6, even cosmetic text reordering qualifies as "mudança de texto" and requires a patch bump + CHANGELOG entry.

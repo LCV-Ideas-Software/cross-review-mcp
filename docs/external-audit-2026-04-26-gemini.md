@@ -547,6 +547,21 @@ session was conducted on the audit-doc edit per the
 `feedback_cross_review_mandatory_pre_commit.md` directive (commit-time
 gate, not version-bump-time gate).
 
+**v1.2.11 update (post-round-7 correction):** the framing above is
+preserved as the historical record of what was decided at round-7
+commit time, but it has since been superseded. v1.2.9 was a
+bookkeeping bump made retroactive to commit `11d95a0` after the
+operator caught that workspace `.agents/workflows/version-control.md`
+§6 mandates a patch bump for ANY modification — including pure text
+changes ("mudanças de texto") — independent of any "commit-time
+gate." The "commit-time gate, not version-bump-time gate" framing is
+therefore retired: the workspace policy is strict patch-bump-on-any-
+modification, not gated by whether bytes shipped to npm change.
+v1.2.10 then bumped on a README-only cosmetic (history-table reorder)
+under the same rule, and v1.2.11 bumps on this audit-doc clarification
+itself. Runtime is v1.2.10 at the time of v1.2.11 ship; v1.2.11 adds
+no code or spec change.
+
 ## Operator action item (still open from rounds 1-2)
 
 Gemini CLI trust-directory issue persists in the audit environment:

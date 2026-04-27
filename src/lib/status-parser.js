@@ -51,8 +51,8 @@
 // field). The first rule violated in the order above decides the warning
 // kind.
 
-const VALID_STATUSES = new Set(['READY', 'NOT_READY', 'NEEDS_EVIDENCE']);
-const VALID_UNCERTAINTY = new Set(['low', 'medium', 'high']);
+const VALID_STATUSES = new Set(["READY", "NOT_READY", "NEEDS_EVIDENCE"]);
+const VALID_UNCERTAINTY = new Set(["low", "medium", "high"]);
 // v0.7.0-alpha / spec v4.10 (Item D): anti-hallucination fields.
 //   confidence: 'verified' | 'inferred' | 'unknown' — peer self-declares
 //     epistemic state. Hard-pair rule: confidence='unknown' MUST pair with
@@ -61,221 +61,221 @@ const VALID_UNCERTAINTY = new Set(['low', 'medium', 'high']);
 //     Files read, tools invoked, URLs fetched, primary docs consulted.
 //     Empty or absent is allowed but under confidence='verified' an empty
 //     set emits an advisory warning.
-const VALID_CONFIDENCE = new Set(['verified', 'inferred', 'unknown']);
+const VALID_CONFIDENCE = new Set(["verified", "inferred", "unknown"]);
 const OPTIONAL_FIELDS = new Set([
-    'uncertainty',
-    'caller_requests',
-    'follow_ups',
-    'confidence',
-    'evidence_sources',
+	"uncertainty",
+	"caller_requests",
+	"follow_ups",
+	"confidence",
+	"evidence_sources",
 ]);
 const MAX_ARRAY_ITEMS = 20;
 const MAX_ITEM_CHARS = 500;
-const OPEN_TAG = '<cross_review_status>';
-const CLOSE_TAG = '</cross_review_status>';
+const OPEN_TAG = "<cross_review_status>";
+const CLOSE_TAG = "</cross_review_status>";
 const LEGACY_LINE_RE = /^STATUS: (READY|NOT_READY|NEEDS_EVIDENCE)$/;
 
 function validateStringArray(value, fieldName, warnings) {
-    // 1) shape
-    if (!Array.isArray(value)) {
-        warnings.push(
-            `${fieldName} has invalid shape; expected array of strings`
-        );
-        return undefined;
-    }
-    // empty array -> normalize to absence, no warning
-    if (value.length === 0) {
-        return undefined;
-    }
-    // 2) count
-    if (value.length > MAX_ARRAY_ITEMS) {
-        warnings.push(
-            `${fieldName} exceeds ${MAX_ARRAY_ITEMS} items (got ${value.length})`
-        );
-        return undefined;
-    }
-    // 3) item type
-    for (let i = 0; i < value.length; i++) {
-        if (typeof value[i] !== 'string') {
-            warnings.push(
-                `${fieldName} has invalid item at index ${i}; expected string`
-            );
-            return undefined;
-        }
-    }
-    // 4) item length
-    for (let i = 0; i < value.length; i++) {
-        if (value[i].length > MAX_ITEM_CHARS) {
-            warnings.push(
-                `${fieldName} item at index ${i} exceeds ${MAX_ITEM_CHARS} chars (got ${value[i].length})`
-            );
-            return undefined;
-        }
-    }
-    return value.slice();
+	// 1) shape
+	if (!Array.isArray(value)) {
+		warnings.push(`${fieldName} has invalid shape; expected array of strings`);
+		return undefined;
+	}
+	// empty array -> normalize to absence, no warning
+	if (value.length === 0) {
+		return undefined;
+	}
+	// 2) count
+	if (value.length > MAX_ARRAY_ITEMS) {
+		warnings.push(
+			`${fieldName} exceeds ${MAX_ARRAY_ITEMS} items (got ${value.length})`,
+		);
+		return undefined;
+	}
+	// 3) item type
+	for (let i = 0; i < value.length; i++) {
+		if (typeof value[i] !== "string") {
+			warnings.push(
+				`${fieldName} has invalid item at index ${i}; expected string`,
+			);
+			return undefined;
+		}
+	}
+	// 4) item length
+	for (let i = 0; i < value.length; i++) {
+		if (value[i].length > MAX_ITEM_CHARS) {
+			warnings.push(
+				`${fieldName} item at index ${i} exceeds ${MAX_ITEM_CHARS} chars (got ${value[i].length})`,
+			);
+			return undefined;
+		}
+	}
+	return value.slice();
 }
 
 function validateOptionalFields(parsed) {
-    const warnings = [];
-    const clean = { status: parsed.status };
+	const warnings = [];
+	const clean = { status: parsed.status };
 
-    // uncertainty
-    if ('uncertainty' in parsed) {
-        const u = parsed.uncertainty;
-        if (typeof u === 'string' && VALID_UNCERTAINTY.has(u)) {
-            clean.uncertainty = u;
-        } else {
-            warnings.push(
-                `uncertainty has invalid shape; expected string in low|medium|high`
-            );
-        }
-    }
+	// uncertainty
+	if ("uncertainty" in parsed) {
+		const u = parsed.uncertainty;
+		if (typeof u === "string" && VALID_UNCERTAINTY.has(u)) {
+			clean.uncertainty = u;
+		} else {
+			warnings.push(
+				`uncertainty has invalid shape; expected string in low|medium|high`,
+			);
+		}
+	}
 
-    // caller_requests
-    if ('caller_requests' in parsed) {
-        const v = validateStringArray(
-            parsed.caller_requests,
-            'caller_requests',
-            warnings
-        );
-        if (v !== undefined) clean.caller_requests = v;
-    }
+	// caller_requests
+	if ("caller_requests" in parsed) {
+		const v = validateStringArray(
+			parsed.caller_requests,
+			"caller_requests",
+			warnings,
+		);
+		if (v !== undefined) clean.caller_requests = v;
+	}
 
-    // follow_ups
-    if ('follow_ups' in parsed) {
-        const v = validateStringArray(parsed.follow_ups, 'follow_ups', warnings);
-        if (v !== undefined) clean.follow_ups = v;
-    }
+	// follow_ups
+	if ("follow_ups" in parsed) {
+		const v = validateStringArray(parsed.follow_ups, "follow_ups", warnings);
+		if (v !== undefined) clean.follow_ups = v;
+	}
 
-    // v0.7.0-alpha / spec v4.10 Item D: confidence.
-    if ('confidence' in parsed) {
-        const c = parsed.confidence;
-        if (typeof c === 'string' && VALID_CONFIDENCE.has(c)) {
-            clean.confidence = c;
-        } else {
-            warnings.push(
-                `confidence has invalid shape; expected string in verified|inferred|unknown`
-            );
-        }
-    }
+	// v0.7.0-alpha / spec v4.10 Item D: confidence.
+	if ("confidence" in parsed) {
+		const c = parsed.confidence;
+		if (typeof c === "string" && VALID_CONFIDENCE.has(c)) {
+			clean.confidence = c;
+		} else {
+			warnings.push(
+				`confidence has invalid shape; expected string in verified|inferred|unknown`,
+			);
+		}
+	}
 
-    // v0.7.0-alpha / spec v4.10 Item D: evidence_sources.
-    if ('evidence_sources' in parsed) {
-        const v = validateStringArray(
-            parsed.evidence_sources,
-            'evidence_sources',
-            warnings
-        );
-        if (v !== undefined) clean.evidence_sources = v;
-    }
+	// v0.7.0-alpha / spec v4.10 Item D: evidence_sources.
+	if ("evidence_sources" in parsed) {
+		const v = validateStringArray(
+			parsed.evidence_sources,
+			"evidence_sources",
+			warnings,
+		);
+		if (v !== undefined) clean.evidence_sources = v;
+	}
 
-    // v0.7.0-alpha Item D: cross-field consistency rules.
-    //   confidence='unknown' MUST pair with status='NEEDS_EVIDENCE'.
-    //   confidence='verified' SHOULD include at least one evidence_sources
-    //     entry (advisory).
-    if (clean.confidence === 'unknown' && clean.status !== 'NEEDS_EVIDENCE') {
-        warnings.push(
-            `confidence='unknown' must pair with status='NEEDS_EVIDENCE' (got status='${clean.status}')`
-        );
-    }
-    if (
-        clean.confidence === 'verified'
-        && (!clean.evidence_sources || clean.evidence_sources.length === 0)
-    ) {
-        warnings.push(
-            `confidence='verified' should include at least one evidence_sources entry (got empty)`
-        );
-    }
+	// v0.7.0-alpha Item D: cross-field consistency rules.
+	//   confidence='unknown' MUST pair with status='NEEDS_EVIDENCE'.
+	//   confidence='verified' SHOULD include at least one evidence_sources
+	//     entry (advisory).
+	if (clean.confidence === "unknown" && clean.status !== "NEEDS_EVIDENCE") {
+		warnings.push(
+			`confidence='unknown' must pair with status='NEEDS_EVIDENCE' (got status='${clean.status}')`,
+		);
+	}
+	if (
+		clean.confidence === "verified" &&
+		(!clean.evidence_sources || clean.evidence_sources.length === 0)
+	) {
+		warnings.push(
+			`confidence='verified' should include at least one evidence_sources entry (got empty)`,
+		);
+	}
 
-    // unknown fields
-    for (const key of Object.keys(parsed)) {
-        if (key === 'status') continue;
-        if (!OPTIONAL_FIELDS.has(key)) {
-            warnings.push(`unknown field '${key}' ignored`);
-        }
-    }
+	// unknown fields
+	for (const key of Object.keys(parsed)) {
+		if (key === "status") continue;
+		if (!OPTIONAL_FIELDS.has(key)) {
+			warnings.push(`unknown field '${key}' ignored`);
+		}
+	}
 
-    return { clean, warnings };
+	return { clean, warnings };
 }
 
 function tryStructuredTail(rtrimmed) {
-    if (!rtrimmed.endsWith(CLOSE_TAG)) return null;
-    const closeAt = rtrimmed.length - CLOSE_TAG.length;
-    const openAt = rtrimmed.lastIndexOf(OPEN_TAG, closeAt - 1);
-    if (openAt < 0) return null;
-    const payload = rtrimmed.slice(openAt + OPEN_TAG.length, closeAt).trim();
-    if (!payload) return null;
-    let parsed;
-    try {
-        parsed = JSON.parse(payload);
-    } catch {
-        return null;
-    }
-    if (
-        parsed == null ||
-        typeof parsed !== 'object' ||
-        Array.isArray(parsed) ||
-        typeof parsed.status !== 'string' ||
-        !VALID_STATUSES.has(parsed.status)
-    ) {
-        return null;
-    }
-    const { clean, warnings } = validateOptionalFields(parsed);
-    return {
-        status: clean.status,
-        structured: clean,
-        source: 'structured',
-        parser_warnings: warnings,
-    };
+	if (!rtrimmed.endsWith(CLOSE_TAG)) return null;
+	const closeAt = rtrimmed.length - CLOSE_TAG.length;
+	const openAt = rtrimmed.lastIndexOf(OPEN_TAG, closeAt - 1);
+	if (openAt < 0) return null;
+	const payload = rtrimmed.slice(openAt + OPEN_TAG.length, closeAt).trim();
+	if (!payload) return null;
+	let parsed;
+	try {
+		parsed = JSON.parse(payload);
+	} catch {
+		return null;
+	}
+	if (
+		parsed == null ||
+		typeof parsed !== "object" ||
+		Array.isArray(parsed) ||
+		typeof parsed.status !== "string" ||
+		!VALID_STATUSES.has(parsed.status)
+	) {
+		return null;
+	}
+	const { clean, warnings } = validateOptionalFields(parsed);
+	return {
+		status: clean.status,
+		structured: clean,
+		source: "structured",
+		parser_warnings: warnings,
+	};
 }
 
 function tryLegacyLastLine(rtrimmed) {
-    const lastNewline = rtrimmed.lastIndexOf('\n');
-    const lastLine = (lastNewline >= 0 ? rtrimmed.slice(lastNewline + 1) : rtrimmed).trim();
-    const m = LEGACY_LINE_RE.exec(lastLine);
-    if (!m) return null;
-    return {
-        status: m[1],
-        structured: null,
-        source: 'regex',
-        parser_warnings: [],
-    };
+	const lastNewline = rtrimmed.lastIndexOf("\n");
+	const lastLine = (
+		lastNewline >= 0 ? rtrimmed.slice(lastNewline + 1) : rtrimmed
+	).trim();
+	const m = LEGACY_LINE_RE.exec(lastLine);
+	if (!m) return null;
+	return {
+		status: m[1],
+		structured: null,
+		source: "regex",
+		parser_warnings: [],
+	};
 }
 
 function parsePeerResponse(text) {
-    const empty = {
-        status: null,
-        structured: null,
-        source: null,
-        parser_warnings: [],
-    };
-    if (typeof text !== 'string' || !text.length) {
-        return empty;
-    }
-    const rtrimmed = text.trimEnd();
-    if (!rtrimmed.length) {
-        return empty;
-    }
-    const structuredHit = tryStructuredTail(rtrimmed);
-    if (structuredHit) return structuredHit;
-    const legacyHit = tryLegacyLastLine(rtrimmed);
-    if (legacyHit) return legacyHit;
-    return empty;
+	const empty = {
+		status: null,
+		structured: null,
+		source: null,
+		parser_warnings: [],
+	};
+	if (typeof text !== "string" || !text.length) {
+		return empty;
+	}
+	const rtrimmed = text.trimEnd();
+	if (!rtrimmed.length) {
+		return empty;
+	}
+	const structuredHit = tryStructuredTail(rtrimmed);
+	if (structuredHit) return structuredHit;
+	const legacyHit = tryLegacyLastLine(rtrimmed);
+	if (legacyHit) return legacyHit;
+	return empty;
 }
 
 // Backwards-compat: parseStatus still returns string|null for legacy
 // call sites. Prefer parsePeerResponse in new code.
 function parseStatus(text) {
-    return parsePeerResponse(text).status;
+	return parsePeerResponse(text).status;
 }
 
 module.exports = {
-    parseStatus,
-    parsePeerResponse,
-    VALID_STATUSES,
-    VALID_UNCERTAINTY,
-    VALID_CONFIDENCE,
-    OPTIONAL_FIELDS,
-    MAX_ARRAY_ITEMS,
-    MAX_ITEM_CHARS,
+	parseStatus,
+	parsePeerResponse,
+	VALID_STATUSES,
+	VALID_UNCERTAINTY,
+	VALID_CONFIDENCE,
+	OPTIONAL_FIELDS,
+	MAX_ARRAY_ITEMS,
+	MAX_ITEM_CHARS,
 };
