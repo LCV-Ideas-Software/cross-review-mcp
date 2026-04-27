@@ -59,7 +59,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.2.11";
+const VERSION = "1.2.12";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -96,33 +96,38 @@ const LEGACY_BILATERAL_PEER = Object.freeze({
 });
 
 const TEST_IMPORT = process.env.CROSS_REVIEW_TEST_IMPORT === "1";
-// CALLER_ENV is the operator-configured fallback. It seeds the `caller`
-// resolution chain (spec v4.14 §6.20) but is NOT the authoritative caller
-// per-session anymore: session_init resolves the caller dynamically with
-// precedence args.caller > clientInfo-derived > CALLER_ENV.
-const CALLER_ENV = TEST_IMPORT
-	? (process.env.CROSS_REVIEW_CALLER || "claude").toLowerCase()
-	: (process.env.CROSS_REVIEW_CALLER || "").toLowerCase();
-if (!TEST_IMPORT && !VALID_AGENTS.includes(CALLER_ENV)) {
-	process.stderr.write(
-		`[cross-review-mcp] fatal: CROSS_REVIEW_CALLER must be one of ${VALID_AGENTS.join("|")} (got '${CALLER_ENV || "(unset)"}')\n`,
-	);
-	process.exit(1);
-}
 
-// Backwards-compat: legacy code still references CALLER, PEERS, LEGACY_PEER
-// as module-level constants. They reflect the env-var resolution and remain
-// available for callers that do NOT pass an explicit `caller` arg. Per
-// spec v4.14 §6.20 the dynamic resolution at session_init time is canonical.
-const CALLER = CALLER_ENV;
-const PEERS = VALID_AGENTS.filter((a) => a !== CALLER);
-const LEGACY_PEER = LEGACY_BILATERAL_PEER[CALLER] || null;
+// v1.2.12 / spec v4.14 §6.20 — caller is resolved DYNAMICALLY per session.
+//
+// CROSS_REVIEW_CALLER is no longer read as a fallback at any tier of the
+// resolution chain. Pre-v1.2.12 the env var was the third-precedence
+// fallback (args.caller > clientInfo.name > env_var) AND a startup hard
+// requirement. Both behaviors are removed now.
+//
+// New rule: at session_init time, the AI model that called the tool
+// declares its identity via either:
+//   1. args.caller (explicit override) — wins if valid
+//   2. clientInfo.name from the MCP initialize handshake → mapped to
+//      claude / codex / gemini via case-insensitive substring match.
+// If neither resolves, session_init THROWS the error per-call (not at
+// server startup) so operators see a precise, session-scoped failure
+// instead of a process exit.
+//
+// Stale configs: if an operator still has CROSS_REVIEW_CALLER set from a
+// pre-v1.2.12 host config, we emit a one-shot deprecation notice to
+// stderr at startup so the leftover config is visible (silent ignore
+// would let the env var look authoritative when it isn't).
+if (!TEST_IMPORT && process.env.CROSS_REVIEW_CALLER) {
+	process.stderr.write(
+		`[cross-review-mcp] notice: CROSS_REVIEW_CALLER='${process.env.CROSS_REVIEW_CALLER}' is set but ignored as of v1.2.12 (spec v4.14 §6.20). Caller is resolved dynamically per session via args.caller > clientInfo.name. Remove the env var from your MCP host config to silence this notice.\n`,
+	);
+}
 
 // v1.2.0 / spec v4.14 §6.20 — clientInfo → agent mapping for dynamic caller.
 // Maps the MCP `clientInfo.name` (sent by the host during initialize) to one
 // of VALID_AGENTS. Returns null if the name does not map cleanly. The mapping
-// is conservative: substring match on lowercased name. Unknown clients
-// (operator scripts, tests) fall through to env-var fallback.
+// is conservative: substring match on lowercased name. Unknown clients must
+// pass an explicit `args.caller` at session_init time.
 function resolveCallerFromClientInfo(clientInfo) {
 	const name = String(clientInfo?.name || "").toLowerCase();
 	if (!name) return null;
@@ -132,12 +137,14 @@ function resolveCallerFromClientInfo(clientInfo) {
 	return null;
 }
 
-// Resolve caller per spec v4.14 §6.20 precedence:
+// Resolve caller per spec v4.14 §6.20 precedence (v1.2.12 simplified):
 //   1. args.caller (explicit override) — wins if valid
 //   2. clientInfo-derived (server.getClientVersion() name → agent mapping)
-//   3. CALLER_ENV (operator-configured fallback)
-// Returns { caller, source: 'arg' | 'client_info' | 'env_var', client_info_name }.
-// Throws if all three resolution sources fail.
+// Returns { caller, source: 'arg' | 'client_info', client_info_name }.
+// Throws if both resolution sources fail. Pre-v1.2.12 a third tier
+// (CROSS_REVIEW_CALLER env var) was consulted; that fallback was removed
+// per operator directive — the AI model that called the tool MUST declare
+// its identity dynamically, never via operator-configured env state.
 function resolveCallerForSession(argsCaller, clientInfo) {
 	const argLower = String(argsCaller || "").toLowerCase();
 	if (argLower) {
@@ -160,15 +167,8 @@ function resolveCallerForSession(argsCaller, clientInfo) {
 			client_info_name: clientInfo?.name ?? null,
 		};
 	}
-	if (CALLER_ENV && VALID_AGENTS.includes(CALLER_ENV)) {
-		return {
-			caller: CALLER_ENV,
-			source: "env_var",
-			client_info_name: clientInfo?.name ?? null,
-		};
-	}
 	throw new Error(
-		`cannot resolve caller: no caller arg passed, clientInfo.name='${clientInfo?.name || "(missing)"}' did not map to a known agent, and CROSS_REVIEW_CALLER env var is unset`,
+		`cannot resolve caller: no args.caller passed and clientInfo.name='${clientInfo?.name || "(missing)"}' did not map to a known agent (claude|codex|gemini). The calling AI model MUST declare its identity dynamically per spec v4.14 §6.20; operator-configured env-var fallback was removed in v1.2.12.`,
 	);
 }
 
@@ -195,7 +195,7 @@ const PROBE_BUDGET_MS =
 // caller= prefix is informational ("this server instance was started by X")
 // rather than authoritative ("this round was driven by X").
 function log(msg, meta) {
-	const base = `[cross-review-mcp ${new Date().toISOString()} env_caller=${CALLER}] ${msg}`;
+	const base = `[cross-review-mcp ${new Date().toISOString()}] ${msg}`;
 	process.stderr.write(
 		meta ? `${base} ${JSON.stringify(meta)}\n` : `${base}\n`,
 	);
@@ -506,7 +506,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "session_init",
-			description: `Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. Also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.11 section 6.9.3.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The \`task\` field is peer exchange — peer agents read it from meta.json. Peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this \`task\` field, and \`prompt\` in subsequent ask_peer/ask_peers calls) to en-US before submission. Runtime emits a non-blocking advisory \`task_language_warning\` when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject.\n\nCALLER RESOLUTION (spec v4.14 §6.20). The session's caller is resolved dynamically per call with this precedence:\n  1. \`caller\` arg (explicit override) — wins if valid (must be one of ${VALID_AGENTS.join("|")}).\n  2. clientInfo.name from MCP initialize — substring-mapped to agent ('claude'→claude, 'gemini'→gemini, 'codex'→codex).\n  3. CROSS_REVIEW_CALLER env var — operator-configured fallback.\nThe resolved caller is recorded in \`meta.caller\` and \`meta.caller_resolution = { source, client_info_name }\` for audit. Peers are computed dynamically as VALID_AGENTS minus the resolved caller. Pass \`caller\` explicitly when an agent shares an MCP server instance with another (mixed-host setups) or when the env var doesn't reflect reality.`,
+			description: `Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. Also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.11 section 6.9.3.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The \`task\` field is peer exchange — peer agents read it from meta.json. Peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this \`task\` field, and \`prompt\` in subsequent ask_peer/ask_peers calls) to en-US before submission. Runtime emits a non-blocking advisory \`task_language_warning\` when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject.\n\nCALLER RESOLUTION (spec v4.14 §6.20, simplified in v1.2.12). The session's caller is resolved dynamically per call with this precedence:\n  1. \`caller\` arg (explicit override) — wins if valid (must be one of ${VALID_AGENTS.join("|")}).\n  2. clientInfo.name from MCP initialize — substring-mapped to agent ('claude'→claude, 'gemini'→gemini, 'codex'→codex).\nIf neither resolves, session_init throws with a per-call error (not a startup crash). The resolved caller is recorded in \`meta.caller\` and \`meta.caller_resolution = { source, client_info_name }\` for audit. Peers are computed dynamically as VALID_AGENTS minus the resolved caller. Pass \`caller\` explicitly when an agent shares an MCP server instance with another (mixed-host setups) or when clientInfo.name doesn't map cleanly. Note: the legacy CROSS_REVIEW_CALLER env-var fallback was removed in v1.2.12 — operator-configured identity defeats the dynamic-caller principle. Stale env-var configs trigger a one-shot startup deprecation notice and are otherwise ignored.`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -524,7 +524,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 						type: "string",
 						enum: VALID_AGENTS,
 						description:
-							"Explicit caller identity (spec v4.14 §6.20). Overrides clientInfo-derived and env-var resolution. Use this when the calling agent does not match what the MCP server's clientInfo would report, or to be explicit about identity in mixed-host setups.",
+							"Explicit caller identity (spec v4.14 §6.20, v1.2.12 simplified). Overrides clientInfo-derived resolution. Use this when the calling agent does not match what the MCP server's clientInfo would report, or to be explicit about identity in mixed-host setups. The legacy env-var fallback was removed in v1.2.12; if neither this arg nor a recognizable clientInfo.name is provided, session_init throws.",
 					},
 				},
 				required: ["task"],
@@ -625,7 +625,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "ask_peer",
-			description: `Send a prompt to the single bilateral peer (${LEGACY_PEER || `(legacy bilateral not available for caller=${CALLER}; use ask_peers)`}) and return its response with parsed STATUS. Caller MUST declare its own caller_status (READY means "I have no further changes or objections this round"; NOT_READY means "I applied changes and want peer to re-review, or I disagree with peer's previous response"). caller_status is restricted to READY|NOT_READY -- if the caller is missing evidence, emit NOT_READY and attach a CALLER_REQUEST block for peer. Peer status may be READY|NOT_READY|NEEDS_EVIDENCE. Convergence requires both READY in the same round. Peer runs under contained spawn with destructive MCPs/apps disabled; peer is invoked with the top-level model explicitly set (spec v4 section 6.9.2: codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview; no silent fallback).
+			description: `Send a prompt to the single bilateral peer (claude<->codex legacy pairing; gemini callers MUST use ask_peers) and return its response with parsed STATUS. Caller MUST declare its own caller_status (READY means "I have no further changes or objections this round"; NOT_READY means "I applied changes and want peer to re-review, or I disagree with peer's previous response"). caller_status is restricted to READY|NOT_READY -- if the caller is missing evidence, emit NOT_READY and attach a CALLER_REQUEST block for peer. Peer status may be READY|NOT_READY|NEEDS_EVIDENCE. Convergence requires both READY in the same round. Peer runs under contained spawn with destructive MCPs/apps disabled; peer is invoked with the top-level model explicitly set (spec v4 section 6.9.2: codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview; no silent fallback).
 
 Legacy bilateral surface: ask_peer is claude<->codex only (R23). Gemini callers MUST use ask_peers instead.
 
@@ -666,7 +666,7 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 		},
 		{
 			name: "ask_peers",
-			description: `N-ary peer spawn (spec v4.11): send the same prompt to all complements (caller=${CALLER}, peers=${PEERS.join(",")}) in parallel and return the aggregated per-peer responses. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (redaction applied) and are counted in round.quorum.rejected. Under strict-quorum semantics (spec v4.14 §6.12) rejected peers count AGAINST convergence: the predicate requires caller READY AND every responded peer READY AND round.quorum.rejected === 0. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. This is the canonical tool for triangular sessions.\n\nFAILURE-CLASS RECOVERY CONTRACT (spec v4.12 §6.16): each rejected peer carries a 'failure_class' and 'recovery_hint'. The caller MUST honor the hint:\n- 'prompt_flagged_by_moderation' (recovery_hint='reformulate_and_retry'): the peer's provider rejected the prompt as potentially violating its usage policy (commonly OpenAI Codex on reasoning models). The 'reformulation_advice' field gives concrete guidance — avoid charged words ('adversarial', 'jailbreak', 'exploit', 'attack', 'bypass'), replace model-introspection prose with neutral technical descriptions, prefer 'response anomaly' over 'silent_downgrade', 'edge case' over 'adversarial input'. The caller MUST reformulate the prompt and call ask_peers again in a NEW round (do NOT abort the session). Repeat up to 5 reformulation attempts before escalating to the operator.\n- 'rate_limit_induced_response' (recovery_hint='wait_and_retry'): observe 'retry_after_seconds' and resubmit after the cooldown window.\n- 'spawn_rejected' (no recovery_hint): unclassified peer-side error; surface to operator.\n\nThe session continues with whatever peers responded; reformulation recovers the missing peer in a follow-up round.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this 'prompt' field, plus the session_init 'task' field) to en-US before submission. Runtime emits a non-blocking advisory 'prompt_language_warning' field on the response when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject when confidence is high.`,
+			description: `N-ary peer spawn (spec v4.11): send the same prompt to all complements of the session's caller (resolved per-session via spec v4.14 §6.20: args.caller > clientInfo.name) in parallel and return the aggregated per-peer responses. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (redaction applied) and are counted in round.quorum.rejected. Under strict-quorum semantics (spec v4.14 §6.12) rejected peers count AGAINST convergence: the predicate requires caller READY AND every responded peer READY AND round.quorum.rejected === 0. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. This is the canonical tool for triangular sessions.\n\nFAILURE-CLASS RECOVERY CONTRACT (spec v4.12 §6.16): each rejected peer carries a 'failure_class' and 'recovery_hint'. The caller MUST honor the hint:\n- 'prompt_flagged_by_moderation' (recovery_hint='reformulate_and_retry'): the peer's provider rejected the prompt as potentially violating its usage policy (commonly OpenAI Codex on reasoning models). The 'reformulation_advice' field gives concrete guidance — avoid charged words ('adversarial', 'jailbreak', 'exploit', 'attack', 'bypass'), replace model-introspection prose with neutral technical descriptions, prefer 'response anomaly' over 'silent_downgrade', 'edge case' over 'adversarial input'. The caller MUST reformulate the prompt and call ask_peers again in a NEW round (do NOT abort the session). Repeat up to 5 reformulation attempts before escalating to the operator.\n- 'rate_limit_induced_response' (recovery_hint='wait_and_retry'): observe 'retry_after_seconds' and resubmit after the cooldown window.\n- 'spawn_rejected' (no recovery_hint): unclassified peer-side error; surface to operator.\n\nThe session continues with whatever peers responded; reformulation recovers the missing peer in a follow-up round.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this 'prompt' field, plus the session_init 'task' field) to en-US before submission. Runtime emits a non-blocking advisory 'prompt_language_warning' field on the response when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject when confidence is high.`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -688,10 +688,10 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 }));
 
 // Spec v4.14 §6.20: probe runs against the dynamically-resolved peer set
-// for this session, not the env-var-derived global PEERS. peersList defaults
-// to global PEERS for backwards compatibility with code paths that have not
-// been updated to pass it.
-async function runSessionInitProbe(peersList = PEERS) {
+// for this session. v1.2.12 removed the env-var-derived global PEERS;
+// peersList is now required (passed by the session_init handler from
+// peersForCaller(resolvedCaller)).
+async function runSessionInitProbe(peersList) {
 	if (SKIP_PROBE) {
 		return { skipped: true, reason: "CROSS_REVIEW_SKIP_PROBE=1", peers: [] };
 	}
@@ -994,9 +994,26 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					);
 				}
 				try {
+					// v1.2.12 / spec v4.14 §6.20: use the session's persisted
+					// caller (resolved at session_init via the precedence
+					// chain) rather than the env-var-derived global CALLER.
+					// Pre-v1.2.12 the global was passed unconditionally,
+					// which silently recorded the wrong actor when env var
+					// was unset (or set to a value that didn't match the
+					// per-session resolution).
+					const sessionMeta = store.readMeta(sessionId);
+					if (
+						!sessionMeta.caller ||
+						!VALID_AGENTS.includes(sessionMeta.caller)
+					) {
+						throw new Error(
+							`session ${sessionId} has invalid or missing meta.caller='${sessionMeta.caller}'; cannot record escalation actor (spec v4.14 §6.20)`,
+						);
+					}
+					const fromAgent = sessionMeta.caller;
 					const entry = store.saveEscalation(
 						sessionId,
-						CALLER,
+						fromAgent,
 						question,
 						context,
 					);
@@ -1004,6 +1021,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						session: sessionId,
 						escalation_id: entry.escalation_id,
 						round: entry.round_index,
+						from_agent: fromAgent,
 					});
 					return {
 						content: [
@@ -1044,10 +1062,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						);
 					}
 					// Spec v4.14 §6.20: caller is per-session (meta.caller),
-					// not the global CALLER constant. ask_peer's bilateral
-					// surface is available iff the SESSION'S caller has a
-					// legacy bilateral pairing.
-					const sessionCaller = String(meta.caller || CALLER).toLowerCase();
+					// resolved at session_init time. v1.2.12 removed the
+					// global CALLER fallback — meta.caller MUST be set on
+					// every valid session. ask_peer's bilateral surface is
+					// available iff the SESSION'S caller has a legacy
+					// bilateral pairing.
+					const sessionCaller = String(meta.caller || "").toLowerCase();
+					if (!VALID_AGENTS.includes(sessionCaller)) {
+						throw new Error(
+							`session ${sessionId} has invalid or missing meta.caller='${meta.caller}'; cannot route ask_peer (spec v4.14 §6.20)`,
+						);
+					}
 					const sessionLegacyPeer = legacyPeerForCaller(sessionCaller);
 					if (sessionLegacyPeer == null) {
 						throw new Error(
@@ -1292,10 +1317,15 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						);
 					}
 					// Spec v4.14 §6.20: caller + peers are per-session; read
-					// from meta. Backwards-compat: pre-v4.14 sessions may
-					// not have meta.peers populated as N-ary array — fall
-					// back to env-derived PEERS only if meta is silent.
-					const sessionCaller = String(meta.caller || CALLER).toLowerCase();
+					// from meta. v1.2.12 removed the env-var fallback —
+					// meta.caller MUST be set; meta.peers is derived from
+					// peersForCaller() if the persisted array is empty.
+					const sessionCaller = String(meta.caller || "").toLowerCase();
+					if (!VALID_AGENTS.includes(sessionCaller)) {
+						throw new Error(
+							`session ${sessionId} has invalid or missing meta.caller='${meta.caller}'; cannot route ask_peers (spec v4.14 §6.20)`,
+						);
+					}
 					const metaPeers =
 						Array.isArray(meta.peers) && meta.peers.length > 0
 							? meta.peers
@@ -1578,7 +1608,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 
 async function main() {
 	log(
-		`starting v${VERSION}, caller=${CALLER}, peers=${PEERS.join(",")}, legacy_bilateral_peer=${LEGACY_PEER || "(none)"}`,
+		`starting v${VERSION}, caller resolved per session via spec v4.14 §6.20 (args.caller > clientInfo.name)`,
 	);
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
@@ -1601,9 +1631,6 @@ if (!TEST_IMPORT) {
 module.exports = {
 	VERSION,
 	VALID_AGENTS,
-	CALLER,
-	PEERS,
-	LEGACY_PEER,
 	attachPromptTailDirective,
 	parsePeerOutputs,
 	// v1.1.0 / spec v4.13 §6.19 exports for smoke / audit.
@@ -1611,6 +1638,8 @@ module.exports = {
 	CONVERGENCE_HEALTH_EXTENDED_AT,
 	CONVERGENCE_HEALTH_CONCERNING_AT,
 	// v1.2.0 / spec v4.14 §6.20 exports for smoke / audit.
+	// v1.2.12: env-var fallback removed; resolveCallerForSession now
+	// throws when both args.caller and clientInfo.name fail.
 	resolveCallerFromClientInfo,
 	resolveCallerForSession,
 	peersForCaller,

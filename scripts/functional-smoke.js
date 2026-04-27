@@ -104,7 +104,7 @@ async function driveServer(extraEnv = {}) {
 		const init = await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke", version: "0.1" },
 		});
 		assert(
 			init.result?.serverInfo?.name === "cross-review-mcp",
@@ -289,7 +289,7 @@ async function driveAskPeerMatrix() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-askpeer", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-askpeer", version: "0.1" },
 		});
 		notify("notifications/initialized");
 
@@ -416,7 +416,7 @@ async function driveProtocolViolation() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-violation", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-violation", version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 
@@ -494,7 +494,7 @@ async function oneShotAskPeer(stubValue, callerStatus = "NOT_READY") {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: `smoke-${stubValue}`, version: "0.1" },
+			clientInfo: { name: `claude-code-smoke-${stubValue}`, version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const init = await call(2, "tools/call", {
@@ -1201,7 +1201,7 @@ async function drivePeerModelAndWarningsPersisted() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-persist", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-persist", version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const readResp = await call(2, "tools/call", {
@@ -1339,6 +1339,12 @@ async function runAll() {
 	// v1.2.0 / spec v4.14 §6.20 — dynamic caller resolution + anti-drift.
 	const s47 = await driveV414CallerResolutionUnit();
 	all.push(...s47.results);
+	// v1.2.12 — startup invariants (env-var fallback removal regression guard).
+	const s47b = await driveV414StartupNoEnvVarIntegration();
+	all.push(...s47b.results);
+	// v1.2.12 — doc/contract anti-drift (tool descriptions + spec §6.20 + README).
+	const s47c = await driveV414CallerEnvDocDriftUnit();
+	all.push(...s47c.results);
 	const s48 = await driveV414ReadmeVersionDriftUnit();
 	all.push(...s48.results);
 	// v1.2.1 hardening from gemini audit (F1, F8).
@@ -2580,18 +2586,30 @@ async function driveV414CallerResolutionUnit() {
 		r2.caller === "gemini" && r2.source === "client_info",
 		"§6.20: clientInfo used when args.caller absent",
 	);
-	const r3 = server.resolveCallerForSession(null, { name: "unknown" });
+	// v1.2.12: env-var fallback removed. resolveCallerForSession now throws
+	// when both args.caller and clientInfo.name fail (no third tier).
+	let threwUnknownClient = false;
+	try {
+		server.resolveCallerForSession(null, { name: "unknown" });
+	} catch {
+		threwUnknownClient = true;
+	}
 	assert(
-		r3.caller === "claude" && r3.source === "env_var",
-		"§6.20: env var used when args + clientInfo both fail",
+		threwUnknownClient,
+		"§6.20 v1.2.12: throws when args absent + clientInfo unrecognized (no env-var fallback)",
 	);
-	const r4 = server.resolveCallerForSession(null, null);
+	let threwNullClient = false;
+	try {
+		server.resolveCallerForSession(null, null);
+	} catch {
+		threwNullClient = true;
+	}
 	assert(
-		r4.caller === "claude" && r4.source === "env_var",
-		"§6.20: env var used when no clientInfo at all",
+		threwNullClient,
+		"§6.20 v1.2.12: throws when args absent + clientInfo null (no env-var fallback)",
 	);
 	results.push({
-		step: "v4.14 §6.20: resolveCallerForSession precedence (arg > client_info > env_var)",
+		step: "v4.14 §6.20 v1.2.12: resolveCallerForSession precedence (arg > client_info; env-var fallback removed)",
 		ok: true,
 	});
 
@@ -2617,24 +2635,389 @@ async function driveV414CallerResolutionUnit() {
 		ok: true,
 	});
 
-	// peersForCaller derives complement of VALID_AGENTS.
-	const peersClaude = server.PEERS;
-	// Re-derive via peersForCaller and compare. Note: peersForCaller is not
-	// exported; we test it indirectly via resolveCallerForSession + observed
-	// behavior. The list we expect for caller=gemini is [claude, codex].
-	// (Peer-set derivation is also exercised end-to-end by smoke session_init
-	// calls when the runtime is fully booted.)
+	// v1.2.12: peersForCaller is the only entry point; the env-var-derived
+	// global PEERS export was removed. Verify the helper computes the
+	// complement of VALID_AGENTS correctly for every valid caller.
+	const peersClaude = server.peersForCaller("claude");
 	assert(
 		peersClaude.length === 2 &&
 			peersClaude.includes("codex") &&
 			peersClaude.includes("gemini"),
-		"§6.20: env-derived PEERS for caller=claude is [codex, gemini]",
+		"§6.20 v1.2.12: peersForCaller('claude') is [codex, gemini]",
+	);
+	const peersCodex = server.peersForCaller("codex");
+	assert(
+		peersCodex.length === 2 &&
+			peersCodex.includes("claude") &&
+			peersCodex.includes("gemini"),
+		"§6.20 v1.2.12: peersForCaller('codex') is [claude, gemini]",
+	);
+	const peersGemini = server.peersForCaller("gemini");
+	assert(
+		peersGemini.length === 2 &&
+			peersGemini.includes("claude") &&
+			peersGemini.includes("codex"),
+		"§6.20 v1.2.12: peersForCaller('gemini') is [claude, codex]",
 	);
 	results.push({
-		step: "v4.14 §6.20: peer-set derivation invariant under env-var caller",
+		step: "v4.14 §6.20 v1.2.12: peersForCaller helper invariant for all 3 callers",
 		ok: true,
 	});
 
+	// v1.2.12: ensure global CALLER/PEERS/LEGACY_PEER exports are gone.
+	// Anti-drift guard against accidental re-introduction of env-derived
+	// module-level constants.
+	assert(
+		server.CALLER === undefined &&
+			server.PEERS === undefined &&
+			server.LEGACY_PEER === undefined,
+		"§6.20 v1.2.12: env-derived globals (CALLER, PEERS, LEGACY_PEER) are not exported",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12: env-derived globals removed from module exports",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.2.12 / spec v4.14 §6.20 — startup invariants.
+// Verifies that:
+//   (a) server boots cleanly when CROSS_REVIEW_CALLER is unset (pre-v1.2.12
+//       regression: the server hard-failed at startup with exit code 1)
+//   (b) server boots cleanly when CROSS_REVIEW_CALLER is set (deprecation
+//       notice fires to stderr, but the process keeps running)
+//   (c) session_init throws when neither args.caller nor a recognizable
+//       clientInfo.name is provided (per-call error, not a startup crash)
+async function driveV414StartupNoEnvVarIntegration() {
+	const results = [];
+	const { spawn } = require("node:child_process");
+	const path = require("node:path");
+	const SERVER_PATH = path.resolve(__dirname, "../src/server.js");
+
+	function spawnServer(env) {
+		return spawn(process.execPath, [SERVER_PATH], {
+			env: { ...env },
+			stdio: ["pipe", "pipe", "pipe"],
+			shell: false,
+		});
+	}
+
+	function waitForExitOrTimeout(proc, ms) {
+		return new Promise((resolve) => {
+			let exited = false;
+			let exitCode = null;
+			proc.on("exit", (code) => {
+				exited = true;
+				exitCode = code;
+				resolve({ exited, exitCode });
+			});
+			setTimeout(() => {
+				if (!exited) resolve({ exited: false, exitCode: null });
+			}, ms);
+		});
+	}
+
+	// (a) starts cleanly with env unset
+	const envUnset = { ...process.env };
+	delete envUnset.CROSS_REVIEW_CALLER;
+	delete envUnset.CROSS_REVIEW_TEST_IMPORT;
+	const procUnset = spawnServer(envUnset);
+	const stderrUnsetChunks = [];
+	procUnset.stderr.on("data", (d) =>
+		stderrUnsetChunks.push(d.toString("utf8")),
+	);
+	const resUnset = await waitForExitOrTimeout(procUnset, 1500);
+	procUnset.kill("SIGKILL");
+	const stderrUnset = stderrUnsetChunks.join("");
+	assert(
+		!resUnset.exited,
+		`§6.20 v1.2.12 (a): server with unset CROSS_REVIEW_CALLER stays running (got exit code=${resUnset.exitCode})`,
+	);
+	assert(
+		!stderrUnset.includes("fatal:"),
+		"§6.20 v1.2.12 (a): no fatal stderr line when env unset",
+	);
+	assert(
+		stderrUnset.includes("starting"),
+		"§6.20 v1.2.12 (a): startup banner emitted when env unset",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 (a): server boots cleanly with CROSS_REVIEW_CALLER unset",
+		ok: true,
+	});
+
+	// (b) starts cleanly with env set + emits deprecation notice
+	const envSet = { ...process.env, CROSS_REVIEW_CALLER: "claude" };
+	delete envSet.CROSS_REVIEW_TEST_IMPORT;
+	const procSet = spawnServer(envSet);
+	const stderrSetChunks = [];
+	procSet.stderr.on("data", (d) => stderrSetChunks.push(d.toString("utf8")));
+	const resSet = await waitForExitOrTimeout(procSet, 1500);
+	procSet.kill("SIGKILL");
+	const stderrSet = stderrSetChunks.join("");
+	assert(
+		!resSet.exited,
+		`§6.20 v1.2.12 (b): server with CROSS_REVIEW_CALLER set stays running (got exit code=${resSet.exitCode})`,
+	);
+	assert(
+		stderrSet.includes("notice:") &&
+			stderrSet.includes("CROSS_REVIEW_CALLER") &&
+			stderrSet.includes("ignored as of v1.2.12"),
+		"§6.20 v1.2.12 (b): deprecation notice emitted when env var is set",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 (b): legacy CROSS_REVIEW_CALLER triggers deprecation notice (no startup crash)",
+		ok: true,
+	});
+
+	// (c) session_init throws when neither args.caller nor recognizable
+	// clientInfo.name is provided. Use the in-process driveServer harness
+	// with an unrecognized clientInfo.name and no args.caller. Explicitly
+	// scrub CROSS_REVIEW_CALLER from the inherited env so the deprecation
+	// notice doesn't fire (it's harmless but tightens the test scope).
+	const envThrow = { ...process.env, CROSS_REVIEW_SKIP_PROBE: "1" };
+	delete envThrow.CROSS_REVIEW_CALLER;
+	delete envThrow.CROSS_REVIEW_TEST_IMPORT;
+	const procThrow = spawn(process.execPath, [SERVER_PATH], {
+		env: envThrow,
+		stdio: ["pipe", "pipe", "pipe"],
+		shell: false,
+	});
+	const responses = new Map();
+	attachJsonRpcReader(procThrow.stdout, responses);
+	const callT = (id, method, params) =>
+		new Promise((resolve, reject) => {
+			procThrow.stdin.write(requestLine(id, method, params));
+			const t = setTimeout(() => reject(new Error(`timeout id=${id}`)), 10000);
+			const poll = setInterval(() => {
+				if (responses.has(id)) {
+					clearInterval(poll);
+					clearTimeout(t);
+					resolve(responses.get(id));
+				}
+			}, 25);
+		});
+	try {
+		await callT(1, "initialize", {
+			protocolVersion: "2024-11-05",
+			capabilities: {},
+			// Unrecognized clientInfo.name (no claude/codex/gemini substring).
+			clientInfo: { name: "stranger-host", version: "0.1" },
+		});
+		procThrow.stdin.write(notifLine("notifications/initialized"));
+		const init = await callT(2, "tools/call", {
+			name: "session_init",
+			arguments: { task: "should throw caller resolution", artifacts: [] },
+		});
+		const isError = init.result?.isError === true;
+		const text = init.result?.content?.[0]?.text || "";
+		assert(
+			isError && text.includes("cannot resolve caller"),
+			"§6.20 v1.2.12 (c): session_init returns isError when caller cannot be resolved",
+		);
+		results.push({
+			step: "v4.14 §6.20 v1.2.12 (c): session_init throws when neither args.caller nor recognizable clientInfo.name is provided",
+			ok: true,
+		});
+	} finally {
+		procThrow.stdin.end();
+		procThrow.kill();
+	}
+
+	return { results };
+}
+
+// v1.2.12 / spec v4.14 §6.20 anti-drift — assert that MCP tool descriptions
+// and the spec body no longer advertise the `CROSS_REVIEW_CALLER` env-var
+// fallback as a live resolution tier (it was removed in v1.2.12).
+// This guards against doc/contract drift where the runtime correctly drops
+// the env-var fallback but the surface text seen by MCP clients (tool
+// descriptions) or auditors (spec doc) still claims it exists.
+async function driveV414CallerEnvDocDriftUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const server = require("../src/server.js");
+
+	// (1) Tool descriptions: session_init's description and caller-arg
+	// description must not advertise the env-var fallback as live behavior.
+	// Permissible mentions: explicit "removed in v1.2.12" / "deprecation
+	// notice" / "ignored" / "stale-config" framings (which describe the
+	// removal and migration story, not a live tier).
+	// We capture the live string surface from the source file directly
+	// (sufficient for anti-drift) since the registered tool list is not
+	// exported as a JS value.
+	const serverSrc = fs.readFileSync(
+		path.resolve(__dirname, "..", "src", "server.js"),
+		"utf8",
+	);
+
+	// session_init description block is delimited by name: "session_init"
+	// followed by `description: \`...\``. Extract that template literal.
+	const sessionInitDescMatch = serverSrc.match(
+		/name:\s*"session_init",\s*\n\s*description:\s*`([\s\S]*?)`\s*,\s*\n\s*inputSchema/,
+	);
+	assert(
+		sessionInitDescMatch !== null,
+		"§6.20 v1.2.12 anti-drift: session_init description block extractable from src/server.js",
+	);
+	const sessionInitDesc = sessionInitDescMatch[1];
+
+	// The description must NOT advertise env-var as a current resolution
+	// tier. Concretely: it must not contain a numbered "3." entry that
+	// describes CROSS_REVIEW_CALLER as a live fallback. We detect this by
+	// looking for the legacy pattern "3. CROSS_REVIEW_CALLER" or
+	// "operator-configured fallback" without an adjacent removal marker.
+	const advertisesAsLiveTier =
+		/3\.\s*CROSS_REVIEW_CALLER\s+env\s+var\s*[—-]\s*operator-configured\s+fallback/i.test(
+			sessionInitDesc,
+		);
+	assert(
+		!advertisesAsLiveTier,
+		"§6.20 v1.2.12 anti-drift: session_init description does NOT advertise CROSS_REVIEW_CALLER as a live third resolution tier",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 anti-drift: session_init tool description does not advertise env-var fallback as live tier",
+		ok: true,
+	});
+
+	// (2) caller-arg description must mention "removed in v1.2.12" so MCP
+	// clients see the migration story, not a stale "overrides env-var" line.
+	const callerArgDescMatch = serverSrc.match(
+		/caller:\s*\{\s*\n\s*type:\s*"string",\s*\n\s*enum:\s*VALID_AGENTS,\s*\n\s*description:\s*"([^"]*)"/,
+	);
+	assert(
+		callerArgDescMatch !== null,
+		"§6.20 v1.2.12 anti-drift: caller-arg description extractable",
+	);
+	const callerArgDesc = callerArgDescMatch[1];
+	assert(
+		!/Overrides clientInfo-derived and env-var resolution/i.test(callerArgDesc),
+		"§6.20 v1.2.12 anti-drift: caller-arg description does NOT claim it overrides env-var resolution (env-var tier no longer exists)",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 anti-drift: caller-arg description reflects the two-tier contract",
+		ok: true,
+	});
+
+	// (3) Spec doc §6.20 must not specify env_var as a live third tier.
+	const specPath = path.resolve(__dirname, "..", "docs", "workflow-spec.md");
+	const specSrc = fs.readFileSync(specPath, "utf8");
+	// Locate §6.20 section header.
+	const sec620Idx = specSrc.indexOf("### 6.20 Dynamic caller resolution");
+	assert(
+		sec620Idx >= 0,
+		"§6.20 v1.2.12 anti-drift: spec §6.20 section header present",
+	);
+	// Section runs until the next "### " heading or end of file.
+	const sec620End = specSrc.indexOf("\n### ", sec620Idx + 1);
+	const sec620Text = specSrc.slice(
+		sec620Idx,
+		sec620End >= 0 ? sec620End : specSrc.length,
+	);
+	// The retired tier had this exact normative shape: "3. **`CROSS_REVIEW_CALLER` env var** (legacy fallback)".
+	// Anti-drift: that exact list-item form must not survive in the
+	// normative precedence list. (Mentions of CROSS_REVIEW_CALLER inside
+	// the "Removed in v1.2.12" explanatory paragraph are intentional and
+	// allowed.)
+	const retiredTierLine =
+		/^\s*3\.\s+\*\*`?CROSS_REVIEW_CALLER`?[\s\S]{0,40}\*\*\s*\(legacy fallback\)/m;
+	assert(
+		!retiredTierLine.test(sec620Text),
+		"§6.20 v1.2.12 anti-drift: spec §6.20 does NOT define CROSS_REVIEW_CALLER as a live third precedence tier",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 anti-drift: spec §6.20 normative precedence list reflects two tiers only",
+		ok: true,
+	});
+
+	// (4) README registration section must not instruct operators to
+	// configure CROSS_REVIEW_CALLER. We scan the "Register with each
+	// peer" section specifically (delimited by "## Register with each
+	// peer" until the next "## " heading) and assert no env-var config
+	// snippet survives there. The check is a strict pattern match for
+	// any of the legacy snippet shapes shipped pre-v1.2.12:
+	//   - `-e CROSS_REVIEW_CALLER=...`         (Claude Code CLI flag)
+	//   - `env = { CROSS_REVIEW_CALLER = ...}` (Codex TOML)
+	//   - `"CROSS_REVIEW_CALLER": "..."`       (Gemini JSON)
+	const readmePath = path.resolve(__dirname, "..", "README.md");
+	const readmeSrc = fs.readFileSync(readmePath, "utf8");
+	const regSecStart = readmeSrc.indexOf("## Register with each peer");
+	assert(
+		regSecStart >= 0,
+		"§6.20 v1.2.12 anti-drift: README contains 'Register with each peer' section",
+	);
+	const regSecEnd = readmeSrc.indexOf("\n## ", regSecStart + 1);
+	const regSecText = readmeSrc.slice(
+		regSecStart,
+		regSecEnd >= 0 ? regSecEnd : readmeSrc.length,
+	);
+	const envSnippetPatterns = [
+		/-e\s+CROSS_REVIEW_CALLER\s*=/, // CLI flag form
+		/env\s*=\s*\{\s*CROSS_REVIEW_CALLER\s*=/, // TOML form
+		/"CROSS_REVIEW_CALLER"\s*:\s*"[^"]*"/, // JSON form (any string value, not just valid agents — catches reintroduction of any env-var assignment)
+	];
+	for (const pat of envSnippetPatterns) {
+		assert(
+			!pat.test(regSecText),
+			`§6.20 v1.2.12 anti-drift: README 'Register with each peer' section does NOT contain pattern ${pat}`,
+		);
+	}
+	// Also reject the legacy summary sentence form.
+	assert(
+		!/Each peer registers the MCP server with its own `?CROSS_REVIEW_CALLER`? env var/i.test(
+			readmeSrc,
+		),
+		"§6.20 v1.2.12 anti-drift: README does NOT carry the legacy 'each peer registers ... CROSS_REVIEW_CALLER' summary sentence",
+	);
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 anti-drift: README registration section rejects env-var config snippets in CLI / TOML / JSON forms",
+		ok: true,
+	});
+
+	// (5) Repo-wide normative-spec drift scan. Beyond §6.20 itself, the
+	// spec doc has multiple cross-reference sections (§2.8, §3.x, §5.1,
+	// §7 summary table, executive summary). Codex's v1.2.12 R2 audit
+	// caught three additional locations still describing CROSS_REVIEW_CALLER
+	// as a live caller-selection mechanism. This scan asserts that no
+	// remaining live-tier framing survives by checking specific
+	// pre-v1.2.12 sentence patterns against the entire spec doc.
+	// Patterns target PRESENT-TENSE / LIVE-CLAIM framings only. Historical
+	// retirement paragraphs (e.g., "Pre-v1.2.12 the caller was selected by
+	// CROSS_REVIEW_CALLER") are intentionally allowed — they describe the
+	// migration story.
+	const liveTierPatterns = [
+		// "Caller is the agent whose CROSS_REVIEW_CALLER env var was set"
+		// (present tense "is the agent whose")
+		/[Cc]aller is the agent whose `?CROSS_REVIEW_CALLER`?/,
+		// "Caller is whoever opened the session (selected by ... CROSS_REVIEW_CALLER ... env var)"
+		// (present tense "is whoever")
+		/[Cc]aller is whoever opened the session [^.]*?`?CROSS_REVIEW_CALLER`?[^.]*?env\s+var/,
+		// "selected dynamically via CROSS_REVIEW_CALLER" (summary table form,
+		// always present-tense)
+		/selected dynamically via `?CROSS_REVIEW_CALLER`?/,
+		// "caller derived from CROSS_REVIEW_CALLER" (ask_peer description
+		// form, present-tense passive)
+		/caller .{0,15}derived from `?CROSS_REVIEW_CALLER`?/,
+		// "Any other value causes the server to fail to start with a fatal
+		// error" — pre-v1.2.12 startup-crash framing for invalid env values.
+		// v1.2.12 removed the startup hard-fail, so this sentence is no
+		// longer correct in the present tense.
+		/Any other value causes the server to fail to start with a fatal error/,
+	];
+	for (const pat of liveTierPatterns) {
+		assert(
+			!pat.test(specSrc),
+			`§6.20 v1.2.12 anti-drift: spec doc does NOT contain live-tier framing pattern ${pat}`,
+		);
+	}
+	results.push({
+		step: "v4.14 §6.20 v1.2.12 anti-drift: spec doc repo-wide free of live CROSS_REVIEW_CALLER framing (executive summary + §2.8 + §7 table + ask_peer description)",
+		ok: true,
+	});
+
+	void server; // ensure server module loaded for parity with sibling tests
 	return { results };
 }
 
@@ -3507,7 +3890,7 @@ async function driveV7EscalateToOperatorUnit() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-escalate", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-escalate", version: "0.1" },
 		});
 		notify("notifications/initialized");
 
@@ -4120,7 +4503,7 @@ async function driveAskPeersNAry() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-ask-peers", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-ask-peers", version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const init = await call(2, "tools/call", {
@@ -4219,7 +4602,7 @@ async function driveAskPeerGeminiCallerRejected() {
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-gemini-reject", version: "0.1" },
+			clientInfo: { name: "gemini-cli-smoke-reject", version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const init = await call(2, "tools/call", {
@@ -4297,7 +4680,7 @@ async function runServerAskPeer(
 		await call(1, "initialize", {
 			protocolVersion: "2024-11-05",
 			capabilities: {},
-			clientInfo: { name: "smoke-model-check", version: "0.1" },
+			clientInfo: { name: "claude-code-smoke-model-check", version: "0.1" },
 		});
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const init = await call(2, "tools/call", {

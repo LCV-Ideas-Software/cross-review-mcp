@@ -15,6 +15,73 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.12] — 2026-04-26
+
+**Bugfix + spec tightening: `CROSS_REVIEW_CALLER` env-var fallback removed entirely; caller is resolved dynamically per session via `args.caller > clientInfo.name` only (spec v4.14 §6.20 simplification).**
+
+**Bug:** pre-v1.2.12 the server hard-failed at startup with exit code 1 when `CROSS_REVIEW_CALLER` was unset. That contradicted §6.20's dynamic resolution chain — the env var was nominally the third-precedence fallback (`args.caller > clientInfo.name > env_var`) but was actually a startup hard requirement, so the dynamic tiers above it could never run if the env var was absent. Operator caught the contradiction after stripping the env var from all 4 host configs (Claude Code workspace `.mcp.json`, VS Code `.vscode/mcp.json`, Antigravity `mcp_config.json`, Codex CLI `config.toml`) per the dynamic-caller principle: the AI model that called the tool MUST declare its own identity dynamically, never via operator-configured env state.
+
+**Fix scope:**
+- Startup no longer reads or requires `CROSS_REVIEW_CALLER`. If the var is set in a stale config, the server emits a one-shot deprecation notice to stderr (`[cross-review-mcp] notice: CROSS_REVIEW_CALLER='X' is set but ignored as of v1.2.12 ...`) and ignores it. Stale configs fail loudly, not silently.
+- `resolveCallerForSession` precedence reduced from 3 tiers to 2: `args.caller > clientInfo.name`. Throws when both fail (per-call error, not a startup crash). The throw message names the rule and points to spec §6.20 so caller can fix the upstream registration.
+- Module-level `CALLER`, `PEERS`, `LEGACY_PEER` constants and exports removed. Handlers (`escalate_to_operator`, `ask_peer`, `ask_peers`) now read the per-session caller from `meta.caller` (set at session_init by `resolveCallerForSession`) and validate it against `VALID_AGENTS`, throwing on missing/invalid values.
+- `escalate_to_operator` `from_agent` actor: pre-v1.2.12 used the global `CALLER` (env-var-derived), which silently recorded the wrong actor when env mismatched session resolution. v1.2.12 reads `sessionMeta.caller` instead, with explicit validation.
+- Startup banner trimmed to drop env-derived `caller=` / `peers=` fields. New banner: `starting v1.2.12, caller resolved per session via spec v4.14 §6.20 (args.caller > clientInfo.name)`.
+- `log()` `env_caller=` prefix removed (no env-derived caller to log; per-session caller appears in handler-specific log meta).
+- Tool descriptions (`ask_peer`, `ask_peers`) rewritten to remove env-derived `${CALLER}` / `${PEERS}` / `${LEGACY_PEER}` template interpolations; descriptions now describe the session-relative contract abstractly.
+
+**v1.2.12 anti-drift smoke coverage** (added across two test functions):
+
+`driveV414StartupNoEnvVarIntegration` — three child-process startup invariants:
+- (a) server boots cleanly with `CROSS_REVIEW_CALLER` unset (pre-v1.2.12 regression: exit code 1)
+- (b) deprecation notice fires when env var is set; process keeps running
+- (c) `session_init` throws when neither `args.caller` nor a recognizable `clientInfo.name` is provided (per-call error, not startup crash)
+
+`driveV414CallerResolutionUnit` — module-export regression guard:
+- (d) `server.CALLER` / `server.PEERS` / `server.LEGACY_PEER` are not exported (catches re-introduction of env-derived globals)
+
+`driveV414CallerEnvDocDriftUnit` — surface-text doc-drift guards:
+- (e) `session_init` tool description does NOT advertise `CROSS_REVIEW_CALLER` as a live third resolution tier (the description is shipped to MCP clients on every `tools/list` call)
+- (f) `caller`-arg description reflects the two-tier contract (no legacy "overrides env-var resolution" wording)
+- (g) spec doc §6.20 normative precedence list contains two tiers only (no `3. **CROSS_REVIEW_CALLER** (legacy fallback)` line)
+- (h) README "Register with each peer" section rejects env-var config snippets in CLI / TOML / JSON forms (catches reintroduction of `-e CROSS_REVIEW_CALLER=` flags, `env = { CROSS_REVIEW_CALLER = }` TOML blocks, and `"CROSS_REVIEW_CALLER":` JSON entries)
+- (i) spec doc repo-wide free of present-tense `CROSS_REVIEW_CALLER` framing — scans for `Caller is the agent whose ...`, `Caller is whoever opened ...`, `selected dynamically via ...`, `caller derived from ...`, and the pre-v1.2.12 startup-crash sentence "Any other value causes the server to fail to start". Historical/retirement paragraphs (past-tense, "Pre-v1.2.12") are intentionally allowed.
+
+**Existing smoke updates:** all `clientInfo.name` values in spawn-based smoke tests updated from `"smoke-*"` (which didn't map to any agent) to `"claude-code-smoke-*"` / `"gemini-cli-smoke-*"` so dynamic resolution succeeds. The `process.env.CROSS_REVIEW_CALLER = "claude"` lines remain in spawn env arrays but are now harmless (server reads → emits deprecation notice → ignores).
+
+Smoke 188 GREEN (was 179 in v1.2.11; +9 v1.2.12 invariants — 3 startup + 1 export-removal + 5 doc-drift).
+
+### Alterado
+- `src/server.js` — startup validation (lines ~99-119): removed env-var hard-fail, replaced with deprecation notice when var is set in a stale config.
+- `src/server.js` — `resolveCallerForSession`: removed env_var branch from precedence chain.
+- `src/server.js` — removed module-level `CALLER`, `PEERS`, `LEGACY_PEER`, `CALLER_ENV` constants.
+- `src/server.js` — `log()`: removed `env_caller=` prefix.
+- `src/server.js` — `escalate_to_operator`: reads `from_agent` from `sessionMeta.caller` with explicit validation.
+- `src/server.js` — `ask_peer` + `ask_peers`: removed `meta.caller || CALLER` fallback; added explicit `meta.caller` validation; throws when missing/invalid.
+- `src/server.js` — `runSessionInitProbe`: removed `peersList = PEERS` default; argument is now required.
+- `src/server.js` — startup banner: trimmed env-derived caller/peers fields.
+- `src/server.js` — `ask_peer` + `ask_peers` tool descriptions: removed `${CALLER}` / `${PEERS}` / `${LEGACY_PEER}` template interpolations.
+- `src/server.js` — module exports: removed `CALLER`, `PEERS`, `LEGACY_PEER`.
+- `scripts/functional-smoke.js` — `driveV414CallerResolutionUnit`: removed env_var precedence assertions; added throw-when-args-and-clientInfo-fail assertions; replaced `server.PEERS` with `server.peersForCaller("...")`.
+- `scripts/functional-smoke.js` — added `driveV414StartupNoEnvVarIntegration` (3 child-process startup invariants) and `driveV414CallerEnvDocDriftUnit` (5 doc-drift guards: session_init tool description + caller-arg description + spec §6.20 normative precedence + README registration env-snippet rejection in 3 syntax forms + spec-doc-wide present-tense framing scan). Plus the export-removal regression guard inside `driveV414CallerResolutionUnit`. Total v1.2.12 anti-drift invariants: 9.
+- `docs/workflow-spec.md` v1.2.12 R2 ripple updates: §0n executive summary §6.20 listing rewritten from 3 tiers to 2 (added retirement paragraph); §2.8 "Dynamic role assignment" rewritten to use args.caller > clientInfo.name precedence and reference §6.20; §3 changelog reference (line 339) reworded to retire env-var fallback wording; §3.1 changelog cross-reference (line 735, ask_peer description) reworded to derive peer from `meta.caller` not env var; §5.1 canonical-id naming block rewrote internal-fields list to use `meta.caller`/`args.caller` examples instead of env-var literal; §7 summary table caller row reworded to "args.caller > clientInfo.name" with explicit "no env-var fallback" note.
+- `scripts/functional-smoke.js` — updated 9 `clientInfo.name` values across spawn-based tests to map to a known agent via substring match.
+- `docs/workflow-spec.md` §6.20 — rewrote normative precedence list from 3 tiers to 2 (`args.caller > clientInfo.name`); added "Removed in v1.2.12" paragraph documenting the env-var tier retirement; updated `meta.caller_resolution.source` enum from `"arg" | "client_info" | "env_var"` to `"arg" | "client_info"`; updated per-session-peers paragraph to reflect global-constants removal.
+- `README.md` "Register with each peer" section — removed env-var instructions from Claude Code / Codex / Gemini snippets; added explicit guidance that caller is resolved via `clientInfo.name` substring match; added "Mixed-host setups" subsection pointing to `args.caller` for unrecognized hosts.
+- `src/server.js` `session_init` tool description (the string ships to MCP clients via `tools/list`) — rewrote the CALLER RESOLUTION block to describe the two-tier contract and the v1.2.12 env-var retirement.
+- `src/server.js` caller-arg description — removed "Overrides clientInfo-derived and env-var resolution" wording (env-var tier no longer exists).
+
+### Verificado
+- `npm test` — 183 GREEN.
+- `npm run check-models` — GREEN.
+- `npx biome check src scripts` — GREEN.
+
+### Notes
+- This is a **semantic runtime change** (not doc-only). Cross-review session is mandatory per `feedback_cross_review_mandatory_pre_commit.md`.
+- Hosts that had `"env": { "CROSS_REVIEW_CALLER": "..." }` in their MCP config will see a one-shot deprecation notice on each server startup until they remove the env var. The notice is informational — the server runs normally and resolves caller via clientInfo.name.
+
+---
+
 ## [1.2.11] — 2026-04-26
 
 **Doc-only narrative correction: round-7 audit-doc closing paragraph annotated with a `**v1.2.11 update**` clarification block.** The original round-7 closing paragraph in `docs/external-audit-2026-04-26-gemini.md` stated "no version bump / runtime remains v1.2.8 / commit-time gate, not version-bump-time gate." Those claims were accurate at round-7 commit time, but became stale after v1.2.9 (bookkeeping bump retroactive to commit `11d95a0`) retired the "commit-time gate" framing in favor of strict workspace `.agents/workflows/version-control.md` §6 patch-bump-on-any-modification. v1.2.11 preserves the original paragraph as the historical record of round-7's decision and appends an in-place clarification block. v1.2.10 + v1.2.11 both bump on doc-only edits under the same §6 rule.

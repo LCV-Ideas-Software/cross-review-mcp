@@ -38,21 +38,33 @@ distribution skew (claude 78% / codex 20% / gemini 2%) was therefore
 partially artificial: gemini-initiated sessions were being mis-attributed
 to claude.
 
-§6.20 (NEW): **Per-session caller resolution.** `session_init` resolves
-the caller dynamically with precedence:
+§6.20 (NEW in v4.14, simplified to two tiers in v1.2.12):
+**Per-session caller resolution.** `session_init` resolves the caller
+dynamically with precedence:
   1. `args.caller` (explicit override) — wins if valid.
   2. MCP `clientInfo.name` from initialize, substring-mapped to agent
      (`claude` → claude, `gemini` → gemini, `codex` → codex).
-  3. `CROSS_REVIEW_CALLER` env var (legacy fallback).
 
-The resolved caller is recorded in `meta.caller` and a new
-`meta.caller_resolution = { source, client_info_name }` audit field
-records HOW it was resolved. Peers are computed dynamically
+If neither tier resolves to a valid agent, `session_init` throws a
+per-call error (NOT a startup crash). The resolved caller is recorded
+in `meta.caller` and a new `meta.caller_resolution = { source,
+client_info_name }` audit field records HOW it was resolved (`source`
+is `"arg"` or `"client_info"`). Peers are computed dynamically
 (`peersForCaller(meta.caller)`) and stored in `meta.peers`. `ask_peer`
 and `ask_peers` read caller and peers from meta (NOT global
-constants) — so a session opened by gemini against a server with env
-var `CROSS_REVIEW_CALLER=claude` correctly records gemini and spawns
+constants) — so a session opened by gemini against a host with no
+env-var configuration correctly records gemini and spawns
 [claude, codex] peers.
+
+The pre-v1.2.12 third tier (`CROSS_REVIEW_CALLER` env var as legacy
+fallback) was removed in v1.2.12 because operator-configured fallback
+defeated the dynamic-caller principle and produced "lying logs"
+(server affirmed `caller=X` while the actual session was driven by
+agent Y). v1.2.12 also removed a startup-time hard-fail that was
+making the env var a de-facto requirement, contradicting its
+documented "fallback" status. Hosts with stale `CROSS_REVIEW_CALLER`
+in their MCP config see a one-shot startup deprecation notice and the
+env var is otherwise ignored.
 
 **Anti-drift smoke step.** v1.0.4/v1.0.5 shipped without README sync
 (operator noticed READMEs stuck at v1.0.3 while three releases had
@@ -324,9 +336,10 @@ was altered in this session.
   normative; beta (peer-to-peer cross-talk within a round) is a
   deferred follow-up; gamma (full mesh simultaneous) is rejected.
 - **Section 2.8 NEW**: dynamic role assignment. Caller is whoever
-  opened the session (selected by the client's `CROSS_REVIEW_CALLER`
-  env var); peers are computed as all canonical ids except caller. No
-  hardcoded default initiator.
+  opened the session (resolved per call via `args.caller` >
+  `clientInfo.name` mapping; the legacy `CROSS_REVIEW_CALLER` env-var
+  fallback was retired in v1.2.12 — see §6.20); peers are computed as
+  all canonical ids except caller. No hardcoded default initiator.
 - **Section 5.1 NEW sub-block**: display names vs canonical ids.
   External-facing identity prose SHOULD use display names ("Claude
   Code", "ChatGPT Codex", "Gemini") where naming an agent as a
@@ -720,8 +733,9 @@ ChatGPT Codex, two agents) to triangular (Claude Code + ChatGPT Codex
 - Tool `ask_peer` (singular) remains in the server surface as the
   bilateral contract. It preserves the v0.4.0-alpha bilateral contract
   and legacy schema behavior: caller selects one peer derived from
-  `CROSS_REVIEW_CALLER`; one peer is spawned; one round is recorded
-  per call with fields `peer`, `peer_status`, etc.
+  the resolved per-session `meta.caller` (set at session_init via the
+  precedence chain in §6.20); one peer is spawned; one round is
+  recorded per call with fields `peer`, `peer_status`, etc.
 - Tool `ask_peers` (plural) is new as of v0.5.0-alpha. Caller
   broadcasts the same prompt to all other canonical agents. Each
   peer's response is parsed independently. The round records a
@@ -747,27 +761,44 @@ Topologies (definitions):
 
 Alpha is the only topology authorized by v4.7.
 
-### 2.8 Dynamic role assignment (NEW in v4.7)
+### 2.8 Dynamic role assignment (NEW in v4.7, simplified in v1.2.12)
 
 Role assignment in any cross-review session is strictly dynamic:
 
-- **Caller** is the agent whose `CROSS_REVIEW_CALLER` env var was set
-  when the MCP server was launched by that client. The caller is the
-  agent that initiated the conversation; no hardcoded default
-  initiator exists in the server code. Each MCP client (Claude Code,
-  ChatGPT Codex CLI, Gemini CLI) configures its own invocation with
-  the corresponding value.
-- **Valid canonical ids** for `CROSS_REVIEW_CALLER` are `claude`,
-  `codex`, `gemini`. Any other value causes the server to fail to
-  start with a fatal error listing the allowed set.
+- **Caller** is resolved per call at `session_init` time via the
+  precedence chain defined in §6.20: `args.caller` (explicit override)
+  > `clientInfo.name` from the MCP `initialize` handshake
+  (substring-mapped to a canonical id). The caller is the AI model
+  that actually invoked the tool, declared dynamically by that model
+  per call — never via operator-configured global state.
+- **Valid canonical ids** are `claude`, `codex`, `gemini`. If
+  resolution fails (no `args.caller` and no recognizable
+  `clientInfo.name`), `session_init` throws a per-call error naming
+  the exhausted resolution sources; the server keeps running so other
+  valid sessions can proceed.
 - **Peers** are computed deterministically as all canonical ids
-  except caller. For the v4.7 triangle, peers is an array of two. The
-  `ask_peers` tool broadcasts to this computed array.
+  except caller (`peersForCaller(meta.caller)`). For the v4.7
+  triangle, peers is an array of two. The `ask_peers` tool broadcasts
+  to this computed array, which is persisted in `meta.peers` at
+  session_init.
+
+**Pre-v1.2.12 contract — retired.** Pre-v1.2.12 the caller was
+selected by the `CROSS_REVIEW_CALLER` env var, set by each MCP client
+when launching the server. That contract was retired in v1.2.12 for
+two reasons: (1) operator-configured fallback defeated the
+dynamic-caller principle and produced "lying logs" (server affirmed
+`caller=X` while the actual session was driven by agent Y); (2) the
+runtime hard-failed at startup with exit code 1 if the env var was
+unset, contradicting the env var's documented "fallback" status. See
+§6.20 for the full rationale and migration path. Hosts with stale
+env-var configs continue to work — the variable is read only to emit
+a one-shot startup deprecation notice and is otherwise ignored.
 
 Cross-reference: section 2.7 (topology) defines the vertex graph and
 broadcast semantics; section 2.8 (this section) defines how a runtime
 caller occupies one vertex and how the peer set is computed from the
-remaining canonical ids. The two sections are complementary.
+remaining canonical ids. The two sections are complementary. §6.20
+defines the normative resolution precedence in detail.
 
 ---
 
@@ -899,16 +930,18 @@ as a conversational participant:
 | codex        | ChatGPT Codex   |
 | gemini       | Gemini          |
 
-Internal fields (values of `CROSS_REVIEW_CALLER`; filename suffixes
-like `round-NN-peer-<id>.md`; meta.json schema keys; variable names
-such as `peers[]`, `peer_model`, `peer_file`; the `peer.name` field
-in round records) MUST use canonical ids (lowercase, no spaces).
+Internal fields (values of `meta.caller` and `meta.peers[]`;
+filename suffixes like `round-NN-peer-<id>.md`; meta.json schema
+keys; variable names such as `peers[]`, `peer_model`, `peer_file`;
+the `peer.name` field in round records; the `args.caller` parameter
+of `session_init`) MUST use canonical ids (lowercase, no spaces).
 
 Canonical ids may appear verbatim in prompts and external prose when
 the text is discussing configuration values, schema fields, or code
-literals (for example, "set `CROSS_REVIEW_CALLER=gemini`"). Display
-names apply to identity prose; canonical ids apply to code/config
-literals; both may coexist in the same document.
+literals (for example, `meta.caller === "gemini"` or
+`args.caller: "claude"`). Display names apply to identity prose;
+canonical ids apply to code/config literals; both may coexist in the
+same document.
 
 Rationale: in the triangular protocol, referring to a peer as "peer"
 without qualification is ambiguous (two peers exist). Display names
@@ -2654,8 +2687,8 @@ should be dynamic — reflect who is actually calling, not a default.
 unknown fraction of those 47 "claude-caller" sessions were
 gemini-initiated but mis-recorded.
 
-**Contract — resolution precedence.** `session_init` MUST resolve the
-caller per call with this strict precedence:
+**Contract — resolution precedence (v1.2.12 simplified to two tiers).**
+`session_init` MUST resolve the caller per call with this strict precedence:
 
 1. **`args.caller`** (explicit override). If provided, it MUST be a
    valid agent (one of `VALID_AGENTS`). Invalid values throw before
@@ -2666,44 +2699,65 @@ caller per call with this strict precedence:
    - contains `claude` → `claude`
    - contains `gemini` → `gemini`
    - contains `codex` → `codex`
-   Names that do not match cleanly fall through to the next step.
-3. **`CROSS_REVIEW_CALLER` env var** (legacy fallback). If set and
-   valid, used as last-resort caller identity. If unset or invalid AND
-   the previous two steps also failed, `session_init` MUST throw with
-   a message naming all three exhausted resolution sources.
+   Names that do not match cleanly cause a per-call throw.
+
+If neither tier resolves to a valid agent, `session_init` MUST throw
+a per-call error naming both exhausted resolution sources and
+referencing this section. The throw is scoped to the offending call,
+NOT a startup crash — the server stays running so other valid sessions
+can proceed.
+
+**`CROSS_REVIEW_CALLER` env-var fallback removed in v1.2.12.** Pre-v1.2.12
+the spec defined a third tier (`CROSS_REVIEW_CALLER` env var) as
+last-resort fallback. That tier defeated the dynamic-caller principle:
+the AI model that calls the tool MUST declare its own identity per call,
+never via operator-configured env state. Operator-configured fallback
+also produced "lying logs" (server affirmed `caller=X` while the actual
+session was driven by agent Y). Pre-v1.2.12 a stricter symptom emerged:
+the server hard-failed at startup with exit code 1 if the env var was
+unset, so the documented "fallback" was actually a startup hard
+requirement, and the dynamic tiers above it could never run when the
+operator removed the env var (the correct configuration). v1.2.12
+removes the env-var tier entirely. Stale configs that still set
+`CROSS_REVIEW_CALLER` trigger a one-shot startup deprecation notice on
+stderr and are otherwise ignored — the server boots normally and
+resolves caller via the two dynamic tiers above.
 
 **Persisted audit field.** `meta.caller_resolution` MUST record:
 
 ```
 {
-  "source": "arg" | "client_info" | "env_var",
+  "source": "arg" | "client_info",
   "client_info_name": <the MCP clientInfo.name string, or null>
 }
 ```
 
 This lets audit consumers distinguish explicit-override sessions from
-inferred-default sessions, and reconstruct WHY a given session was
-attributed to a specific caller.
+clientInfo-inferred sessions, and reconstruct WHY a given session was
+attributed to a specific caller. The `"env_var"` source value was
+retired in v1.2.12 along with the env-var tier.
 
 **Per-session peers.** Peers MUST be computed dynamically from the
 resolved caller via `peersForCaller(caller) = VALID_AGENTS - {caller}`
 and stored in `meta.peers`. Probes (capability_snapshot) MUST run
-against this dynamic peer set, not the env-var-derived global. Round
+against this dynamic peer set, not any env-var-derived global. Round
 spawning (`ask_peer` / `ask_peers`) MUST read caller and peers from
-`meta` (NOT global constants).
+`meta`. v1.2.12 removed the module-level `CALLER`/`PEERS`/`LEGACY_PEER`
+constants and exports — handlers MUST validate `meta.caller` against
+`VALID_AGENTS` and throw on missing/invalid (no silent fallback).
 
 **`ask_peer` legacy bilateral.** `ask_peer` is a legacy bilateral
 surface gated to caller=`claude` or `codex` (via `LEGACY_BILATERAL_PEER`
-table). Under v4.14, the gate is checked against `meta.caller`, not
-the global. A gemini-resolved session calling `ask_peer` MUST be
-rejected with the existing error message.
+table). The gate is checked against `meta.caller`. A gemini-resolved
+session calling `ask_peer` MUST be rejected with the existing error
+message.
 
 **Backwards compatibility.** Pre-v4.14 sessions lack
-`meta.caller_resolution`; audit consumers MUST tolerate the absence
-and treat the implicit source as `env_var`. The global
-`CALLER`/`PEERS`/`LEGACY_PEER` constants remain available for code
-paths that have not been updated to read meta (logging, fallbacks);
-the dynamic resolution at session boundaries is canonical.
+`meta.caller_resolution`; audit consumers MUST tolerate the absence.
+Hosts with stale `CROSS_REVIEW_CALLER` env vars in their MCP config
+continue to work in v1.2.12 — the env var is read only to emit a
+one-shot deprecation notice and then ignored; identity is resolved
+strictly via the two dynamic tiers.
 
 **Anti-drift smoke (v1.2.0 release discipline).** A new functional
 smoke step asserts README.md's `Current release: **vX.Y.Z**` line
@@ -2772,7 +2826,7 @@ evidence-rigor discipline.
 | Continuity | Optional ledger (section 6.5); when adopted, keep ASCII-only and attach on subsequent sessions |
 | Overflow | Yellow 50k / Red 100k chars in the transcript (section 6.6.1); non-destructive compression (section 6.6.4) with reference to the immutables; meta.json with no API change (section 6.6.3 YAGNI) |
 | Transition window | During server upgrade, peer emits both formats until reload is confirmed |
-| Triangular topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary introduced in F2 -- alpha normative (section 2.7); unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini"); canonical ids internally (claude / codex / gemini); caller selected dynamically via `CROSS_REVIEW_CALLER` with no hardcoded default (section 2.8) |
+| Triangular topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary introduced in F2 -- alpha normative (section 2.7); unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini"); canonical ids internally (claude / codex / gemini); caller resolved dynamically per call via `args.caller > clientInfo.name` with no hardcoded default and no env-var fallback (section 2.8 / §6.20, simplified to two tiers in v1.2.12) |
 | Tier + transient resilience | Pre-session capability probe per agent with per-provider `fallback_chain` walk (6.9.3.1, 6.9.3.2); graceful degrade triangular -> bilateral when exactly one peer is excluded, abort only when <2 peers viable (6.9.3.3); session-level `meta.capability_snapshot` + active-peer-only rounds (6.9.3.4; `tier: ok \| offline` canonical in v4.9, retiring `fallback`); dual runtime vs advisory role of top-models.json (6.9.3.5); mid-round transient provider failures (prompt flag / rate limit / 5xx) treated with same-model retry-once-with-backoff; server-side auto-rephrase prohibited; silent mid-round model switch remains prohibited (6.9.3.6); `transient_failure` enum in response distinguishes transient from protocol failure |
 | Transport-aware model-check | `spawnPeer` / `probeAgent` return `transport_descriptor: { agent, auth, endpoint_class }` (6.11); `parsePeerOutputs` gate on `auth === 'api-key'` runs `classifyModelMatch`; otherwise SKIP with audit record `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli', auth, endpoint_class }` (eliminates v0.5.0-alpha false-positive `silent_model_downgrade` on CLI-subscription / oauth-personal peers); forensic-only `cli_attested_model_raw` captures Codex stderr banner unparsed |
 | Strict-only convergence + snapshot | `converged iff caller READY AND every responded peer READY` (6.12); `status_missing` counts AGAINST; no loose toggle; `appendRound` persists `round.convergence_snapshot` with `spec_version: 'v4.9'`; `checkConvergence` reads the persisted snapshot (audit immutability under future predicate evolution) |

@@ -10,13 +10,14 @@
 
 **Install.** `npm install -g @lcv-leo/cross-review-mcp` (npmjs.com) or `npm install -g @lcv-leo/cross-review-mcp --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.2.11** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.2.12** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
-| **`v1.2.11`** | v4.14 | **Audit-doc narrative correction + pre-existing biome cleanup carry-over.** Primary motivation: the round-7 audit-doc closing paragraph said "no version bump / runtime remains v1.2.8 / commit-time gate, not version-bump-time gate" — accurate at round-7 commit time, but stale after v1.2.9 (bookkeeping bump retroactive to commit `11d95a0`) retired the "commit-time gate" framing in favor of strict workspace `.agents/workflows/version-control.md` §6 patch-bump-on-any-modification. v1.2.11 preserves the original paragraph as the historical record of round-7's decision and appends a `**v1.2.11 update**` clarification block stating: (a) v1.2.9 made the bump retroactive after operator catch; (b) the "commit-time gate" framing is retired; (c) workspace policy is patch-bump-on-any-modification, independent of whether bytes shipped to npm change; (d) v1.2.10 + v1.2.11 both bump under the same rule on doc-only edits. Single-source verified at audit time (pre-release source audit, before this README row + the CHANGELOG v1.2.11 entry were written) — only the audit-doc carried the stale narrative; CHANGELOG:284 + README:27 hits at that time were about v1.2.2's `§6.10.1 clarification` (a different, accurate historical record). The v1.2.11 release notes deliberately quote the stale phrases as contextualized correction text, so post-release the same grep also matches the v1.2.11 release-notes citations themselves — intentional, not unfixed. **Carry-over:** v1.2.11's own gate ran `biome check src scripts` (broader than v1.2.7's per-file scope) and surfaced 4 pre-existing errors in `scripts/probe-reviewer-isolation.js` (3 `useNodejsImportProtocol` + 1 `noAssignInExpressions`) and 2 format-only errors in `src/lib/{model-parser,status-parser}.js` (CRLF + single quotes + non-default line wrap). Per `feedback_fix_preexisting_errors.md` all were fixed in this ship. No semantic change to runtime — `useNodejsImportProtocol` is `require('fs')` → `require('node:fs')` (identical resolution), the `while`-loop refactor is byte-equivalent to the assign-in-expression form, and biome's default formatter pass on the parsers swaps quote style + wraps long lines (zero JS-value change in the regex/string constants). Smoke 179 GREEN re-verified post-reformat. |
+| **`v1.2.12`** | v4.14 (§6.20 v1.2.12 simplification) | **Bugfix + spec tightening: remove `CROSS_REVIEW_CALLER` env-var fallback entirely; caller is now resolved dynamically per session via `args.caller > clientInfo.name` only.** Pre-v1.2.12 the server hard-failed at startup with exit code 1 if `CROSS_REVIEW_CALLER` was unset, contradicting §6.20's dynamic resolution chain (the env var was nominally the third-precedence fallback but was actually a startup hard requirement). Operator caught the contradiction after stripping the env var from all 4 host configs (Claude Code, VS Code, Antigravity, Codex CLI) per the dynamic-caller principle: the AI model that called the tool MUST declare its own identity, never via operator-configured env state. v1.2.12 changes: (a) startup no longer reads or requires `CROSS_REVIEW_CALLER`; if the var is set in a stale config, the server emits a one-shot deprecation notice to stderr and ignores it; (b) `resolveCallerForSession` precedence reduced from 3 tiers (args > clientInfo > env) to 2 tiers (args > clientInfo) — throws when both fail; (c) module-level `CALLER` / `PEERS` / `LEGACY_PEER` constants removed (handlers now read from session `meta.caller` set at session_init time, with explicit validation throwing on missing/invalid values); (d) `escalate_to_operator` now reads the `from_agent` actor from `sessionMeta.caller` instead of the global `CALLER` (pre-v1.2.12 it silently recorded the wrong actor when env mismatched session resolution); (e) startup banner trimmed to drop env-derived caller/peers fields. 9 new anti-drift smoke invariants split across three test functions: 3 child-process startup invariants in `driveV414StartupNoEnvVarIntegration` (server boots cleanly with env unset, deprecation notice fires when env set, session_init throws on unrecognized clientInfo + missing args.caller); 1 export-removal regression guard in `driveV414CallerResolutionUnit` (env-derived globals are not exported); 5 doc-drift guards in `driveV414CallerEnvDocDriftUnit` (session_init tool description + caller-arg description + spec §6.20 normative precedence list + README "Register with each peer" env-snippet rejection in CLI/TOML/JSON forms + spec-doc-wide present-tense framing scan). Spec doc rewritten in 6 places to reflect two-tier resolution (executive summary §0n + §2.8 dynamic role assignment + §3 changelog cross-references + §5.1 canonical-id naming examples + §6.20 normative precedence + §7 summary table); README "Register with each peer" section updated to remove env-var instructions in all 3 peer snippets. Smoke 188 GREEN (was 179 in v1.2.11). |
+| `v1.2.11` | v4.14 | **Audit-doc narrative correction + pre-existing biome cleanup carry-over.** Primary motivation: the round-7 audit-doc closing paragraph said "no version bump / runtime remains v1.2.8 / commit-time gate, not version-bump-time gate" — accurate at round-7 commit time, but stale after v1.2.9 (bookkeeping bump retroactive to commit `11d95a0`) retired the "commit-time gate" framing in favor of strict workspace `.agents/workflows/version-control.md` §6 patch-bump-on-any-modification. v1.2.11 preserves the original paragraph as the historical record of round-7's decision and appends a `**v1.2.11 update**` clarification block stating: (a) v1.2.9 made the bump retroactive after operator catch; (b) the "commit-time gate" framing is retired; (c) workspace policy is patch-bump-on-any-modification, independent of whether bytes shipped to npm change; (d) v1.2.10 + v1.2.11 both bump under the same rule on doc-only edits. Single-source verified at audit time (pre-release source audit, before this README row + the CHANGELOG v1.2.11 entry were written) — only the audit-doc carried the stale narrative; CHANGELOG:284 + README:27 hits at that time were about v1.2.2's `§6.10.1 clarification` (a different, accurate historical record). The v1.2.11 release notes deliberately quote the stale phrases as contextualized correction text, so post-release the same grep also matches the v1.2.11 release-notes citations themselves — intentional, not unfixed. **Carry-over:** v1.2.11's own gate ran `biome check src scripts` (broader than v1.2.7's per-file scope) and surfaced 4 pre-existing errors in `scripts/probe-reviewer-isolation.js` (3 `useNodejsImportProtocol` + 1 `noAssignInExpressions`) and 2 format-only errors in `src/lib/{model-parser,status-parser}.js` (CRLF + single quotes + non-default line wrap). Per `feedback_fix_preexisting_errors.md` all were fixed in this ship. No semantic change to runtime — `useNodejsImportProtocol` is `require('fs')` → `require('node:fs')` (identical resolution), the `while`-loop refactor is byte-equivalent to the assign-in-expression form, and biome's default formatter pass on the parsers swaps quote style + wraps long lines (zero JS-value change in the regex/string constants). Smoke 179 GREEN re-verified post-reformat. |
 | `v1.2.10` | v4.14 | **Cosmetic: README version-history table inverted to newest-first ordering.** Operator-requested. The table previously listed releases in chronological order (oldest at top, newest at bottom); reordered so readers see current state immediately and walk back through history. No content change to any row text. No code change, no spec change. Per workspace `version-control.md` §6, even cosmetic text reordering qualifies as "mudança de texto" and requires a patch bump. |
 | `v1.2.9` | v4.14 | **Audit-trail bookkeeping bump.** Round-7 follow-up section was added to `docs/external-audit-2026-04-26-gemini.md` in commit `11d95a0` (caller-memory correction about CONVERGENCE_SPEC_VERSION being intentional two-constant design + neutral verdict-criterion adjudication of Gemini's NOT_READY vs Codex's READY-with-residuals + two precision-correction phrasings). That commit was initially pushed without a version bump per advisor guidance ("npm bytes unchanged → no need"). Operator caught the omission: workspace `.agents/workflows/version-control.md` §6 mandates patch bump for ANY modification including text changes ("mudanças de texto"). v1.2.9 closes the bookkeeping gap. No code change, no spec change, runtime identical to v1.2.8; only the version field differs. Lesson recorded in Claude Code memory `feedback_workspace_rules_supersede_advisor.md`. |
 | `v1.2.8` | v4.14 (§6.18.3 v1.2.7 amendment + v1.2.8 wording clarification) | **Doc-only clarification: F4 fallback wording tightened from overstated "real reap" to honest "best-effort proc-handle reap" + new explicit deferral bullet for tree-kill completeness under `shell: true`.** Round-6 audit on v1.2.7 (Gemini-orchestrated, codex meta-eval) approved v1.2.7 as READY but both peers correctly observed in their own meta-eval that under §6.21 `shell: true`, on Windows the proc handle Node holds is `cmd.exe` — so the v1.2.7 fallback `proc.kill('SIGKILL')` reaps the shell but does NOT walk the tree to the actual peer-CLI grandchild. v1.2.8 keeps runtime semantics unchanged (kill code is identical) and: (1) tones the wording in 4 surfaces (spec amendment + CHANGELOG + this README row + peer-spawn comment); (2) enriches operator-visible log messages on the fallback path with the cmd.exe-orphan caveat; (3) adds a 4th deferral bullet to v1.3.x list ("F4 fallback completeness under shell:true") with explicit interim-mitigation rejection notes (retry-taskkill, wmic walker — both have same shell-out failure modes); proper closure tied to §6.21 `shell: false` migration. No semantic change, smoke still 179 GREEN. Cross-review session `a8e7be3e` ran 3 rounds (operator override of caller's initial "doc-only no cross-review" judgment proved correct: codex caught a missed 3rd fallback path in R1 and 3 doc-drift items in R2; R3 trilateral READY). |
@@ -117,7 +118,7 @@ The only runtime dependency is `@modelcontextprotocol/sdk`.
 Before using the server or after any edit, confirm both gates pass:
 
 ```bash
-npm test             # 177 smoke steps (unit + end-to-end stdio JSON-RPC)
+npm test             # 188 smoke steps (unit + end-to-end stdio JSON-RPC; count grows with each release — check the last line of output)
 npm run check-models # model-drift audit against docs/top-models.json
 ```
 
@@ -127,15 +128,15 @@ Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema 
 
 ## Register with each peer
 
-Each peer registers the MCP server with its own `CROSS_REVIEW_CALLER` env var. The server uses that var to determine identity at startup and compute `PEERS = VALID_AGENTS.filter(a => a !== CALLER)`.
+Each peer registers the MCP server using its host's standard MCP config. **Do NOT set a `CROSS_REVIEW_CALLER` env var** — caller identity is resolved dynamically per session (spec v4.14 §6.20, simplified in v1.2.12) via the calling host's MCP `clientInfo.name` (declared during the `initialize` handshake) with substring match against `claude` / `codex` / `gemini`. The env-var fallback that previously existed was removed in v1.2.12 because it produced "lying logs" — the server affirmed `caller=X` while the actual session was driven by agent Y. If a stale config still sets `CROSS_REVIEW_CALLER`, the server emits a one-shot deprecation notice on stderr at startup and ignores the variable; the server boots and runs normally.
 
 ### Claude Code
 
 ```bash
-claude mcp add -e CROSS_REVIEW_CALLER=claude -s user cross-review -- node /absolute/path/to/cross-review-mcp/src/server.js
+claude mcp add -s user cross-review -- node /absolute/path/to/cross-review-mcp/src/server.js
 ```
 
-Verify: `claude mcp get cross-review` should show `Status: Connected`.
+Verify: `claude mcp get cross-review` should show `Status: Connected`. The Claude Code host declares `clientInfo.name: "claude-code"` during MCP initialize, so the server resolves the caller as `claude` automatically.
 
 ### ChatGPT Codex
 
@@ -145,11 +146,10 @@ Add to `~/.codex/config.toml`:
 [mcp_servers.cross-review]
 command = "node"
 args = ["/absolute/path/to/cross-review-mcp/src/server.js"]
-env = { CROSS_REVIEW_CALLER = "codex" }
 tool_timeout_sec = 1800
 ```
 
-Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdio`.
+Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdio`. The Codex CLI declares a `clientInfo.name` containing `codex`, so the server resolves the caller as `codex` automatically.
 
 ### Gemini CLI
 
@@ -160,14 +160,17 @@ Add to `~/.gemini/settings.json` under `mcpServers`:
   "mcpServers": {
     "cross-review-mcp": {
       "command": "node",
-      "args": ["/absolute/path/to/cross-review-mcp/src/server.js"],
-      "env": { "CROSS_REVIEW_CALLER": "gemini" }
+      "args": ["/absolute/path/to/cross-review-mcp/src/server.js"]
     }
   }
 }
 ```
 
-Verify: invoke `gemini` and confirm `cross-review-mcp` appears in the MCP list.
+Verify: invoke `gemini` and confirm `cross-review-mcp` appears in the MCP list. The Gemini CLI declares a `clientInfo.name` containing `gemini`, so the server resolves the caller as `gemini` automatically.
+
+### Mixed-host setups
+
+If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one of `claude` / `codex` / `gemini` (e.g., a custom wrapper or test harness), pass an explicit `caller` argument on every `session_init` call instead of trying to inject identity via env config. The `args.caller` parameter takes precedence over `clientInfo.name` resolution.
 
 ### Reload clients
 
@@ -293,7 +296,7 @@ cross-review-mcp/
 ### Make a change, verify gates
 
 ```bash
-npm test              # 177 smoke steps must stay GREEN (count may grow across releases; check the last line of output)
+npm test              # 188 smoke steps must stay GREEN (count may grow across releases; check the last line of output)
 npm run check-models  # advisory drift audit; must stay clean
 ```
 
