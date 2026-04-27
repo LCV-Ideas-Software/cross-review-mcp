@@ -15,6 +15,25 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.10] — 2026-04-26
+
+**Cosmetic: README version-history table inverted to newest-first ordering.** Operator-requested. The table at the top of `README.md` previously listed releases in chronological order (oldest at top, newest at bottom). Reordered so readers see the current state immediately and walk back through history. No content change to any row text — every row preserved verbatim, only the row order swapped (and the bold marker moved from `v1.2.9` to the new `v1.2.10` row). Per workspace `version-control.md` §6, even cosmetic text reordering qualifies as "mudança de texto" and requires a patch bump + CHANGELOG entry.
+
+### Alterado
+- `README.md` "the version history at a glance" table: data rows reversed (newest → oldest). Header + separator unchanged. Bold marker on the current-release row moved from `v1.2.9` to new `v1.2.10` row.
+- `README.md` "Current release" line: `v1.2.9` → `v1.2.10`.
+
+### Adicionado
+- `README.md` history table: new `v1.2.10` row at the top describing this cosmetic reorder.
+
+### Validação
+- `npm test` 179 GREEN (no smoke change required — anti-drift assertions hold; the README "Current release" smoke + CHANGELOG-heading drift smoke both pass at v1.2.10).
+- `npm run check-models` GREEN.
+- `biome check` clean on all source/script files.
+- Cross-review session per `feedback_cross_review_mandatory_pre_commit.md` directive.
+
+---
+
 ## [1.2.9] — 2026-04-26
 
 **Audit-trail bookkeeping bump.** The previous commit (`11d95a0`, `docs(audit): round-7 follow-up...`) appended a Round-7 follow-up section to `docs/external-audit-2026-04-26-gemini.md` recording (a) a caller-memory correction about `CONVERGENCE_SPEC_VERSION` being intentional two-constant design (not a bug, as previously misclassified in workspace memory), (b) a neutral verdict-criterion note distinguishing Gemini's NOT_READY criterion from Codex's READY-with-residuals criterion under the §6.21 threat model, and (c) two Codex precision corrections recorded as canonical phrasing. That commit was initially pushed as a non-versioned doc commit per advisor guidance ("npm bytes unchanged → no need to bump"), but the workspace `.agents/workflows/version-control.md` §6 rule is literal: "Qualquer modificação requer incrementar o patch + adicionar entrada no CHANGELOG.md," and explicitly classifies "mudanças de texto" (text changes) as patch-bump material. Operator caught the omission. v1.2.9 closes the bookkeeping gap.
