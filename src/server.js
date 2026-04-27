@@ -59,7 +59,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.2.13";
+const VERSION = "1.2.14";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -746,11 +746,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										"escalate_to_operator",
 									],
 									links: {
-										repo: "https://github.com/lcv-leo/cross-review-mcp",
-										npm: "https://www.npmjs.com/package/@lcv-leo/cross-review-mcp",
-										spec: "https://github.com/lcv-leo/cross-review-mcp/blob/main/docs/workflow-spec.md",
+										repo: "https://github.com/LCV-Ideas-Software/cross-review-mcp",
+										npm: "https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp",
+										spec: "https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/docs/workflow-spec.md",
 										changelog:
-											"https://github.com/lcv-leo/cross-review-mcp/blob/main/CHANGELOG.md",
+											"https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/CHANGELOG.md",
 									},
 								},
 								null,

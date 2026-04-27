@@ -56,7 +56,7 @@ jobs:
         with:
           node-version: 22
           registry-url: 'https://registry.npmjs.org'
-          scope: '@lcv-leo'
+          scope: '@lcv-ideas-software'
           cache: npm
 
       - name: Install dependencies
@@ -64,6 +64,14 @@ jobs:
 
       - name: Publish (public, with provenance)
         run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Deprecate old personal-scope package
+        run: >
+          npm deprecate @lcv-leo/cross-review-mcp@"*"
+          "Moved to @lcv-ideas-software/cross-review-mcp. Install with:
+          npm install -g @lcv-ideas-software/cross-review-mcp"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
@@ -86,7 +94,7 @@ jobs:
         with:
           node-version: 22
           registry-url: 'https://npm.pkg.github.com'
-          scope: '@lcv-leo'
+          scope: '@lcv-ideas-software'
           cache: npm
 
       - name: Install dependencies

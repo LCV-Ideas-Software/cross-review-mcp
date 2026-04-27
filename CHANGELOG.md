@@ -15,6 +15,32 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.14] — 2026-04-27
+
+**Package scope migration to `@lcv-ideas-software/cross-review-mcp`.**
+
+After the GitHub repository transfer from `lcv-leo/cross-review-mcp` to `LCV-Ideas-Software/cross-review-mcp`, the npm package needed to move to the organization namespace as well. npm does not support transferring scoped packages between scopes because the scope is part of the package name; the safe migration path is to publish a new package under the organization scope and deprecate the old scoped package after the new publish succeeds.
+
+### Alterado
+
+- `package.json:name` changes from `@lcv-leo/cross-review-mcp` to `@lcv-ideas-software/cross-review-mcp`.
+- `package.json:version` and `src/server.js:VERSION` bump 1.2.13 → 1.2.14 for the package identity migration.
+- `package.json` repository/homepage/bugs metadata now points at `https://github.com/LCV-Ideas-Software/cross-review-mcp`.
+- Publish workflow `setup-node` scope changes from `@lcv-leo` to `@lcv-ideas-software` for both npmjs.com and GitHub Packages.
+- After the new npmjs.com package publishes, the workflow deprecates the old `@lcv-leo/cross-review-mcp` package with a migration message pointing to the organization-scoped install command.
+- README badge, install command, clone URL, current-release line, and version-history top row now document the organization-scoped package.
+- `server_info.links` now returns organization-owned GitHub/npm/spec/changelog URLs.
+
+### Nota operacional
+
+- The old npm package `@lcv-leo/cross-review-mcp` is deprecated by the publish workflow only after `@lcv-ideas-software/cross-review-mcp` publishes successfully:
+
+```bash
+npm deprecate @lcv-leo/cross-review-mcp@"*" "Moved to @lcv-ideas-software/cross-review-mcp. Install with: npm install -g @lcv-ideas-software/cross-review-mcp"
+```
+
+---
+
 ## [1.2.13] — 2026-04-27
 
 **Packaging fix: include `reviewer-configs/` in the npm tarball.**

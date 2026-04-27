@@ -1,6 +1,6 @@
 {
-  "name": "@lcv-leo/cross-review-mcp",
-  "version": "1.2.13",
+  "name": "@lcv-ideas-software/cross-review-mcp",
+  "version": "1.2.14",
   "description": "MCP server orchestrating trilateral cross-review between Claude Code, ChatGPT Codex, and Gemini CLI",
   "type": "commonjs",
   "main": "src/server.js",
@@ -33,14 +33,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/lcv-leo/cross-review-mcp.git"
+    "url": "git+https://github.com/LCV-Ideas-Software/cross-review-mcp.git"
   },
-  "homepage": "https://github.com/lcv-leo/cross-review-mcp#readme",
+  "homepage": "https://github.com/LCV-Ideas-Software/cross-review-mcp#readme",
   "bugs": {
-    "url": "https://github.com/lcv-leo/cross-review-mcp/issues"
+    "url": "https://github.com/LCV-Ideas-Software/cross-review-mcp/issues"
   },
   "license": "Apache-2.0",
-  "author": "lcv-leo",
+  "author": "LCV Ideas & Software",
   "keywords": [
     "mcp",
     "model-context-protocol",
