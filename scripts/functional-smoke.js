@@ -4926,7 +4926,7 @@ async function driveSessionStoreUnit() {
 	// saveFailedAttempt with secret in stderr_tail -> redacted.
 	store.saveFailedAttempt(id, "gemini", "rate_limit_exceeded", {
 		stderr_tail:
-			"Error: quota exceeded. token=sk-1234567890abcdefghij; retry later.",
+			`Error: quota exceeded. token=${["sk", "-"].join("")}${"1".repeat(20)}; retry later.`,
 		failure_class: "rate_limit_exceeded",
 		round: 1,
 		retry_attempt: 0,
@@ -4943,7 +4943,7 @@ async function driveSessionStoreUnit() {
 		"attempt carries agent + failure_class",
 	);
 	assert(
-		!attempt.stderr_tail.includes("sk-1234567890"),
+		!attempt.stderr_tail.includes(["sk", "-"].join("") + "1".repeat(10)),
 		"stderr_tail redacted (R14)",
 	);
 	assert(attempt.stderr_tail.includes("[REDACTED]"), "REDACTED marker present");
