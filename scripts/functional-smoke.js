@@ -4832,16 +4832,14 @@ async function driveSessionStoreUnit() {
 	);
 	const userPassFixture = ["p4", "ssw0rd"].join("");
 	const envFixture = ["top", "secret"].join("");
-	const envKeyFixture = ["PRIVATE", "_API", "_KEY"].join("");
-	const urlWithUserFixture = ["https", "://", "alice", ":"].join("");
 	const raw = [
 		`token=${openAiFixture}`,
 		googleFixture,
 		`Authorization: Bearer ${jwtFixture}`,
 		`gh_token=${githubFixture}`,
 		`slack=${slackFixture}`,
-		`${envKeyFixture}=${envFixture}`,
-		`${urlWithUserFixture}${userPassFixture}@internal.lcv.app.br/path`,
+		`PRIVATE_API_KEY=${envFixture}`,
+		`https://alice:${userPassFixture}@internal.lcv.app.br/path`,
 	].join("\n");
 	const redacted = store.redactSensitive(raw);
 	assert(!redacted.includes(openAiFixture.slice(0, 12)), "redact: sk- OpenAI");
