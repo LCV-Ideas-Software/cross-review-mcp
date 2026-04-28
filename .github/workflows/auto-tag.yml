@@ -1,0 +1,81 @@
+name: Auto-tag on version bump
+
+# When a push to main lands with a bumped package.json version, this
+# workflow creates the matching git tag (v${version}) and pushes it. The
+# tag push fires the existing publish.yml workflow which handles npm
+# publish + GitHub Packages publish + GitHub Release creation.
+#
+# Idempotent: when package.json version equals the latest tag (no bump
+# in this push), the workflow exits cleanly without creating anything.
+#
+# Inspired by the maestro-app release.yml prepare-release pattern
+# (Codex 2026-04-26). Adapted for cross-review-mcp's leaner Node-only
+# distribution (no Tauri build, no GHCR OCI mirror — those concerns are
+# already handled by publish.yml's three downstream jobs on tag push).
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-tag-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  auto-tag:
+    name: Create version tag if package.json was bumped
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout main with full history
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Read package.json version
+        id: version
+        run: |
+          set -euo pipefail
+          VERSION=$(node -p "require('./package.json').version")
+          TAG="v${VERSION}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[a-z0-9]+)?$ ]]; then
+            echo "::error::Invalid version shape in package.json: '$VERSION'. Expected vX.Y.Z or vX.Y.Z-prerelease."
+            exit 1
+          fi
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Detected version: $VERSION (tag: $TAG)"
+
+      - name: Check if tag already exists on origin
+        id: check
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} already exists on origin; skipping create."
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "Tag ${TAG} does not exist; will create."
+          fi
+
+      - name: Create and push tag
+        if: steps.check.outputs.exists == 'false'
+        env:
+          TAG: ${{ steps.version.outputs.tag }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # Use the GitHub Actions bot identity for the tag.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Annotated tag with one-line message; downstream publish.yml
+          # extracts release notes from CHANGELOG.md (its own concern).
+          git tag -a "${TAG}" -m "${TAG}: auto-tagged from package.json on push to main"
+          git push origin "${TAG}"
+          echo "Created and pushed ${TAG}; publish.yml will fire on the tag-push event."
