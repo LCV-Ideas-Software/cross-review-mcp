@@ -3292,6 +3292,127 @@ delta. The `summary` field acceptance removes a warning that was
 already advisory (not blocking); peer prompts that emit `summary`
 now produce cleaner audit trails.
 
+### 6.24 Heartbeat + stderr classification + evidence attach tool (NEW in v1.3.0)
+
+**Surfaced by.** Codex's technical handoff
+(`maestro-app/.ai/handoffs/2026-04-28-cross-review-mcp-technical-prompt-for-claude.md`)
+identified eight operational findings from session `28343cdb`. Findings
+1+2, 3, 6, 7 shipped as v1.2.18 additive (covered in §6.23). Findings
+4, 5, 8 deferred to v1.3.0 minor bump because Finding 8 introduces a
+new MCP tool — that exceeds the v1.x patch-additive contract per
+`CONTRIBUTING.md`.
+
+**Finding 4 — Heartbeat in `meta.in_flight`.** Long-running peer
+spawns (12min round timeout, 8min per-peer) leave the caller blind to
+whether the work is still in progress, the peer hung, or the parent
+process died. v1.3.0 adds a heartbeat lifecycle:
+
+- `markRoundInFlight(sessionId, round, agents)` writes `meta.in_flight
+  = { round, agents, started_at, last_heartbeat }`.
+- `updateRoundHeartbeat(sessionId)` refreshes `last_heartbeat`. No-op
+  when in_flight is absent (returns false).
+- `clearRoundInFlight(sessionId)` removes the field.
+- `withRoundHeartbeat(sessionId, round, agents, asyncFn)` is the
+  high-level wrapper used by the `ask_peer` / `ask_peers` handlers:
+  sets in_flight before calling, refreshes every
+  `HEARTBEAT_INTERVAL_MS` (default 15s, env override
+  `CROSS_REVIEW_HEARTBEAT_INTERVAL_MS`), clears on resolve OR reject
+  (finally clause). The interval is `unref()`'d so the heartbeat does
+  not keep the process alive past the wrapped fn.
+
+Audit consumers reading `meta.json` can distinguish three states:
+
+- `in_flight` present, `last_heartbeat` fresh — peer still running.
+- `in_flight` present, `last_heartbeat` stale — caller crashed
+  mid-call; session is recoverable via `session_read` for completed
+  rounds, but the in-flight round produced no peer artifact.
+- `in_flight` absent + most-recent round complete — normal idle state.
+
+The 15s heartbeat interval is small relative to the 12min round
+timeout (~0.02% of round budget) so the meta.json write overhead is
+negligible. Errors during heartbeat updates are caught and logged to
+stderr; they do not affect the wrapped result.
+
+**Finding 5 — `classifyStderr` + noise classes.** Pre-v1.3.0 the
+caller had no signal-vs-noise filter on peer stderr. Cloudflare
+challenge HTML, plugin/analytics warnings, terminal capability
+advisories inflated audit artifacts and consumed peer context if
+forwarded back. v1.3.0 adds `classifyStderr(text)` returning
+`{ class, signals }`:
+
+Eight noise classes, ordered from highest-signal-failures to ambient
+noise:
+
+- `auth_expired` — 401 Unauthorized, token expired, please
+  re-authenticate, etc.
+- `command_not_found` — POSIX/Windows variants, ENOENT.
+- `tool_unavailable` — MCP tool resolution failures.
+- `rate_limit` — 429, too many requests, quota exceeded, retry-after.
+- `cloudflare_challenge` — Cloudflare CF-Ray, attention required, just
+  a moment.
+- `plugin_warning` — plugin load warnings, deprecation warnings (e.g.
+  punycode).
+- `analytics_warning` — telemetry opt-in/out, usage statistics.
+- `terminal_advisory` — 256-color/true-color advisories.
+- `unknown` — fallback for signal-free text.
+
+First-match-wins for the primary class, but ALL matched patterns
+appear in `signals[]` for traceability. `saveFailedAttempt`
+automatically adds `stderr_classification` to audit entries when the
+tail matches a known class. Non-destructive: raw `stderr_tail` is
+preserved (already redacted + clipped to `MAX_STDERR_TAIL_CHARS`).
+
+**Finding 8 — `session_attach_evidence` MCP tool.** Pre-v1.3.0 the
+caller had no convention for storing review-relevant evidence files
+(Playwright traces, screenshots, metric dumps, diff bundles) inside
+the cross-review session. Operators put them in app-specific
+`data/tmp/<app>-<version>/` ad-hoc per app. v1.3.0 adds
+`~/.cross-review/<session-id>/evidence/` as the canonical directory
+and a new MCP tool `session_attach_evidence` that:
+
+- Accepts `session_id`, `label` (caller-supplied filename hint),
+  `content` (UTF-8 string; binary artifacts must be base64-encoded by
+  caller), and optional `content_type` (MIME type or descriptive
+  string).
+- Sanitizes the label server-side: strips path separators (`/\:`),
+  reserved Windows chars (`*?"<>|`), control chars (NUL–0x1f), leading
+  dots; max 80 chars; falls back to `evidence` for empty/null.
+- Writes the content to `<session-dir>/evidence/<timestamp>-<sanitized-label>`
+  via `atomicWriteFile` (temp + rename).
+- Updates `meta.evidence[]` with the manifest entry `{ filename, path,
+  size, content_type, attached_at, label }`.
+- Returns the manifest entry as the response.
+
+Size cap: `EVIDENCE_MAX_BYTES = 1 MiB` per evidence file. Maestro
+Playwright PNGs typically ~100–300 KiB; metric JSONs are tens of KiB;
+1 MiB covers >99% with margin. Larger artifacts can be split into
+multiple attaches.
+
+Lock-acquired during write for concurrency safety with in-flight
+`ask_peer` / `ask_peers`. Legitimate for both in-progress and
+finalized sessions: an operator may attach late-arriving evidence to
+a converged session for post-mortem review.
+
+Forward path: future versions may auto-inject evidence content
+alongside concurrence artifacts in `ask_peer` / `ask_peers`. v1.3.0
+keeps the surface minimal — the caller cites evidence paths in
+prompts; peers read them with their own file-reading tools.
+
+**Test coverage.** Three new smoke functions in
+`functional-smoke.js`: `driveV130HeartbeatLifecycleUnit` (6
+invariants), `driveV130StderrClassificationUnit` (4 invariants),
+`driveV130EvidenceAttachUnit` (5 invariants + 1 source-level
+anti-drift) — 19 invariants total. Smoke total 241 GREEN (was 222 in
+v1.2.18).
+
+**Backwards compatibility.** Heartbeat (`meta.in_flight`) is a new
+optional field — pre-v1.3.0 audit consumers ignore unknown fields.
+`stderr_classification` on failed_attempts is additive. The new tool
+`session_attach_evidence` is the only public-surface addition; no
+existing tools change behavior. Minor bump per CONTRIBUTING.md
+because new tools require minor (not patch) under the v1.x semver
+policy.
+
 ---
 
 ## 7. Summary of conventions for immediate use (UPDATED through v4.10)

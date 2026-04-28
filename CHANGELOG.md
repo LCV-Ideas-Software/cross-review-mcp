@@ -15,6 +15,51 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.3.0] — 2026-04-28
+
+**Closes the deferred half of Codex's handoff (Findings 4, 5, 8 from the Maestro v0.3.10 cross-review session 28343cdb).**
+
+v1.2.18 shipped Findings 1+2, 3, 6, 7 as additive within the v1.x patch frozen-surface contract. Findings 4 (heartbeat), 5 (stderr classification), 8 (evidence attach + new MCP tool) were deferred to a minor bump because Finding 8 introduces `session_attach_evidence` — a new tool that exceeds patch-additive scope per CONTRIBUTING.md. v1.3.0 ships those three together.
+
+### Adicionado
+- **Heartbeat in `meta.in_flight`** (Finding 4). New helpers in `src/lib/session-store.js`:
+  - `markRoundInFlight(sessionId, round, agents)`: writes `meta.in_flight = { round, agents, started_at, last_heartbeat }`.
+  - `updateRoundHeartbeat(sessionId)`: refreshes `last_heartbeat` (no-op when in_flight is absent).
+  - `clearRoundInFlight(sessionId)`: removes the field.
+  - `withRoundHeartbeat(sessionId, round, agents, asyncFn)`: lifecycle wrapper — sets in_flight before calling, refreshes every `HEARTBEAT_INTERVAL_MS` (default 15s, env override `CROSS_REVIEW_HEARTBEAT_INTERVAL_MS`), clears on resolve OR reject (finally clause). The interval is `unref`'d so it doesn't keep the process alive past the wrapped fn.
+  - `ask_peer` and `ask_peers` handlers in server.js wrap their `spawnPeer`/`spawnPeers` calls with `store.withRoundHeartbeat`. Audit consumers reading meta.json can distinguish in-progress vs hung-after-caller-crashed: in_flight present + last_heartbeat fresh = peer running; in_flight present + last_heartbeat stale = caller crashed mid-call (recoverable rounds via session_read; in-flight round produced no peer artifact).
+- **`classifyStderr` + noise classes** (Finding 5). New helper `classifyStderr(text)` in session-store.js returns `{ class, signals }`. Eight noise classes ordered from highest-signal-failures (auth/command/tool) to ambient noise (analytics/terminal):
+  - `auth_expired` — 401 Unauthorized, token expired, please re-authenticate, etc.
+  - `command_not_found` — POSIX/Windows variants, ENOENT, executable-not-found.
+  - `tool_unavailable` — MCP tool resolution failures, run_shell_command not found.
+  - `rate_limit` — 429, too many requests, quota exceeded, retry-after.
+  - `cloudflare_challenge` — Cloudflare CF-Ray, attention required, just a moment.
+  - `plugin_warning` — plugin load warnings, deprecation warnings (e.g. punycode).
+  - `analytics_warning` — telemetry opt-in/out, usage statistics.
+  - `terminal_advisory` — 256-color/true-color advisories.
+  - `unknown` — fallback for signal-free text.
+  - First-match-wins for the primary class, but ALL matched patterns appear in `signals[]` for traceability. `saveFailedAttempt` automatically adds `stderr_classification` to audit entries when the tail matches a known class. Non-destructive: raw stderr_tail is preserved.
+- **`session_attach_evidence` MCP tool** (Finding 8). New tool writes evidence artifacts to `~/.cross-review/<session-id>/evidence/<timestamp>-<sanitized-label>` and updates `meta.evidence[]` with manifest entries `{ filename, path, size, content_type, attached_at, label }`.
+  - Caller-supplied `label` is sanitized server-side: path separators (`/\:`), reserved Windows chars (`*?"<>|`), control chars (NUL through 0x1f), leading dots are stripped/replaced with `_`; max 80 chars; falls back to `evidence` for empty/null.
+  - Size cap: 1 MiB per evidence file (`EVIDENCE_MAX_BYTES`). Caller can attach multiple files for larger artifacts.
+  - Lock-acquired during write for concurrency safety with in-flight ask_peer/ask_peers.
+  - Helpers exported: `evidenceDir(sessionId)`, `sanitizeEvidenceLabel(label)`, `attachEvidence(sessionId, { label, content_type, content })`, `listEvidence(sessionId)`.
+  - Spec section: §6.24 NEW.
+- **3 new smoke functions, 19 invariants total** in `scripts/functional-smoke.js`:
+  - `driveV130HeartbeatLifecycleUnit`: helpers exported, markRoundInFlight populates in_flight, updateRoundHeartbeat advances last_heartbeat without touching started_at, clearRoundInFlight removes the field, no-op safety, withRoundHeartbeat success + rejection paths both clear in_flight via finally.
+  - `driveV130StderrClassificationUnit`: 8 positive cases (one per noise class), unknown fallback, edge cases (empty/null/non-string), first-match-wins ordering, multi-signal collection, integration with saveFailedAttempt.
+  - `driveV130EvidenceAttachUnit`: helpers exported, sanitizeEvidenceLabel handles reserved chars + length cap + empty fallback, attachEvidence writes file + manifest entry, evidenceDir creates subdirectory, listEvidence returns manifest, multiple attaches produce unique filenames, size cap enforcement, source-level wiring assertion that server.js registers the tool + handler delegates to store.attachEvidence.
+
+### Validação
+- `npm test`: 241 GREEN (was 222 in v1.2.18, +19 invariants from 3 new functions).
+- `npm run check-models`: no drift, fallback chain holds.
+- `npx biome check src scripts`: clean.
+
+### Cross-review
+- Session id: `2ebbd768-4bba-4c2e-92b2-571a571f667d` (caller=claude). 4 rounds. Outcome: gemini READY (verified, evidence_sources cited, all 5 caller R3+R4 questions answered with detailed source-level reasoning); codex blocked by host environment in every round (Windows ConstrainedLanguage Mode trapping codex CLI's internal file-search tools — `InvalidOperation: Cannot set property... Property setting is supported only on core types in this language mode`). Operator adjusted codex `[windows] sandbox = "elevated"` config between R2 and R3 but the underlying Windows CLM enforcement remained active. Operator authorized ship-with-deferral after gemini's verified READY: same precedent as v1.2.18 partial-trilateral exception (`feedback_cross_review_self_repair_exception.md` extended to host-environment-broken-peer when peer's failure is provably unrelated to the code change under review). Retro-trilateral planned once Codex CLI runs cleanly on this Windows host (operator-side environment workstream).
+
+---
+
 ## [1.2.18] — 2026-04-28
 
 **Operator-driven improvements from Codex's technical handoff after Maestro Editorial AI v0.3.10 cross-review (session `28343cdb`).**

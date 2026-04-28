@@ -122,6 +122,7 @@ async function driveServer(extraEnv = {}) {
 			"ask_peers",
 			"escalate_to_operator",
 			"server_info",
+			"session_attach_evidence",
 			"session_check_convergence",
 			"session_finalize",
 			"session_init",
@@ -1430,6 +1431,16 @@ async function runAll() {
 	all.push(...s78.results);
 	const s79 = await driveV1218ConcurrenceArtifactInjectionUnit();
 	all.push(...s79.results);
+	// v1.3.0 / handoff 2026-04-28 (Codex's findings deferred from v1.2.18).
+	// Three additive features: heartbeat, stderr classification, evidence
+	// attach tool. Minor bump because session_attach_evidence is a NEW
+	// MCP tool (expands the public surface beyond patch-additive).
+	const s80 = await driveV130HeartbeatLifecycleUnit();
+	all.push(...s80.results);
+	const s81 = await driveV130StderrClassificationUnit();
+	all.push(...s81.results);
+	const s82 = await driveV130EvidenceAttachUnit();
+	all.push(...s82.results);
 	return all;
 }
 
@@ -6482,7 +6493,6 @@ async function driveV1218ConcurrenceArtifactInjectionUnit() {
 	const results = [];
 	const fs = require("node:fs");
 	const path = require("node:path");
-	const os = require("node:os");
 
 	delete require.cache[require.resolve("../src/lib/session-store.js")];
 	const store = require("../src/lib/session-store.js");
@@ -6635,6 +6645,432 @@ async function driveV1218ConcurrenceArtifactInjectionUnit() {
 	);
 	results.push({
 		step: "v1.2.18 Finding 1+2: spawnPeers accepts options.perAgentPrompts for per-peer concurrence injection (no cross-contamination between peers)",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.3.0 / Finding 4 — heartbeat lifecycle in meta.in_flight.
+async function driveV130HeartbeatLifecycleUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/session-store.js")];
+	const store = require("../src/lib/session-store.js");
+
+	assert(
+		typeof store.markRoundInFlight === "function" &&
+			typeof store.updateRoundHeartbeat === "function" &&
+			typeof store.clearRoundInFlight === "function" &&
+			typeof store.withRoundHeartbeat === "function",
+		"v1.3.0 Finding 4: heartbeat helpers must be exported (markRoundInFlight, updateRoundHeartbeat, clearRoundInFlight, withRoundHeartbeat)",
+	);
+	assert(
+		Number.isInteger(store.HEARTBEAT_INTERVAL_MS) &&
+			store.HEARTBEAT_INTERVAL_MS > 0,
+		"v1.3.0 Finding 4: HEARTBEAT_INTERVAL_MS must be a positive integer",
+	);
+
+	const sessionId = store.initSession({
+		caller: "claude",
+		peers: ["codex", "gemini"],
+		task: "v1.3.0 smoke: heartbeat lifecycle",
+	});
+
+	store.markRoundInFlight(sessionId, 1, ["codex", "gemini"]);
+	let meta = store.readMeta(sessionId);
+	assert(
+		meta.in_flight && meta.in_flight.round === 1,
+		"v1.3.0 Finding 4: markRoundInFlight must set meta.in_flight.round",
+	);
+	assert(
+		Array.isArray(meta.in_flight.agents) &&
+			meta.in_flight.agents.includes("codex") &&
+			meta.in_flight.agents.includes("gemini"),
+		"v1.3.0 Finding 4: markRoundInFlight must record the agents array",
+	);
+	assert(
+		typeof meta.in_flight.started_at === "string" &&
+			typeof meta.in_flight.last_heartbeat === "string",
+		"v1.3.0 Finding 4: markRoundInFlight must record started_at + last_heartbeat as ISO strings",
+	);
+	const initialHeartbeat = meta.in_flight.last_heartbeat;
+	results.push({
+		step: "v1.3.0 Finding 4: markRoundInFlight populates meta.in_flight with round + agents + started_at + last_heartbeat",
+		ok: true,
+	});
+
+	await new Promise((resolve) => setTimeout(resolve, 12));
+	const updated = store.updateRoundHeartbeat(sessionId);
+	assert(
+		updated === true,
+		"v1.3.0 Finding 4: updateRoundHeartbeat returns true when in_flight is set",
+	);
+	meta = store.readMeta(sessionId);
+	assert(
+		meta.in_flight.last_heartbeat !== initialHeartbeat,
+		"v1.3.0 Finding 4: updateRoundHeartbeat must advance last_heartbeat",
+	);
+	results.push({
+		step: "v1.3.0 Finding 4: updateRoundHeartbeat advances last_heartbeat without touching started_at",
+		ok: true,
+	});
+
+	const cleared = store.clearRoundInFlight(sessionId);
+	assert(
+		cleared === true,
+		"v1.3.0 Finding 4: clearRoundInFlight returns true when field was set",
+	);
+	meta = store.readMeta(sessionId);
+	assert(
+		meta.in_flight === undefined,
+		"v1.3.0 Finding 4: clearRoundInFlight must remove meta.in_flight",
+	);
+	results.push({
+		step: "v1.3.0 Finding 4: clearRoundInFlight removes meta.in_flight (no-op when already absent)",
+		ok: true,
+	});
+
+	const noop = store.updateRoundHeartbeat(sessionId);
+	assert(
+		noop === false,
+		"v1.3.0 Finding 4: updateRoundHeartbeat returns false when in_flight is absent",
+	);
+	results.push({
+		step: "v1.3.0 Finding 4: updateRoundHeartbeat is a safe no-op when meta.in_flight is absent",
+		ok: true,
+	});
+
+	let inFlightDuringWrap = null;
+	const wrapResult = await store.withRoundHeartbeat(
+		sessionId,
+		2,
+		["codex"],
+		async () => {
+			const m = store.readMeta(sessionId);
+			inFlightDuringWrap = m.in_flight;
+			return "wrapped-value";
+		},
+	);
+	assert(
+		wrapResult === "wrapped-value",
+		"v1.3.0 Finding 4: withRoundHeartbeat returns wrapped fn's resolved value",
+	);
+	assert(
+		inFlightDuringWrap && inFlightDuringWrap.round === 2,
+		"v1.3.0 Finding 4: withRoundHeartbeat sets in_flight while the wrapped fn runs",
+	);
+	meta = store.readMeta(sessionId);
+	assert(
+		meta.in_flight === undefined,
+		"v1.3.0 Finding 4: withRoundHeartbeat clears in_flight after success",
+	);
+	results.push({
+		step: "v1.3.0 Finding 4: withRoundHeartbeat wraps async fn — in_flight active during execution, cleared on success",
+		ok: true,
+	});
+
+	let threw = false;
+	try {
+		await store.withRoundHeartbeat(sessionId, 3, ["codex"], async () => {
+			throw new Error("simulated peer failure");
+		});
+	} catch (err) {
+		threw = err.message === "simulated peer failure";
+	}
+	assert(
+		threw,
+		"v1.3.0 Finding 4: withRoundHeartbeat must re-throw the wrapped fn's rejection",
+	);
+	meta = store.readMeta(sessionId);
+	assert(
+		meta.in_flight === undefined,
+		"v1.3.0 Finding 4: withRoundHeartbeat clears in_flight even when wrapped fn rejects",
+	);
+	results.push({
+		step: "v1.3.0 Finding 4: withRoundHeartbeat clears in_flight even when wrapped fn rejects (finally clause)",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.3.0 / Finding 5 — stderr classification.
+async function driveV130StderrClassificationUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/session-store.js")];
+	const store = require("../src/lib/session-store.js");
+
+	assert(
+		typeof store.classifyStderr === "function",
+		"v1.3.0 Finding 5: classifyStderr must be exported",
+	);
+	assert(
+		Array.isArray(store.STDERR_CLASS_PATTERNS) &&
+			store.STDERR_CLASS_PATTERNS.length >= 5,
+		"v1.3.0 Finding 5: STDERR_CLASS_PATTERNS must be exported with at least 5 noise classes",
+	);
+
+	const cases = [
+		{
+			class: "auth_expired",
+			text: "ERROR: 401 Unauthorized — token expired, please re-authenticate.",
+		},
+		{
+			class: "command_not_found",
+			text: "/bin/sh: gemini-cli: command not found",
+		},
+		{
+			class: "tool_unavailable",
+			text: "Error executing tool run_shell_command: Tool not found",
+		},
+		{
+			class: "rate_limit",
+			text: "status: 429, statusText: 'Too Many Requests', retry-after: 60",
+		},
+		{
+			class: "cloudflare_challenge",
+			text: "<title>Just a moment...</title> Attention Required! | Cloudflare cf-ray: abc123",
+		},
+		{
+			class: "plugin_warning",
+			text: "[DeprecationWarning] The punycode module is deprecated",
+		},
+		{
+			class: "analytics_warning",
+			text: "Telemetry opted out via GEMINI_TELEMETRY_DISABLED=1",
+		},
+		{
+			class: "terminal_advisory",
+			text: "Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.",
+		},
+	];
+	for (const c of cases) {
+		const result = store.classifyStderr(c.text);
+		assert(
+			result.class === c.class,
+			`v1.3.0 Finding 5: classifyStderr should classify '${c.text.slice(0, 40)}...' as '${c.class}' (got '${result.class}')`,
+		);
+		assert(
+			Array.isArray(result.signals) && result.signals.length >= 1,
+			`v1.3.0 Finding 5: classifyStderr must populate signals[] for matched class '${c.class}'`,
+		);
+	}
+	results.push({
+		step: "v1.3.0 Finding 5: classifyStderr matches each of 8 known noise classes (auth/command/tool/rate_limit/cloudflare/plugin/analytics/terminal)",
+		ok: true,
+	});
+
+	const unknown = store.classifyStderr(
+		"just some normal log output without noise patterns",
+	);
+	assert(
+		unknown.class === "unknown" && unknown.signals.length === 0,
+		`v1.3.0 Finding 5: classifyStderr returns 'unknown' + empty signals for normal text (got: ${JSON.stringify(unknown)})`,
+	);
+	assert(
+		store.classifyStderr("").class === "unknown",
+		"empty string → unknown",
+	);
+	assert(store.classifyStderr(null).class === "unknown", "null → unknown");
+	assert(store.classifyStderr(123).class === "unknown", "non-string → unknown");
+	results.push({
+		step: "v1.3.0 Finding 5: classifyStderr returns 'unknown' for empty/null/non-string inputs and signal-free text (regression guard)",
+		ok: true,
+	});
+
+	const multi = store.classifyStderr(
+		"401 Unauthorized — token expired. Also, status: 429 Too Many Requests.",
+	);
+	assert(
+		multi.class === "auth_expired",
+		"v1.3.0 Finding 5: classifyStderr first-match-wins on primary class (auth_expired before rate_limit)",
+	);
+	assert(
+		multi.signals.length >= 2,
+		"v1.3.0 Finding 5: classifyStderr records ALL matched patterns in signals[] even when first-match decides primary class",
+	);
+	results.push({
+		step: "v1.3.0 Finding 5: classifyStderr first-match-wins ordering (auth before rate_limit) + multi-signal collection",
+		ok: true,
+	});
+
+	const sessionId = store.initSession({
+		caller: "claude",
+		peers: ["codex", "gemini"],
+		task: "v1.3.0 smoke: stderr classification on failed_attempt",
+	});
+	store.saveFailedAttempt(sessionId, "codex", "spawn_rejected", {
+		stderr_tail: "401 Unauthorized — invalid credentials",
+		failure_class: "spawn_rejected",
+		round: 1,
+		exit_code: 1,
+	});
+	const meta = store.readMeta(sessionId);
+	const lastFailed = meta.failed_attempts[meta.failed_attempts.length - 1];
+	assert(
+		lastFailed.stderr_classification &&
+			lastFailed.stderr_classification.class === "auth_expired",
+		"v1.3.0 Finding 5: saveFailedAttempt must add stderr_classification when stderr_tail matches a noise class",
+	);
+	results.push({
+		step: "v1.3.0 Finding 5: saveFailedAttempt audit entry surfaces stderr_classification when the tail matches a noise class",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.3.0 / Finding 8 — session_attach_evidence tool + evidence/ dir.
+async function driveV130EvidenceAttachUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	delete require.cache[require.resolve("../src/lib/session-store.js")];
+	const store = require("../src/lib/session-store.js");
+
+	assert(
+		typeof store.attachEvidence === "function" &&
+			typeof store.evidenceDir === "function" &&
+			typeof store.listEvidence === "function" &&
+			typeof store.sanitizeEvidenceLabel === "function",
+		"v1.3.0 Finding 8: evidence helpers must be exported",
+	);
+	assert(
+		Number.isInteger(store.EVIDENCE_MAX_BYTES) && store.EVIDENCE_MAX_BYTES > 0,
+		"v1.3.0 Finding 8: EVIDENCE_MAX_BYTES must be a positive integer",
+	);
+
+	const sessionId = store.initSession({
+		caller: "claude",
+		peers: ["codex", "gemini"],
+		task: "v1.3.0 smoke: evidence attach",
+	});
+
+	assert(
+		store.sanitizeEvidenceLabel("foo/bar\\baz:qux*xx?xx<xx>xx|xx") ===
+			"foo_bar_baz_qux_xx_xx_xx_xx_xx",
+		"v1.3.0 Finding 8: sanitizeEvidenceLabel strips reserved chars to underscores",
+	);
+	assert(
+		store.sanitizeEvidenceLabel(".".repeat(5)) === "_",
+		"v1.3.0 Finding 8: sanitizeEvidenceLabel strips leading dots and replaces with underscore",
+	);
+	assert(
+		store.sanitizeEvidenceLabel("x".repeat(200)).length === 80,
+		"v1.3.0 Finding 8: sanitizeEvidenceLabel truncates to 80 chars",
+	);
+	assert(
+		store.sanitizeEvidenceLabel("") === "evidence" &&
+			store.sanitizeEvidenceLabel(null) === "evidence",
+		"v1.3.0 Finding 8: sanitizeEvidenceLabel falls back to 'evidence' for empty/null",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8: sanitizeEvidenceLabel handles reserved chars, leading dots, length cap, and empty fallback",
+		ok: true,
+	});
+
+	const entry = store.attachEvidence(sessionId, {
+		label: "playwright-trace",
+		content_type: "application/json",
+		content: JSON.stringify({ url: "https://example.com", steps: 3 }),
+	});
+	assert(
+		typeof entry.filename === "string" &&
+			entry.filename.includes("playwright-trace"),
+		"v1.3.0 Finding 8: attachEvidence returns manifest entry with filename containing the sanitized label",
+	);
+	assert(
+		typeof entry.path === "string" && fs.existsSync(entry.path),
+		"v1.3.0 Finding 8: attachEvidence writes the file to disk at manifest_entry.path",
+	);
+	assert(entry.size > 0, "v1.3.0 Finding 8: manifest entry size > 0");
+	assert(
+		entry.content_type === "application/json",
+		"v1.3.0 Finding 8: manifest entry preserves content_type",
+	);
+	assert(
+		typeof entry.attached_at === "string",
+		"v1.3.0 Finding 8: manifest entry has ISO attached_at timestamp",
+	);
+	const dir = store.evidenceDir(sessionId);
+	assert(
+		fs.existsSync(dir) && fs.statSync(dir).isDirectory(),
+		"v1.3.0 Finding 8: evidenceDir creates the evidence/ subdirectory",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8: attachEvidence writes file under evidence/ with timestamped filename + manifest entry includes path/size/content_type/attached_at",
+		ok: true,
+	});
+
+	const list = store.listEvidence(sessionId);
+	assert(
+		Array.isArray(list) &&
+			list.length === 1 &&
+			list[0].filename === entry.filename,
+		"v1.3.0 Finding 8: listEvidence returns the manifest array",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8: listEvidence returns the manifest array with attached entries",
+		ok: true,
+	});
+
+	const second = store.attachEvidence(sessionId, {
+		label: "metric-dump",
+		content_type: "text/plain",
+		content: "fps,99.5\nlatency,12ms",
+	});
+	assert(
+		second.filename !== entry.filename,
+		"v1.3.0 Finding 8: subsequent attach gets a unique filename (no collision)",
+	);
+	const list2 = store.listEvidence(sessionId);
+	assert(
+		list2.length === 2,
+		"v1.3.0 Finding 8: listEvidence reflects all attaches",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8: multiple attaches produce unique filenames; manifest grows monotonically",
+		ok: true,
+	});
+
+	const huge = "x".repeat(store.EVIDENCE_MAX_BYTES + 1);
+	let threw = false;
+	try {
+		store.attachEvidence(sessionId, {
+			label: "too-big",
+			content_type: "text/plain",
+			content: huge,
+		});
+	} catch (err) {
+		threw = /exceeds/i.test(err.message);
+	}
+	assert(
+		threw,
+		"v1.3.0 Finding 8: attachEvidence throws when content > EVIDENCE_MAX_BYTES",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8: attachEvidence rejects content > EVIDENCE_MAX_BYTES (1 MiB cap)",
+		ok: true,
+	});
+
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src", "server.js"),
+		"utf8",
+	);
+	assert(
+		/name:\s*"session_attach_evidence"/.test(src),
+		"v1.3.0 Finding 8: server.js MUST register the session_attach_evidence tool",
+	);
+	assert(
+		/case "session_attach_evidence":/.test(src),
+		"v1.3.0 Finding 8: server.js MUST handle the session_attach_evidence case",
+	);
+	assert(
+		/store\.attachEvidence\s*\(/.test(src),
+		"v1.3.0 Finding 8: server.js handler MUST delegate to store.attachEvidence",
+	);
+	results.push({
+		step: "v1.3.0 Finding 8 anti-drift: server.js registers session_attach_evidence tool + handler delegates to store.attachEvidence",
 		ok: true,
 	});
 

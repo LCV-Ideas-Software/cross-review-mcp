@@ -60,7 +60,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.2.18";
+const VERSION = "1.3.0";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -603,6 +603,33 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 			},
 		},
 		{
+			name: "session_attach_evidence",
+			description:
+				"v1.3.0 / Finding 8 (handoff 2026-04-28): attach an evidence artifact (Playwright trace, screenshot, metric dump, diff bundle, etc.) to the session. The file is written under `~/.cross-review/<session-id>/evidence/<timestamp>-<sanitized-label>` and a manifest entry is appended to `meta.evidence[]` with filename, size, content_type, attached_at, and the sanitized label. Pre-v1.3.0 callers had no convention for storing review-relevant evidence; operators put files in `data/tmp/<app>-<version>/` ad-hoc. This tool gives the cross-review session a canonical evidence dir that peers can reference (current peers don't auto-read evidence — caller still cites paths in prompts; future versions may inject evidence content alongside concurrence artifacts). Size cap: 1 MiB per evidence file; attach multiple smaller files for larger artifacts. Caller-supplied label is sanitized (path separators, control chars, reserved Windows chars stripped; max 80 chars). Returns the manifest entry { filename, path, size, content_type, attached_at, label }.",
+			inputSchema: {
+				type: "object",
+				properties: {
+					session_id: { type: "string" },
+					label: {
+						type: "string",
+						description:
+							"Caller-supplied filename hint. Sanitized server-side: path separators, control chars, and reserved Windows chars are stripped; max 80 chars. The actual stored filename is `<timestamp>-<sanitized-label>` so attaches are collision-free.",
+					},
+					content: {
+						type: "string",
+						description:
+							"Evidence content as a UTF-8 string. For binary artifacts (PNG, etc.), base64-encode and document the encoding via content_type. Size cap: 1 MiB per attach.",
+					},
+					content_type: {
+						type: "string",
+						description:
+							"Optional MIME type or descriptive content type ('image/png;base64', 'application/json', 'text/plain', 'application/diff', etc.). Persisted on the manifest entry for downstream consumers.",
+					},
+				},
+				required: ["session_id", "label", "content"],
+			},
+		},
+		{
 			name: "escalate_to_operator",
 			description:
 				"Anti-hallucination escalation (spec v4.11 §6.14 Item D). Record that the caller or peer has exhausted peer-exchange evidence gathering and still cannot answer the question without fabrication. The MCP server persists the escalation under meta.escalations[]; the caller orchestrator (Claude Code) surfaces the question to the operator via chat. Returns the escalation record with escalation_id. Does NOT auto-dispatch to the operator — the caller is responsible for the chat surface.",
@@ -752,6 +779,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										"session_check_convergence",
 										"session_finalize",
 										"session_sweep",
+										"session_attach_evidence",
 										"ask_peer",
 										"ask_peers",
 										"escalate_to_operator",
@@ -997,6 +1025,64 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					],
 				};
 			}
+			case "session_attach_evidence": {
+				// v1.3.0 / Finding 8 (handoff 2026-04-28): write an evidence
+				// artifact to ~/.cross-review/<session-id>/evidence/ and append
+				// the manifest entry to meta.evidence[]. Lock the session for
+				// write-ordering with concurrent ask_peer/ask_peers; legitimate
+				// for both in-progress and finalized sessions (operator may
+				// attach late-arriving evidence to a converged session for
+				// post-mortem review).
+				const sessionId = args.session_id;
+				const label = args.label;
+				const content = args.content;
+				const contentType = args.content_type ?? null;
+				if (typeof label !== "string" || label.trim().length === 0) {
+					throw new Error(
+						"session_attach_evidence requires a non-empty 'label' string",
+					);
+				}
+				if (typeof content !== "string") {
+					throw new Error(
+						"session_attach_evidence requires 'content' as a UTF-8 string (base64-encode binary artifacts)",
+					);
+				}
+				if (!store.acquireLock(sessionId)) {
+					throw new Error(
+						`session ${sessionId} is currently locked; retry shortly or clear ~/.cross-review/${sessionId}/.lock if stale`,
+					);
+				}
+				try {
+					const manifestEntry = store.attachEvidence(sessionId, {
+						label,
+						content_type: contentType,
+						content,
+					});
+					log("session_attach_evidence", {
+						session: sessionId,
+						filename: manifestEntry.filename,
+						size: manifestEntry.size,
+						content_type: manifestEntry.content_type,
+					});
+					return {
+						content: [
+							{
+								type: "text",
+								text: JSON.stringify(
+									{
+										ok: true,
+										manifest_entry: manifestEntry,
+									},
+									null,
+									2,
+								),
+							},
+						],
+					};
+				} finally {
+					store.releaseLock(sessionId);
+				}
+			}
 			case "escalate_to_operator": {
 				// v1.2.3 / external audit round-2 follow-up: acquire lock
 				// before writing meta.escalations[]. Pre-v1.2.3 escalation
@@ -1162,7 +1248,17 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					const t0 = Date.now();
 					let spawnResult;
 					try {
-						spawnResult = await spawnPeer(sessionLegacyPeer, promptWithTail);
+						// v1.3.0 / Finding 4 (handoff 2026-04-28): heartbeat in
+						// meta.in_flight while the peer spawn runs, refreshed
+						// every HEARTBEAT_INTERVAL_MS (default 15s). Cleared on
+						// resolve OR reject. Lets session_read audit consumers
+						// distinguish in-progress vs hung-after-caller-crashed.
+						spawnResult = await store.withRoundHeartbeat(
+							sessionId,
+							roundNum,
+							[sessionLegacyPeer],
+							() => spawnPeer(sessionLegacyPeer, promptWithTail),
+						);
 					} catch (spawnErr) {
 						// v1.0.5 / spec v4.12 §6.16: classify spawn-level
 						// failures with structured recovery_hint so the caller
@@ -1524,12 +1620,23 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						).filter((a) => concurrenceArtifactsInjected[a] !== null),
 					});
 					const t0 = Date.now();
-					const peerResults = await spawnPeers(metaPeers, promptWithTail, {
-						perAgentPrompts:
-							concurrenceRequested && Object.keys(perAgentPrompts).length > 0
-								? perAgentPrompts
-								: undefined,
-					});
+					// v1.3.0 / Finding 4: same heartbeat lifecycle as ask_peer.
+					// All metaPeers are spawned in parallel; the heartbeat covers
+					// the round, not individual peers. Cleared whether the round
+					// succeeds, partially-rejects, or rejects entirely.
+					const peerResults = await store.withRoundHeartbeat(
+						sessionId,
+						roundNum,
+						metaPeers,
+						() =>
+							spawnPeers(metaPeers, promptWithTail, {
+								perAgentPrompts:
+									concurrenceRequested &&
+									Object.keys(perAgentPrompts).length > 0
+										? perAgentPrompts
+										: undefined,
+							}),
+					);
 					const durationMs = Date.now() - t0;
 
 					const roundPeers = [];

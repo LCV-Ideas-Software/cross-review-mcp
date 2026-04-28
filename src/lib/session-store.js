@@ -445,6 +445,89 @@ function redactSensitive(text) {
 	return out;
 }
 
+// v1.3.0 / Finding 5 (handoff 2026-04-28): classify stderr noise classes.
+// Peer CLI stderrs commonly carry Cloudflare challenge HTML, plugin/analytics
+// warnings, terminal capability advisories, and other non-signal text that
+// inflates audit artifacts and consumes peer context if forwarded back.
+// `classifyStderr(text)` matches against well-known patterns and returns
+// `{ class, signals }` where:
+//   - `class` is the primary noise category, or 'unknown' when no pattern hits.
+//   - `signals` is an array of `{ pattern, sample }` entries for traceability.
+// The classifier is non-destructive: it never mutates the stderr text. Callers
+// (saveFailedAttempt, peer response payloads) can use the classification to
+// (a) filter noise from peer-context forwarding, (b) flag operator attention
+// on auth/tool issues, (c) suppress lexeme false-positives in rate-limit
+// detection.
+//
+// Pattern ordering matters: the FIRST match wins for the primary class, but
+// all matched patterns appear in `signals`. Order from highest-signal
+// failures (auth/tool) to ambient noise (analytics/terminal).
+const STDERR_CLASS_PATTERNS = [
+	{
+		class: "auth_expired",
+		re: /\b(?:auth(?:enticated|entication|orization)?\s*(?:failed|expired|denied)|invalid\s*credentials|token\s*expired|please\s*re-?authenticate|unauthorized|401\s*unauthorized)\b/i,
+	},
+	{
+		class: "command_not_found",
+		re: /\b(?:command\s*not\s*found|is\s*not\s*recognized\s*as\s*(?:an\s*)?internal\s*or\s*external\s*command|no\s*such\s*file\s*or\s*directory|enoent|exec(?:utable)?\s*not\s*found)\b/i,
+	},
+	{
+		class: "tool_unavailable",
+		re: /\b(?:tool\s*"[^"]*"\s*not\s*found|tool\s*not\s*available|run_shell_command|invoke_agent\s*not\s*found|cannot\s*find\s*tool)\b/i,
+	},
+	{
+		class: "rate_limit",
+		re: /\b(?:429|too\s*many\s*requests|rate[-_\s]?limit(?:ed|ing|\s*exceeded)?|usage\s*limit\s*reached|quota\s*exceeded|insufficient[_-]?quota|resource[_-]?exhausted|retry[-_\s]?after)\b/i,
+	},
+	{
+		class: "cloudflare_challenge",
+		re: /\b(?:cloudflare\s*challenge|cf-?(?:ray|chl)|attention\s*required.*cloudflare|please\s*enable\s*(?:cookies|javascript)\s*and\s*reload|<title>[^<]*just\s*a\s*moment[^<]*<\/title>)\b/i,
+	},
+	{
+		class: "plugin_warning",
+		re: /\b(?:plugin\s*(?:initialization|load(?:ing)?|warning)|extension\s*could\s*not\s*be\s*loaded|deprecation\s*warning|punycode\s*module\s*is\s*deprecated)\b/i,
+	},
+	{
+		class: "analytics_warning",
+		re: /\b(?:analytics?\s*(?:disabled|opt(?:-?in|-?out)|telemetry)|telemetry\s*opt(?:-?in|-?out|ed)|usage\s*statistics)\b/i,
+	},
+	{
+		class: "terminal_advisory",
+		re: /\b(?:256-color\s*support\s*not\s*detected|true\s*color.*not\s*detected|using\s*a\s*terminal\s*with\s*at\s*least)\b/i,
+	},
+];
+
+function classifyStderr(text) {
+	if (typeof text !== "string" || text.length === 0) {
+		return { class: "unknown", signals: [] };
+	}
+	let primaryClass = null;
+	const signals = [];
+	for (const { class: c, re } of STDERR_CLASS_PATTERNS) {
+		const m = text.match(re);
+		if (m) {
+			if (primaryClass === null) primaryClass = c;
+			// Capture a small context sample (max 80 chars) around the match.
+			const idx = m.index ?? text.indexOf(m[0]);
+			const start = Math.max(0, idx - 20);
+			const end = Math.min(text.length, idx + m[0].length + 20);
+			signals.push({
+				class: c,
+				pattern: m[0].slice(0, 80),
+				sample: text
+					.slice(start, end)
+					.replace(/\s+/g, " ")
+					.trim()
+					.slice(0, 120),
+			});
+		}
+	}
+	return {
+		class: primaryClass ?? "unknown",
+		signals,
+	};
+}
+
 function clipStderrTail(text) {
 	if (typeof text !== "string") return "";
 	const trimmed = text.slice(-MAX_STDERR_TAIL_CHARS);
@@ -549,6 +632,92 @@ function writeMeta(sessionId, meta) {
 		path.join(sessionDir(sessionId), "meta.json"),
 		JSON.stringify(meta, null, 2),
 	);
+}
+
+// v1.3.0 / Finding 4 (handoff 2026-04-28): mid-call heartbeat in meta.json.
+// Long-running peer spawns (12min round timeout, 8min per-peer) leave the
+// caller blind to whether the work is still in progress, the peer hung, or
+// the parent process died. The handler writes `meta.in_flight = { round,
+// agents, started_at, last_heartbeat }` before spawning peers and refreshes
+// `last_heartbeat` every HEARTBEAT_INTERVAL_MS. On completion or rejection
+// the field is cleared. A separate audit consumer (or the operator running
+// `session_read`) can then distinguish:
+//   - in_flight present + last_heartbeat fresh → peer still running.
+//   - in_flight present + last_heartbeat stale → caller crashed mid-call;
+//     session is recoverable via `session_read` for completed rounds, but
+//     the in-flight round produced no peer artifact.
+//   - in_flight absent + most-recent round complete → normal idle state.
+//
+// Heartbeat interval default 15s; configurable via
+// `CROSS_REVIEW_HEARTBEAT_INTERVAL_MS`. The 15s default is small relative
+// to the 12min round timeout (one heartbeat ~ 0.02% of round budget) so
+// the meta.json write overhead is negligible.
+const HEARTBEAT_INTERVAL_DEFAULT_MS = 15 * 1000;
+const HEARTBEAT_INTERVAL_MS = (() => {
+	const raw = Number.parseInt(
+		process.env.CROSS_REVIEW_HEARTBEAT_INTERVAL_MS || "",
+		10,
+	);
+	return Number.isInteger(raw) && raw > 0 ? raw : HEARTBEAT_INTERVAL_DEFAULT_MS;
+})();
+
+function markRoundInFlight(sessionId, round, agents) {
+	const meta = readMeta(sessionId);
+	const nowIso = new Date().toISOString();
+	meta.in_flight = {
+		round,
+		agents: Array.isArray(agents) ? [...agents] : [agents],
+		started_at: nowIso,
+		last_heartbeat: nowIso,
+	};
+	writeMeta(sessionId, meta);
+}
+
+function updateRoundHeartbeat(sessionId) {
+	const meta = readMeta(sessionId);
+	if (!meta.in_flight) return false;
+	meta.in_flight.last_heartbeat = new Date().toISOString();
+	writeMeta(sessionId, meta);
+	return true;
+}
+
+function clearRoundInFlight(sessionId) {
+	const meta = readMeta(sessionId);
+	if (!meta.in_flight) return false;
+	delete meta.in_flight;
+	writeMeta(sessionId, meta);
+	return true;
+}
+
+// Helper: wrap an async function with heartbeat lifecycle. Sets in_flight
+// before calling, refreshes every HEARTBEAT_INTERVAL_MS, clears on
+// completion or rejection. Errors during heartbeat updates are swallowed
+// to stderr and do not affect the wrapped result. Returns the wrapped
+// function's resolved value or re-throws its rejection.
+async function withRoundHeartbeat(sessionId, round, agents, asyncFn) {
+	markRoundInFlight(sessionId, round, agents);
+	const interval = setInterval(() => {
+		try {
+			updateRoundHeartbeat(sessionId);
+		} catch (err) {
+			process.stderr.write(
+				`[cross-review-mcp] heartbeat update failed for ${sessionId}: ${err?.message || err}\n`,
+			);
+		}
+	}, HEARTBEAT_INTERVAL_MS);
+	interval.unref?.();
+	try {
+		return await asyncFn();
+	} finally {
+		clearInterval(interval);
+		try {
+			clearRoundInFlight(sessionId);
+		} catch (err) {
+			process.stderr.write(
+				`[cross-review-mcp] heartbeat clear failed for ${sessionId}: ${err?.message || err}\n`,
+			);
+		}
+	}
 }
 
 // v0.6.0-alpha / spec v4.9 (Item B): strict-only convergence + persisted
@@ -771,6 +940,18 @@ function saveFailedAttempt(sessionId, agent, reason, extras = {}) {
 	if (extras.lexeme_matched != null) {
 		entry.lexeme_matched = String(extras.lexeme_matched);
 	}
+	// v1.3.0 / Finding 5 (handoff 2026-04-28): classify stderr noise classes
+	// and surface the classification on the audit entry. Non-destructive —
+	// the raw stderr_tail (already redacted + clipped) is preserved.
+	if (entry.stderr_tail) {
+		const classification = classifyStderr(entry.stderr_tail);
+		if (
+			classification.class !== "unknown" ||
+			classification.signals.length > 0
+		) {
+			entry.stderr_classification = classification;
+		}
+	}
 	meta.failed_attempts.push(entry);
 	meta.last_updated_at = new Date().toISOString();
 	writeMeta(sessionId, meta);
@@ -820,6 +1001,101 @@ function savePromptForRound(sessionId, roundNum, prompt) {
 	);
 	atomicWriteFile(path.join(sessionDir(sessionId), fname), clipped.content);
 	return fname;
+}
+
+// v1.3.0 / Finding 8 (handoff 2026-04-28): evidence artifact directory
+// + attach helper. Pre-v1.3.0 the caller had no convention for storing
+// evidence files relevant to a review (Playwright traces, screenshots,
+// metric dumps, diff bundles) — operators put them in `data/tmp/...`
+// ad-hoc per app. v1.3.0 adds `~/.cross-review/<session-id>/evidence/`
+// as the canonical directory and a `session_attach_evidence` MCP tool
+// (registered in server.js) that writes content to the directory and
+// updates `meta.evidence` with the manifest entry.
+//
+// Helpers:
+//   - evidenceDir(sessionId): returns the absolute path of the evidence
+//     subdir, creating it if absent.
+//   - sanitizeEvidenceLabel(label): label is a caller-supplied filename
+//     hint; strip path separators, control chars, and limit to 80 chars.
+//     The actual stored filename is `<timestamp>-<sanitized-label>.<ext>`
+//     with timestamp ensuring no collisions across attaches.
+//   - attachEvidence(sessionId, { label, content_type, content }): writes
+//     the file, updates meta.evidence, returns { filename, path, size }.
+//   - listEvidence(sessionId): returns the meta.evidence array.
+//
+// Size cap: 1 MiB per evidence file (Maestro Playwright PNGs typically
+// ~100-300 KiB; metric JSONs are tens of KiB; 1 MiB covers >99% with
+// margin). Caller can attach multiple smaller files for larger artifacts.
+// Disk overhead is operator-side and within the same ~/.cross-review
+// state quota that already governs session bodies.
+const EVIDENCE_MAX_BYTES = 1024 * 1024; // 1 MiB
+
+function evidenceDir(sessionId) {
+	const dir = path.join(sessionDir(sessionId), "evidence");
+	if (!fs.existsSync(dir)) {
+		fs.mkdirSync(dir, { recursive: true });
+	}
+	return dir;
+}
+
+function sanitizeEvidenceLabel(label) {
+	if (typeof label !== "string" || label.length === 0) return "evidence";
+	// Strip path separators, NUL/control chars (charCode < 0x20), and
+	// reserved Windows chars. biome's noControlCharactersInRegex disallows
+	// the literal `\x00-\x1f` range in a regex, so we run two passes:
+	// (1) a regex for the visible reserved chars; (2) a manual filter for
+	// codes < 0x20.
+	const reservedReplaced = label.replace(/[\\/:*?"<>|]+/g, "_");
+	let stripped = "";
+	for (let i = 0; i < reservedReplaced.length; i++) {
+		const ch = reservedReplaced.charCodeAt(i);
+		stripped += ch < 0x20 ? "_" : reservedReplaced[i];
+	}
+	// Collapse runs of underscores from contiguous reserved/control chars
+	// (mirrors the pre-biome single-regex behavior).
+	stripped = stripped.replace(/_+/g, "_");
+	const cleaned = stripped.replace(/^\.+/, "_").slice(0, 80).trim();
+	return cleaned.length > 0 ? cleaned : "evidence";
+}
+
+function attachEvidence(sessionId, { label, content_type, content } = {}) {
+	if (typeof content !== "string") {
+		throw new Error("attachEvidence: content must be a string");
+	}
+	const bytes = Buffer.byteLength(content, "utf8");
+	if (bytes > EVIDENCE_MAX_BYTES) {
+		throw new Error(
+			`attachEvidence: content exceeds ${EVIDENCE_MAX_BYTES} bytes (got ${bytes})`,
+		);
+	}
+	const dir = evidenceDir(sessionId);
+	const ts = new Date().toISOString().replace(/[:.]/g, "-");
+	const safeLabel = sanitizeEvidenceLabel(label);
+	const filename = `${ts}-${safeLabel}`;
+	const fpath = path.join(dir, filename);
+	atomicWriteFile(fpath, content);
+	const meta = readMeta(sessionId);
+	if (!Array.isArray(meta.evidence)) meta.evidence = [];
+	const manifestEntry = {
+		filename,
+		path: fpath,
+		size: bytes,
+		content_type:
+			typeof content_type === "string" && content_type.length > 0
+				? content_type
+				: null,
+		attached_at: new Date().toISOString(),
+		label: safeLabel,
+	};
+	meta.evidence.push(manifestEntry);
+	meta.last_updated_at = manifestEntry.attached_at;
+	writeMeta(sessionId, meta);
+	return manifestEntry;
+}
+
+function listEvidence(sessionId) {
+	const meta = readMeta(sessionId);
+	return Array.isArray(meta.evidence) ? [...meta.evidence] : [];
 }
 
 // v1.2.18 / Finding 1+2 (handoff 2026-04-28): support for concurrence
@@ -1307,6 +1583,18 @@ module.exports = {
 	// v1.2.18 / Finding 1+2 (handoff 2026-04-28).
 	findLastReadyPeerArtifact,
 	formatPriorArtifactForPrompt,
+	// v1.3.0 / Finding 4 (handoff 2026-04-28).
+	HEARTBEAT_INTERVAL_MS,
+	markRoundInFlight,
+	updateRoundHeartbeat,
+	clearRoundInFlight,
+	withRoundHeartbeat,
+	// v1.3.0 / Finding 8 (handoff 2026-04-28).
+	EVIDENCE_MAX_BYTES,
+	evidenceDir,
+	sanitizeEvidenceLabel,
+	attachEvidence,
+	listEvidence,
 	saveCapabilitySnapshot,
 	saveFailedAttempt,
 	checkConvergence,
@@ -1318,6 +1606,9 @@ module.exports = {
 	normalizePeers,
 	redactSensitive,
 	clipStderrTail,
+	// v1.3.0 / Finding 5 (handoff 2026-04-28).
+	classifyStderr,
+	STDERR_CLASS_PATTERNS,
 	REDACTION_PATTERNS,
 	MAX_STDERR_TAIL_CHARS,
 	// v0.6.0-alpha / spec v4.9 additions.
