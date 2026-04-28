@@ -60,13 +60,13 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.2.15";
+const VERSION = "1.2.16";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
 // CHANGELOG.md `## [VERSION] — DATE` heading matches this constant, so a
 // bump that forgets to update either side fails the gate.
-const RELEASE_DATE = "2026-04-27";
+const RELEASE_DATE = "2026-04-28";
 
 // v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
 // Requires ALL THREE of (1) status block absent, (2) body < 200 chars,

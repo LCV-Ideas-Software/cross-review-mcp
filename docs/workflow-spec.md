@@ -2950,6 +2950,133 @@ deferred to a future v1.2.x release that adds a child-process harness
 which spawns a parent-mcp + peer pair, kills the parent, and asserts
 the next mcp boot cleans the orphan.
 
+### 6.22.1 Orphan-sweep self-suicide hotfix (NEW in v1.2.16)
+
+**Operator-reported bug, 2026-04-28.** Within minutes of the v1.2.15
+ship (commit `e04950e`, 2026-04-27 21:54 BRT) and the operator
+reloading the host Claude Code window, every Claude Code session
+started exiting with code 1 immediately after MCP initialize. Bisection
+isolated the regression to the boot orphan peer sweep introduced by
+§6.22 Item H. Two independent flaws in `src/lib/peer-spawn.js`,
+together, produced coordinated suicide of the host Claude Code tree
+(which contains cross-review-mcp itself):
+
+**Bug #1 — `isPeerCliCommand` substring false-positive.** Pre-v1.2.16:
+
+```js
+if (/\bclaude(?:\.exe)?\b.*\b(code|--print|-p)\b/.test(lower)) return true;
+```
+
+The pattern matched the literal substring `claude-code` inside every
+Claude Code installation path (`\anthropic.claude-code-X.Y.Z\
+claude.exe`) because `-` is a non-word-char that establishes a
+`\bcode\b` boundary. The host claude.exe was misclassified as a
+peer-CLI orphan even when its argv tail was empty.
+
+**Bug #2 — `sweepOrphanPeerProcesses` ancestor blind spot.** The
+classifier only excluded *descendants* of `ourPid` via
+`isDescendantOfPid`. Claude Code is an *ancestor* of cross-review-mcp
+(Claude Code → spawns cross-review-mcp via stdio), never a descendant,
+so nothing protected the host. The sibling-parent rescue only fires
+when `parent.command` matches `node ... cross-review-mcp/src/server.js`
+— Claude Code's parent is the VS Code extension host, no match.
+
+**Mechanics of the crash.** `setImmediate(sweepOrphanPeerProcesses)`
+runs after `server.connect()`; `Get-CimInstance Win32_Process`
+enumerates all PIDs; the false-positive regex tags claude.exe (parent);
+descendant-check + sibling-parent-rescue both miss; the kill loop runs
+`killProcessTree({ pid: claude.exe.pid })`; on Windows this issues
+`taskkill /PID <claude.exe> /T /F`; the `/T` flag terminates the entire
+process tree, which contains cross-review-mcp itself — cross-review-mcp
+suicides while reaping its parent. The host registers Claude Code as
+"prior session exited uncleanly"; the operator can't keep a session
+alive long enough to investigate.
+
+**Fix — three layered guards (`src/lib/peer-spawn.js` v1.2.16):**
+
+1. **Argv[0] basename anchoring.** New helper `parseArgv0AndRest(cmdLine)`
+   extracts `argv[0]`'s lowercase basename from a `Win32_Process.CommandLine`
+   / `ps -eo args` line (handles quoted/unquoted/argv-only shapes).
+   `isPeerCliCommand` now requires (a) exact basename match against
+   the known peer binaries — `codex`/`codex.exe`, `claude`/`claude.exe`,
+   `gemini`/`gemini.exe` — AND (b) a peer-spawn-only flag in the argv
+   tail, anchored by `(?:^|\s)flag(?:\s|$)` so paths can never produce
+   a false-positive. The `code` subcommand is removed from the claude
+   pattern entirely; peer claude is invoked with `-p --output-format
+   text ...` per `buildClaudeArgs`. `claude code` is the *interactive*
+   host invocation, never a peer-spawn.
+
+2. **Ancestor skip in `findOrphans`.** The classification core of
+   `sweepOrphanPeerProcesses` is extracted to a pure function
+   `findOrphans(procs, ourPid)`. New helper `ancestorPidSet(ourPid,
+   procs)` walks the parent chain inclusive of `ourPid` itself
+   (depth cap 32 for safety against pid loops in degenerate proc
+   tables). `findOrphans` rejects any candidate whose `pid` is in the
+   ancestor set BEFORE checking descendants or sibling-parent. This
+   is defense in depth: even if a future change re-introduces a
+   substring false-positive in `isPeerCliCommand`, the ancestor guard
+   independently prevents the host process from being classified as
+   an orphan.
+
+3. **Belt-and-braces at the kill primitive.** New `killProcessTreeIsSuicide(pid)`
+   returns `true` if `pid === process.pid || pid === process.ppid`.
+   `killProcessTree` checks this immediately after the
+   `proc.killed/exitCode/signalCode` early-return and BEFORE the
+   `process.platform === "win32"` branch. On match, the function
+   returns synchronously after writing a clear stderr line; no
+   `taskkill` or `proc.kill` is invoked. This is a cheap O(1) last
+   line of defense: any future caller (today only `findOrphans` →
+   sweep, but the surface is open) that accidentally targets the
+   immediate parent or self gets refused at the kill site. Grandparent
+   coverage requires a process enumeration and remains the
+   responsibility of `findOrphans` upstream.
+
+**Anti-drift smoke (3 invariants).** All three guards are locked
+behind dedicated unit tests in `scripts/functional-smoke.js`:
+
+- `driveV1216ArgvBasenameMatchUnit` — exercises `isPeerCliCommand`
+  against 5 real-shape Claude Code host invocations (all containing
+  `claude-code` in the path) and verifies none false-positive; sanity
+  block confirms 6 legitimate peer-spawn shapes (codex/claude/gemini
+  argv from the real `buildXxxArgs` builders) still match; 3 unit
+  asserts on `parseArgv0AndRest` covering quoted/unquoted/argv-only.
+- `driveV1216FindOrphansAncestorSkipUnit` — synthetic process tree
+  mirroring the real failure topology (VS Code ext host → claude.exe
+  → cross-review-mcp Node), with a `claude.exe -p --resume foo` ancestor
+  designed to *also* match `isPeerCliCommand` after Bug #1's fix;
+  validates `findOrphans` skips it independently. Includes direct
+  assertions on `ancestorPidSet`.
+- `driveV1216KillProcessTreeRefusesSuicideUnit` — direct unit assertions
+  on `killProcessTreeIsSuicide` (self/ppid/unrelated/non-number/NaN);
+  calls `killProcessTree({ pid: process.pid })` and verifies synchronous
+  return without throw and without spawning taskkill (smoke runner
+  staying alive past the call IS the assertion); source-level anti-drift
+  guard that the suicide check is wired before the platform branch.
+
+**Operational mitigation until v1.2.16 deployed.** Set
+`CROSS_REVIEW_SKIP_BOOT_SWEEPS=1` in each MCP host config (Claude
+Code, VS Code, Antigravity, Codex CLI). Disables both boot sweeps
+(Items B + H of v1.2.15) entirely. Trade-off: orphan locks/peers
+from previous runs are not auto-cleaned — but since that's exactly
+the problem v1.2.15 set out to solve and v1.2.16 corrects, the
+mitigation is only relevant during the deployment window. Remove
+the env var after v1.2.16 is loaded (`server_info` returns
+`version: "1.2.16"`).
+
+**Backwards compatibility.** No external schema change. The kill
+primitive's new refusal path is observable only via stderr telemetry;
+no successful peer kill should ever target self/ppid in the first
+place, so the change is invisible to legitimate callers. The
+`isPeerCliCommand` tightening is conservative — it can now produce
+*more* false-negatives (e.g. a future peer CLI invoked through a
+`cmd.exe /c codex exec` shell wrapper would no longer match because
+argv[0] basename would be `cmd.exe`). This is acceptable for v1.x:
+all current peer spawns invoke the binaries directly (see
+`buildXxxArgs`), so the false-negative window is empty under the
+v1.x frozen surface. If a future v1.3.x re-introduces a shell
+wrapper, the matcher will need to recurse one level to follow `/c
+<argv0> ...` and `-c <argv0> ...` shapes.
+
 ---
 
 ## 7. Summary of conventions for immediate use (UPDATED through v4.10)

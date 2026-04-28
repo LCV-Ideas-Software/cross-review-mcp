@@ -1403,6 +1403,15 @@ async function runAll() {
 	all.push(...s69.results);
 	const s70 = await driveV1215BootSweepWiringUnit();
 	all.push(...s70.results);
+	// v1.2.16 / spec §6.22.1 — orphan-sweep self-suicide hotfix (3 anti-drift
+	// invariants for the 3 layered guards: argv[0] basename match, ancestor
+	// skip in findOrphans, killProcessTree refuses self/ppid).
+	const s71 = await driveV1216ArgvBasenameMatchUnit();
+	all.push(...s71.results);
+	const s72 = await driveV1216FindOrphansAncestorSkipUnit();
+	all.push(...s72.results);
+	const s73 = await driveV1216KillProcessTreeRefusesSuicideUnit();
+	all.push(...s73.results);
 	return all;
 }
 
@@ -5788,6 +5797,259 @@ async function driveV1215BootSweepWiringUnit() {
 		step: "v1.2.15 §6.22 Item B + H: boot sweeps wired in main() AFTER server.connect, opt-out via CROSS_REVIEW_SKIP_BOOT_SWEEPS",
 		ok: true,
 	});
+	return { results };
+}
+
+// v1.2.16 / spec §6.22.1 — orphan-sweep self-suicide hotfix.
+// Bug #1 regression: isPeerCliCommand must NOT false-positive on the host
+// Claude Code main process. The pre-v1.2.16 regex `\bclaude\b.*\b(code|
+// --print|-p)\b` matched the substring "code" inside `\anthropic.claude-
+// code-X.Y.Z\claude.exe` paths, classifying every Claude Code installation
+// as a peer-CLI orphan and triggering taskkill /T on its tree (which
+// includes cross-review-mcp itself — coordinated suicide).
+async function driveV1216ArgvBasenameMatchUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	const peerSpawn = require("../src/lib/peer-spawn.js");
+
+	// Real Win32_Process.CommandLine shapes for Claude Code main process.
+	const claudeCodeHostInvocations = [
+		// Quoted bare path — what we observed in user logs (2026-04-28).
+		'"c:\\Users\\leona\\.vscode\\extensions\\anthropic.claude-code-2.1.121-win32-x64\\resources\\native-binary\\claude.exe"',
+		// Same with --resume / no peer-spawn flags.
+		'"c:\\Users\\leona\\.vscode\\extensions\\anthropic.claude-code-2.1.121-win32-x64\\resources\\native-binary\\claude.exe" --resume abc',
+		// Unquoted path (some hosts don't quote argv[0]).
+		"c:\\Program Files\\anthropic\\claude-code\\claude.exe",
+		// POSIX bundle path.
+		"/Applications/Claude.app/Contents/MacOS/claude.exe --version",
+		// Windows path containing claude-code substring + arbitrary tail.
+		'"C:\\path\\to\\claude-code-installer\\claude.exe" --upgrade',
+	];
+	for (const cmd of claudeCodeHostInvocations) {
+		assert(
+			peerSpawn.isPeerCliCommand(cmd) === false,
+			`v1.2.16 Bug #1 regression: isPeerCliCommand falsely matched Claude Code host invocation: ${cmd}`,
+		);
+	}
+	results.push({
+		step: "v1.2.16 §6.22.1: isPeerCliCommand rejects Claude Code host invocations (no -p/--print in argv tail despite 'claude-code' in path)",
+		ok: true,
+	});
+
+	// Sanity: legitimate peer-spawn argv shapes still match.
+	const realPeerSpawns = [
+		// Codex peer (see buildCodexArgs).
+		"codex.exe -a never -s read-only -m gpt-5.5 -c model_reasoning_effort=xhigh exec --skip-git-repo-check -",
+		"codex -a never -s read-only -m gpt-5.5 exec -",
+		// Claude peer (see buildClaudeArgs).
+		"claude.exe -p --output-format text --model claude-opus-4-7 --permission-mode default --strict-mcp-config",
+		"claude -p --output-format text --model claude-opus-4-7",
+		// Gemini peer (see buildGeminiArgs).
+		'gemini.exe -m gemini-3.1-pro-preview -p " " --approval-mode plan',
+		"gemini -m gemini-3.1-pro-preview --prompt --approval-mode plan",
+	];
+	for (const cmd of realPeerSpawns) {
+		assert(
+			peerSpawn.isPeerCliCommand(cmd) === true,
+			`v1.2.16 sanity: isPeerCliCommand should still match legitimate peer spawn: ${cmd}`,
+		);
+	}
+	results.push({
+		step: "v1.2.16 §6.22.1 sanity: isPeerCliCommand still matches real codex/claude/gemini peer-spawn argv shapes",
+		ok: true,
+	});
+
+	// parseArgv0AndRest unit: quoted/unquoted/no-args.
+	{
+		const a = peerSpawn.parseArgv0AndRest(
+			'"C:\\path with spaces\\claude.exe" -p --print',
+		);
+		assert(
+			a.argv0Basename === "claude.exe" &&
+				a.rest.includes(" -p ") &&
+				a.rest.includes("--print"),
+			"parseArgv0AndRest handles quoted argv[0] with spaces",
+		);
+		const b = peerSpawn.parseArgv0AndRest("codex -a never exec");
+		assert(
+			b.argv0Basename === "codex" && b.rest.startsWith(" -a "),
+			"parseArgv0AndRest handles unquoted argv[0]",
+		);
+		const c = peerSpawn.parseArgv0AndRest("claude.exe");
+		assert(
+			c.argv0Basename === "claude.exe" && c.rest === "",
+			"parseArgv0AndRest handles argv[0]-only command line",
+		);
+	}
+	results.push({
+		step: "v1.2.16 §6.22.1: parseArgv0AndRest correctly extracts basename + rest from quoted/unquoted/bare command lines",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// Bug #2 regression: findOrphans must skip ancestors of `ourPid` even when
+// `isPeerCliCommand` returns true (defense in depth — covers any future
+// regex regression). Synthetic process tree exercises the filter without
+// touching real OS processes.
+async function driveV1216FindOrphansAncestorSkipUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	const peerSpawn = require("../src/lib/peer-spawn.js");
+
+	// Construct a process tree that mimics the real failure scenario:
+	//   1234 vscode extension host (ancestor of ourPid)
+	//      → 5678 claude.exe peer-spawned by us (would be FALSE-positive
+	//        in a future regex regression — argv[0]=claude.exe + has -p)
+	//      → 9012 cross-review-mcp Node (ourPid)
+	//   And a true orphan codex 7777 with dead parent 8888.
+	const procs = [
+		{
+			pid: 1234,
+			parentPid: 1,
+			command:
+				"C:\\Users\\leona\\.vscode\\extensions\\anthropic.claude-code-2.1.121-win32-x64\\extension-host.exe",
+		},
+		{
+			pid: 5678,
+			parentPid: 1234,
+			// Argv[0]=claude.exe with -p flag — would match the post-fix
+			// isPeerCliCommand if NOT skipped by ancestor guard. The
+			// ancestor-skip in findOrphans is the second line of defense.
+			command:
+				'"C:\\Users\\leona\\.vscode\\extensions\\anthropic.claude-code-2.1.121-win32-x64\\resources\\native-binary\\claude.exe" -p --resume foo',
+		},
+		{
+			pid: 9012,
+			parentPid: 5678,
+			command: "node.exe C:\\path\\to\\cross-review-mcp\\src\\server.js",
+		},
+		{
+			pid: 7777,
+			parentPid: 8888,
+			command: "codex.exe -a never -s read-only exec --skip-git-repo-check",
+		},
+	];
+
+	const orphans = peerSpawn.findOrphans(procs, 9012);
+
+	// Ancestor (5678) MUST be skipped even though argv0=claude.exe + -p
+	// matches isPeerCliCommand (defense-in-depth guard).
+	assert(
+		!orphans.some((o) => o.pid === 5678),
+		"v1.2.16 Bug #2 regression: findOrphans included ancestor PID 5678 (Claude Code host) as orphan — would suicide cross-review-mcp",
+	);
+	assert(
+		!orphans.some((o) => o.pid === 1234),
+		"v1.2.16 Bug #2 regression: findOrphans included grandparent PID 1234 (VS Code extension host) as orphan",
+	);
+	// Legitimate orphan codex (7777, dead parent) MUST be detected.
+	assert(
+		orphans.some((o) => o.pid === 7777),
+		"v1.2.16 sanity: findOrphans should detect legitimate orphan codex peer with dead parent",
+	);
+	results.push({
+		step: "v1.2.16 §6.22.1 Bug #2: findOrphans skips ancestors of ourPid (claude.exe host + extension host) and detects true orphans",
+		ok: true,
+	});
+
+	// ancestorPidSet: walks up parent chain, includes ourPid itself.
+	const anc = peerSpawn.ancestorPidSet(9012, procs);
+	assert(
+		anc.has(9012) && anc.has(5678) && anc.has(1234),
+		"ancestorPidSet must include self + all ancestors up the chain",
+	);
+	assert(!anc.has(7777), "ancestorPidSet must NOT include unrelated processes");
+	results.push({
+		step: "v1.2.16 §6.22.1: ancestorPidSet walks parent chain inclusive of self, excludes unrelated PIDs",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// Bug #3 regression: killProcessTree must refuse to kill self / direct
+// parent at the kill primitive (cheap last-resort guard, complementing
+// the full ancestor-chain check upstream in findOrphans). Tests the
+// exported killProcessTreeIsSuicide helper directly + observes the early
+// return path of killProcessTree by passing a synthetic proc handle.
+async function driveV1216KillProcessTreeRefusesSuicideUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	const peerSpawn = require("../src/lib/peer-spawn.js");
+
+	assert(
+		peerSpawn.killProcessTreeIsSuicide(process.pid) === true,
+		"v1.2.16 Bug #3: killProcessTreeIsSuicide(process.pid) must be TRUE",
+	);
+	if (typeof process.ppid === "number" && process.ppid > 0) {
+		assert(
+			peerSpawn.killProcessTreeIsSuicide(process.ppid) === true,
+			"v1.2.16 Bug #3: killProcessTreeIsSuicide(process.ppid) must be TRUE",
+		);
+	}
+	assert(
+		peerSpawn.killProcessTreeIsSuicide(99999999) === false,
+		"v1.2.16 Bug #3: killProcessTreeIsSuicide(unrelated PID) must be FALSE",
+	);
+	assert(
+		peerSpawn.killProcessTreeIsSuicide("not-a-number") === false,
+		"v1.2.16 Bug #3: killProcessTreeIsSuicide(non-number) must be FALSE (typeof guard)",
+	);
+	assert(
+		peerSpawn.killProcessTreeIsSuicide(Number.NaN) === false,
+		"v1.2.16 Bug #3: killProcessTreeIsSuicide(NaN) must be FALSE (Number.isFinite guard)",
+	);
+	results.push({
+		step: "v1.2.16 §6.22.1 Bug #3: killProcessTreeIsSuicide identifies self+ppid suicide vectors and rejects junk inputs",
+		ok: true,
+	});
+
+	// killProcessTree({ pid: process.pid }) must be a no-op (early-return).
+	// We can't observe via stderr without piping — but we can verify the
+	// function returns synchronously without throwing AND without spawning
+	// a taskkill (the call would otherwise SIGKILL our own tree). Surviving
+	// past the call IS the assertion.
+	let returned = false;
+	try {
+		peerSpawn.killProcessTree({ pid: process.pid });
+		returned = true;
+	} catch (err) {
+		throw new Error(
+			`killProcessTree({ pid: process.pid }) threw instead of refusing: ${err?.message || err}`,
+		);
+	}
+	assert(
+		returned === true,
+		"v1.2.16 Bug #3: killProcessTree({ pid: process.pid }) returned synchronously without spawning taskkill (host process still alive)",
+	);
+	results.push({
+		step: "v1.2.16 §6.22.1 Bug #3: killProcessTree refuses self-PID without throwing, no taskkill spawned (smoke would be killed if it did)",
+		ok: true,
+	});
+
+	// Anti-drift: source-level assertion that the suicide guard is wired in
+	// the killProcessTree body BEFORE the platform branch. A regression
+	// could remove the guard while leaving killProcessTreeIsSuicide
+	// exported — caught here.
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src", "lib", "peer-spawn.js"),
+		"utf8",
+	);
+	const guardIdx = src.search(/killProcessTreeIsSuicide\s*\(\s*proc\.pid\s*\)/);
+	const win32Idx = src.search(/process\.platform\s*===\s*"win32"/);
+	assert(
+		guardIdx > 0 && win32Idx > 0 && guardIdx < win32Idx,
+		"v1.2.16 §6.22.1 anti-drift: killProcessTreeIsSuicide(proc.pid) gate must run BEFORE the win32 platform branch in killProcessTree",
+	);
+	results.push({
+		step: "v1.2.16 §6.22.1 anti-drift: source-level wiring of killProcessTreeIsSuicide guard precedes win32 branch in killProcessTree",
+		ok: true,
+	});
+
 	return { results };
 }
 

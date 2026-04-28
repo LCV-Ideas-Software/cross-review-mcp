@@ -425,6 +425,19 @@ function modelForPeer(peerAgent) {
 // kill and goes directly to PID kill (the only thing that works on
 // non-detached spawns; orphaned grandchildren are a separate concern that
 // requires `detached: true` work, deferred to v1.3+).
+// v1.2.16 hotfix: cheap last-resort guard against killing self / direct
+// parent at the kill primitive. The orphan sweep filters via the full
+// ancestor chain (`ancestorPidSet` in `findOrphans`); this is an extra
+// belt-and-braces in case any other call site (now or future) accidentally
+// passes an ancestor PID. Doesn't catch grandparent without enumerating
+// processes — that case is handled upstream in `findOrphans`. The taskkill
+// /T flag terminates the entire tree, so killing our direct parent would
+// also reap us; refusing is non-negotiable.
+function killProcessTreeIsSuicide(pid) {
+	if (typeof pid !== "number" || !Number.isFinite(pid)) return false;
+	return pid === process.pid || pid === process.ppid;
+}
+
 function killProcessTree(proc) {
 	// R2 gemini ask: also guard !proc.pid (executable failed to spawn → pid undefined).
 	if (
@@ -434,6 +447,13 @@ function killProcessTree(proc) {
 		proc.signalCode != null
 	)
 		return;
+	// v1.2.16: refuse to suicide. See `killProcessTreeIsSuicide`.
+	if (killProcessTreeIsSuicide(proc.pid)) {
+		process.stderr.write(
+			`[cross-review-mcp] killProcessTree REFUSED PID=${proc.pid}: target is self (PID=${process.pid}) or direct parent (PPID=${process.ppid}); killing would suicide cross-review-mcp\n`,
+		);
+		return;
+	}
 	if (process.platform === "win32") {
 		let killer;
 		try {
@@ -1588,34 +1608,15 @@ async function sweepOrphanPeerProcesses() {
 	try {
 		const procs = await enumerateProcesses();
 		const ourPid = process.pid;
-		const orphans = [];
+		// v1.2.16: classification core moved to `findOrphans` (pure helper)
+		// so smoke can exercise filters with synthetic procs without spawning.
+		// `scanned` = procs whose argv[0] basename matched a peer-CLI shape;
+		// `findOrphans` filters out our ancestors / descendants / sibling-
+		// cross-review-mcp peers. Kill loop only touches the residue.
 		for (const p of procs) {
-			if (!isPeerCliCommand(p.command)) continue;
-			result.scanned += 1;
-			// Same agent label heuristic, only used for logging.
-			let agent = null;
-			if (/\bcodex\b/i.test(p.command) && /\bexec\b/i.test(p.command))
-				agent = "codex";
-			else if (/\bgemini\b/i.test(p.command)) agent = "gemini";
-			else if (/\bclaude\b/i.test(p.command) && /\bcode\b/i.test(p.command))
-				agent = "claude";
-
-			// Don't touch our own descendants — they're being managed.
-			if (isDescendantOfPid(p, ourPid, procs)) continue;
-
-			// If the parent is alive AND looks like another live cross-review-mcp
-			// instance running src/server.js, leave alone (sibling parent).
-			const parent = procs.find((x) => x.pid === p.parentPid);
-			if (parent && /node(?:\.exe)?$/i.test(parent.command.split(/\s+/)[0])) {
-				if (/cross-review-mcp[\\/]src[\\/]server\.js/i.test(parent.command)) {
-					continue;
-				}
-			}
-
-			// If we got here: the peer-CLI subprocess has either a dead
-			// parent or a non-cross-review-mcp parent. Treat as orphan.
-			orphans.push({ ...p, agent });
+			if (isPeerCliCommand(p.command)) result.scanned += 1;
 		}
+		const orphans = findOrphans(procs, ourPid);
 		for (const o of orphans) {
 			try {
 				killProcessTree({ pid: o.pid });
@@ -1709,20 +1710,70 @@ function enumerateProcesses() {
 	});
 }
 
+// v1.2.16 hotfix: parse a Win32_Process.CommandLine / `ps -eo args` line
+// into argv[0]'s basename + the rest of the command line. Pre-v1.2.16,
+// `isPeerCliCommand` used `\bclaude\b.*\b(code|--print|-p)\b` against the
+// full command line; `\bcode\b` matched the literal substring "code"
+// inside every Claude Code install path (`\anthropic.claude-code-X.Y.Z\
+// claude.exe`), so the boot orphan sweep classified the host Claude Code
+// process as a peer-CLI orphan and SIGKILL-tree'd it — suiciding
+// cross-review-mcp itself in the process. Anchoring matches to argv[0]'s
+// basename eliminates the substring escape hatch. See spec §6.22.1.
+function parseArgv0AndRest(cmdLine) {
+	if (typeof cmdLine !== "string" || cmdLine.length === 0) {
+		return { argv0Basename: "", rest: "" };
+	}
+	let argv0;
+	let rest;
+	if (cmdLine.startsWith('"')) {
+		const end = cmdLine.indexOf('"', 1);
+		if (end < 0) return { argv0Basename: "", rest: "" };
+		argv0 = cmdLine.slice(1, end);
+		rest = cmdLine.slice(end + 1);
+	} else {
+		const sp = cmdLine.search(/\s/);
+		if (sp < 0) {
+			argv0 = cmdLine;
+			rest = "";
+		} else {
+			argv0 = cmdLine.slice(0, sp);
+			rest = cmdLine.slice(sp);
+		}
+	}
+	const baseMatch = argv0.match(/[^\\/]+$/);
+	const argv0Basename = (baseMatch ? baseMatch[0] : argv0).toLowerCase();
+	return { argv0Basename, rest: rest.toLowerCase() };
+}
+
 // Heuristic: argv shape that cross-review-mcp uses for peer-CLI spawns.
-// Conservative — only matches well-known shapes from buildCodexArgs /
-// buildGeminiArgs / buildClaudeArgs. Won't false-positive on operator's
-// own interactive Codex/Gemini/Claude usage (which doesn't pass these
-// flags in this exact order).
+// Conservative — argv[0] basename must be the exact peer CLI binary AND
+// the argv tail must contain a peer-spawn-only flag.
+//
+// v1.2.16 hotfix: anchor to argv[0] basename only; remove the `code`
+// subcommand alternation from the claude pattern (peer claude uses
+// `-p --output-format text ...`, see buildClaudeArgs; `claude code` is
+// the *interactive* host invocation, never a peer spawn).
 function isPeerCliCommand(cmdLine) {
-	if (typeof cmdLine !== "string" || cmdLine.length === 0) return false;
-	const lower = cmdLine.toLowerCase();
-	// Codex peer signature: "codex exec --output-last-message" or "codex exec --json"
-	if (/\bcodex(?:\.exe)?\b.*\bexec\b/.test(lower)) return true;
-	// Gemini peer signature: "gemini -p" or "gemini --prompt" with stdin
-	if (/\bgemini(?:\.exe)?\b.*\s(-p|--prompt)\b/.test(lower)) return true;
-	// Claude peer signature: "claude code -p" or "claude --print"
-	if (/\bclaude(?:\.exe)?\b.*\b(code|--print|-p)\b/.test(lower)) return true;
+	const { argv0Basename, rest } = parseArgv0AndRest(cmdLine);
+	if (!argv0Basename) return false;
+	if (
+		(argv0Basename === "codex" || argv0Basename === "codex.exe") &&
+		/(?:^|\s)exec(?:\s|$)/.test(rest)
+	) {
+		return true;
+	}
+	if (
+		(argv0Basename === "gemini" || argv0Basename === "gemini.exe") &&
+		/(?:^|\s)(-p|--prompt)(?:\s|$)/.test(rest)
+	) {
+		return true;
+	}
+	if (
+		(argv0Basename === "claude" || argv0Basename === "claude.exe") &&
+		/(?:^|\s)(-p|--print)(?:\s|$)/.test(rest)
+	) {
+		return true;
+	}
 	return false;
 }
 
@@ -1734,6 +1785,71 @@ function isDescendantOfPid(proc, ancestorPid, allProcs, depth = 0) {
 	const parent = allProcs.find((p) => p.pid === proc.parentPid);
 	if (!parent) return false;
 	return isDescendantOfPid(parent, ancestorPid, allProcs, depth + 1);
+}
+
+// v1.2.16 hotfix: build the set of PIDs that are ancestors of `ofPid`
+// (inclusive of `ofPid` itself). Used by `findOrphans` to refuse to ever
+// classify an ancestor of cross-review-mcp's own process as an orphan,
+// independent of the argv-shape match. Defense in depth alongside the
+// `isPeerCliCommand` argv[0] tightening.
+function ancestorPidSet(ofPid, allProcs) {
+	const ancestors = new Set();
+	let current = ofPid;
+	let depth = 0;
+	while (current && depth < 32) {
+		ancestors.add(current);
+		const node = allProcs.find((p) => p.pid === current);
+		if (!node || !node.parentPid || node.parentPid === current) break;
+		current = node.parentPid;
+		depth += 1;
+	}
+	return ancestors;
+}
+
+// v1.2.16 hotfix: pure orphan-classification core extracted from
+// `sweepOrphanPeerProcesses` so regression smoke can exercise the filter
+// against synthetic process trees without spawning real subprocesses.
+//
+// Filters applied (in order):
+//   1. argv[0] basename + flag shape match via `isPeerCliCommand`;
+//   2. NEVER classify an ancestor of `ourPid` as orphan (Bug #2 guard);
+//   3. NEVER classify a descendant of `ourPid` as orphan (our own child);
+//   4. sibling-parent rescue: if parent is a live cross-review-mcp Node
+//      process (matches `node ... cross-review-mcp/src/server.js`), the
+//      peer is being managed by another instance — skip.
+function findOrphans(procs, ourPid) {
+	const ancestors = ancestorPidSet(ourPid, procs);
+	const orphans = [];
+	for (const p of procs) {
+		if (!isPeerCliCommand(p.command)) continue;
+		// (2) ancestor guard. Catches the Claude Code parent case directly,
+		// even if a future regex regression re-introduced the false-positive.
+		if (ancestors.has(p.pid)) continue;
+		// (3) own-descendant skip.
+		if (isDescendantOfPid(p, ourPid, procs)) continue;
+		// (4) sibling cross-review-mcp parent — leave alone.
+		const parent = procs.find((x) => x.pid === p.parentPid);
+		if (parent) {
+			const parentArgv0 = parent.command.split(/\s+/)[0] || "";
+			if (/node(?:\.exe)?$/i.test(parentArgv0)) {
+				if (/cross-review-mcp[\\/]src[\\/]server\.js/i.test(parent.command)) {
+					continue;
+				}
+			}
+		}
+		// Optional agent label for logging.
+		let agent = null;
+		if (/\bcodex\b/i.test(p.command) && /\bexec\b/i.test(p.command))
+			agent = "codex";
+		else if (/\bgemini\b/i.test(p.command)) agent = "gemini";
+		else if (
+			/\bclaude\b/i.test(p.command) &&
+			/\b(-p|--print)\b/i.test(p.command)
+		)
+			agent = "claude";
+		orphans.push({ ...p, agent });
+	}
+	return orphans;
 }
 
 module.exports = {
@@ -1753,6 +1869,11 @@ module.exports = {
 	enumerateProcesses,
 	isPeerCliCommand,
 	isDescendantOfPid,
+	// v1.2.16 / spec §6.22.1 hotfix exports — orphan-sweep correctness.
+	parseArgv0AndRest,
+	ancestorPidSet,
+	findOrphans,
+	killProcessTreeIsSuicide,
 	// Exported for audit/test use only. Exposes the pinned top-level
 	// model IDs per spec section 6.9.2 + 6.9.2.1.
 	modelForPeer,

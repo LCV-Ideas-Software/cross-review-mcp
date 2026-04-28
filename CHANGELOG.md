@@ -15,6 +15,36 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.16] — 2026-04-28
+
+**Hotfix crítico — orphan peer sweep estava matando o próprio Claude Code (spec §6.22.1 NEW).**
+
+Operator-reported bug 2026-04-28: imediatamente após o ship de v1.2.15 (commit `e04950e`, 2026-04-27 21:54 BRT) e reload da janela do Claude Code, todas as sessões passaram a crashar com exit code 1. Bisecção isolou o problema ao boot orphan peer sweep introduzido em v1.2.15.
+
+**Causa raiz** — duas falhas independentes em `src/lib/peer-spawn.js` que, juntas, produzem suicídio coordenado da árvore Claude Code + cross-review-mcp:
+
+1. **`isPeerCliCommand` regex falso-positivo (Bug #1)**: o pattern `\bclaude(?:\.exe)?\b.*\b(code|--print|-p)\b` matchava o substring `claude-code` dentro do path de instalação do Claude Code (`\anthropic.claude-code-X.Y.Z\claude.exe`). Como `-` é não-word-char, `\bcode\b` casava sem qualquer flag real do peer-spawn estar presente. Verificado empiricamente: `parseArgv0AndRest("c:\\...\\anthropic.claude-code-2.1.121-...\\claude.exe").rest === ""` e ainda assim a regex antiga matchava.
+2. **`sweepOrphanPeerProcesses` não excluía ANCESTRAIS do próprio processo (Bug #2)**: a verificação só pulava DESCENDENTES (`isDescendantOfPid(p, ourPid, procs)`). Claude Code é ancestor de cross-review-mcp (Claude Code → spawn cross-review-mcp via stdio), nunca descendente, então nada protegia o pai. O rescue de "sibling parent" só dispara quando o parent é `node ... cross-review-mcp/src/server.js` — Claude Code's parent é o VS Code extension host, sem match.
+
+**Mecânica do crash**: boot sweep dispara via `setImmediate` após `server.connect()`; `enumerateProcesses` lista todos os PIDs via `Get-CimInstance Win32_Process`; `isPeerCliCommand` falsamente classifica `claude.exe` (pai) como peer-CLI órfão; nem descendant-check nem sibling-parent-check protegem o ancestor; `killProcessTree({ pid })` roda `taskkill /PID <claude.exe.pid> /T /F`; `/T` mata a tree inteira do Claude Code, que inclui o próprio cross-review-mcp — cross-review-mcp suicida-se enquanto mata o pai.
+
+### Corrigido
+- **Bug #1 — `isPeerCliCommand` ancorado em argv[0] basename** (`src/lib/peer-spawn.js`): novo helper `parseArgv0AndRest(cmdLine)` extrai argv[0] do `Win32_Process.CommandLine` / `ps -eo args` (suporta argv[0] aspeado/não-aspeado/sem-args), retorna `{ argv0Basename, rest }`. Os 3 casos peer (codex/claude/gemini) agora exigem MATCH EXATO do basename (`codex`/`codex.exe`, `claude`/`claude.exe`, `gemini`/`gemini.exe`) E flag de peer-spawn presente em `rest`. Removida a alternação `code` do pattern Claude — peer claude usa `-p --output-format text ...` (ver `buildClaudeArgs`); `claude code` é a invocação interativa do host, nunca peer-spawn. Defesa: regex agora anchored em `(?:^|\s)flag(?:\s|$)` em `rest`, impossível matchar substring de path.
+- **Bug #2 — `findOrphans` (helper puro novo) exclui ancestrais via `ancestorPidSet`** (`src/lib/peer-spawn.js`): extraído o core de classificação de `sweepOrphanPeerProcesses` para função pura `findOrphans(procs, ourPid)` testável com synthetic process trees. Helper `ancestorPidSet(ourPid, procs)` caminha a chain de pais (cap 32 níveis por safety) inclusive do próprio `ourPid`; `findOrphans` rejeita qualquer `p.pid` no set. Defense in depth — ancestor-skip funciona mesmo se uma futura regressão re-introduzir o false-positive em `isPeerCliCommand`. `sweepOrphanPeerProcesses` agora delega ao `findOrphans` e só executa a kill loop nos sobreviventes do filtro.
+- **Bug #3 — `killProcessTree` belt-and-braces no kill primitive** (`src/lib/peer-spawn.js`): novo `killProcessTreeIsSuicide(pid)` retorna `true` se `pid === process.pid || pid === process.ppid` (cheap O(1) check sem enumerar procesos). `killProcessTree` agora rejeita imediatamente com mensagem clara em stderr. Esta é a última linha de defesa: se qualquer call site (presente ou futuro) acidentalmente passar um PID ancestor (não pego pelo filtro upstream), o kill primitive mesmo assim recusa. Não cobre grandparent (requer enumeração full) — esse caso continua sendo responsabilidade do `findOrphans`.
+
+### Adicionado
+- **3 anti-drift smoke invariants** (`scripts/functional-smoke.js`):
+  - `driveV1216ArgvBasenameMatchUnit` — exercita `isPeerCliCommand` contra 5 shapes reais de Claude Code host invocations (todos com `claude-code` no path, alguns com `--resume`/etc) e verifica que NENHUM dispara false-positive; sanity contra 6 shapes legítimos de peer-spawn (codex/claude/gemini com argv real de `buildXxxArgs`); 3 unit assertions de `parseArgv0AndRest` (quoted/unquoted/argv-only).
+  - `driveV1216FindOrphansAncestorSkipUnit` — synthetic process tree mimicando o cenário real (VS Code ext host → claude.exe → cross-review-mcp), simula um `claude.exe -p --resume foo` que matcharia `isPeerCliCommand` mesmo após o fix Bug #1, valida que `findOrphans(procs, ourPid)` skipa o ancestor e detecta o orphan codex.exe legítimo. Inclui assertion direto sobre `ancestorPidSet`.
+  - `driveV1216KillProcessTreeRefusesSuicideUnit` — testa `killProcessTreeIsSuicide` direto (process.pid TRUE / process.ppid TRUE / unrelated PID FALSE / non-number FALSE / NaN FALSE); chama `killProcessTree({ pid: process.pid })` e verifica retorno síncrono sem throw E sem morte (smoke runner ainda vivo = passou); source-level anti-drift assertion que o gate `killProcessTreeIsSuicide(proc.pid)` está wired ANTES do branch `process.platform === "win32"` em `killProcessTree`.
+- **Spec `docs/workflow-spec.md` §6.22.1 NEW** — Hotfix doc cobrindo Bug #1/#2/#3 + ancestor-skip rationale + relação com Items A–H da v1.2.15.
+
+### Mitigation antes do ship (workaround documentado)
+- Set `CROSS_REVIEW_SKIP_BOOT_SWEEPS=1` no env de cada host MCP (Claude Code, VS Code, Antigravity, Codex CLI). Desabilita os boot sweeps inteiros (Items B + H da v1.2.15). Trade-off: orphan locks/peers de execuções anteriores não são limpos automaticamente — mas como esse é EXATAMENTE o problema que v1.2.15 tentou resolver e v1.2.16 corrige, a mitigação só vale enquanto v1.2.16 não está deployed. Após v1.2.16, remover o env var.
+
+---
+
 ## [1.2.15] — 2026-04-27
 
 **Self-healing lock + orphan-peer recovery (spec §6.22 NEW — Lock & Session Resilience).**
