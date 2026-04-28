@@ -475,9 +475,40 @@ const STDERR_CLASS_PATTERNS = [
 		class: "tool_unavailable",
 		re: /\b(?:tool\s*"[^"]*"\s*not\s*found|tool\s*not\s*available|run_shell_command|invoke_agent\s*not\s*found|cannot\s*find\s*tool)\b/i,
 	},
+	// v1.4.0 §6.25 (codex follow-up, session bf4ffea3): Codex CLI 0.125.0 on
+	// Windows runs PowerShell in ConstrainedLanguage mode under its sandbox.
+	// The CLI's own Rust command-safety layer (powershell_parser.ps1) does
+	// .NET property assignment (e.g. `$stdout.AutoFlush = $true`) which
+	// ConstrainedLanguage rejects with "InvalidOperation: Cannot set
+	// property. Property setting is supported only on core types in this
+	// language mode." This is an UPSTREAM Codex CLI bug, not a provider
+	// error. Precedence ABOVE rate_limit so a sandbox-induced failure
+	// doesn't get misclassified as 429 (which used to happen because the
+	// stderr commonly carries grep listings with `429:` line numbers).
+	// Operator workaround: set CROSS_REVIEW_CODEX_BYPASS=1 (peer-spawn.js
+	// buildCodexArgs respects it) until upstream lifts the constraint.
+	// v1.4.0 R2 (gemini@10b7a12b R2 finding): the regex now also covers the
+	// `Cannot invoke method. Method invocation is supported only on core
+	// types` ConstrainedLanguage variant (sibling of `Cannot set property...`),
+	// PowerShell `Execution of scripts is disabled` and `about_Execution_Policies`
+	// references that often pair with strict execution sandboxing on Windows,
+	// AND empirically observed `rejected: blocked by policy` (without the
+	// `(windows)` suffix) emitted by the codex CLI router when a tool
+	// invocation is sandboxed away. The `(windows)` suffix is now optional.
+	{
+		class: "codex_windows_sandbox",
+		re: /(?:InvalidOperation:\s*Cannot\s*(?:set\s*property|invoke\s*method)\.\s*(?:Property\s*setting|Method\s*invocation)\s*is\s*supported\s*only\s*on\s*core\s*types|ConstrainedLanguage|powershell\s*ast\s*parser|rejected:\s*blocked\s*by\s*(?:sandbox|policy)|blocked\s*by\s*(?:sandbox|policy)\s*\(?\s*windows|Execution\s*of\s*scripts\s*is\s*disabled|about_Execution_Policies)/i,
+	},
+	// v1.4.0 §6.25: rate_limit regex is now contextual. Pre-v1.4.0 the
+	// `\b429\b` substring matched grep line numbers (`429:`, `1429:`),
+	// timestamps, and paths — feeding the rate_limit_induced_response
+	// false-positive on every Codex sandbox failure. Now `429` only counts
+	// inside HTTP / status / error / parens contexts; phrase tokens still
+	// match on word boundaries. v1.4.0 R2 expansion: same Status-Code /
+	// "code": / error: extensions as RATE_LIMIT_PATTERNS in peer-spawn.js.
 	{
 		class: "rate_limit",
-		re: /\b(?:429|too\s*many\s*requests|rate[-_\s]?limit(?:ed|ing|\s*exceeded)?|usage\s*limit\s*reached|quota\s*exceeded|insufficient[_-]?quota|resource[_-]?exhausted|retry[-_\s]?after)\b/i,
+		re: /(?:\bHTTP\/[\d.]+\s+|\bHTTP\s+|\bstatus(?:[-_]?[Cc]ode)?\s*[:=]\s*|\bcode\s*[:=]\s*|"(?:status|code)"\s*:\s*|\berror[\s:=_-]+(?:code[\s:=_-]+)?|\(\s*)429\b|\b(?:Too\s+Many\s+Requests|rate[-_\s]?limit(?:s)?(?:\s*(?:exceeded|reached|hit|enforced))?|usage\s*limit(?:\s*(?:reached|exceeded|hit))?|quota\s*exceeded|insufficient[_-]quota|RESOURCE[_-]EXHAUSTED|Retry[-_]After)\b/i,
 	},
 	{
 		class: "cloudflare_challenge",

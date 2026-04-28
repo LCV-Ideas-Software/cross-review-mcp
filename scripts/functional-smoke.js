@@ -1441,6 +1441,18 @@ async function runAll() {
 	all.push(...s81.results);
 	const s82 = await driveV130EvidenceAttachUnit();
 	all.push(...s82.results);
+	// v1.4.0 / spec §6.25 — classifier hardening + Codex sandbox config.
+	// (A) detectSpawnRateLimit contextual 429 matching, (B) classifyStderr
+	// codex_windows_sandbox class with precedence over rate_limit, (C)
+	// buildCodexArgs env-var configurable sandbox/approval/bypass.
+	const s86 = await driveV140RateLimitContextualUnit();
+	all.push(...s86.results);
+	const s87 = await driveV140CodexWindowsSandboxClassUnit();
+	all.push(...s87.results);
+	const s88 = await driveV140CodexSandboxEnvConfigUnit();
+	all.push(...s88.results);
+	const s89 = await driveV140ServerInfoPublisherSponsorsUnit();
+	all.push(...s89.results);
 	return all;
 }
 
@@ -7074,6 +7086,427 @@ async function driveV130EvidenceAttachUnit() {
 		ok: true,
 	});
 
+	return { results };
+}
+
+// v1.4.0 §6.25 — Item (A): rate-limit lexemes are regex-anchored to
+// provider error shapes; bare "429" substring no longer trips.
+// Regression for the false-positive empirically observed in cross-review
+// session bf4ffea3 R1 where grep line numbers (`299:`/`429:`) and a
+// Windows-sandbox PowerShell error were misclassified as 429.
+async function driveV140RateLimitContextualUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	const peerSpawn = require("../src/lib/peer-spawn.js");
+
+	// Positive: provider-shaped 429 contexts MUST match.
+	const positive = [
+		"HTTP 429 Too Many Requests",
+		"HTTP/1.1 429 Too Many Requests",
+		"status: 429, please retry",
+		"statusCode: 429",
+		'"status": 429,',
+		"error code 429 returned",
+		"error 429 from upstream",
+		"(429) rate-limited",
+		"code: 429\nbody: ...",
+		// v1.4.0 R2 (gemini@10b7a12b R2 finding): added shapes that
+		// previously slipped through the contextual matcher.
+		"Status-Code: 429",
+		"status_code: 429",
+		'"code": 429,',
+		"error: 429",
+		"error=429",
+		"error_code: 429",
+	];
+	for (const stderr of positive) {
+		assert(
+			peerSpawn.matchRateLimitLexeme(stderr) === "429",
+			`v1.4.0 §6.25 (A): provider-shaped 429 must match -> '${stderr}'`,
+		);
+	}
+	results.push({
+		step: "v1.4.0 §6.25 (A): provider-shaped 429 contexts (HTTP/status/error/parens/JSON, plus R2 additions Status-Code/_code/JSON-RPC code key/error: with colon) match the rate-limit classifier",
+		ok: true,
+	});
+
+	// Positive: phrase tokens still match.
+	assert(
+		peerSpawn.matchRateLimitLexeme("Too Many Requests for endpoint") ===
+			"Too Many Requests",
+		"v1.4.0 §6.25 (A): Too Many Requests phrase matches",
+	);
+	assert(
+		peerSpawn.matchRateLimitLexeme("hit usage limit on plan") === "usage limit",
+		"v1.4.0 §6.25 (A): usage limit phrase preserved",
+	);
+	assert(
+		peerSpawn.matchRateLimitLexeme("RESOURCE_EXHAUSTED: quota") ===
+			"RESOURCE_EXHAUSTED",
+		"v1.4.0 §6.25 (A): RESOURCE_EXHAUSTED preserved",
+	);
+	assert(
+		peerSpawn.matchRateLimitLexeme("rate-limit exceeded for tier") ===
+			"rate limit",
+		"v1.4.0 §6.25 (A): rate limit phrase variants preserved",
+	);
+	assert(
+		peerSpawn.matchRateLimitLexeme("Retry-After: 30") === "429" ||
+			peerSpawn.matchRateLimitLexeme("Retry-After: 30") === "Retry-After",
+		"v1.4.0 §6.25 (A): Retry-After header preserved (any matching lexeme acceptable)",
+	);
+	results.push({
+		step: "v1.4.0 §6.25 (A): phrase tokens (Too Many Requests / rate limit / usage limit / RESOURCE_EXHAUSTED / Retry-After) preserved",
+		ok: true,
+	});
+
+	// Negative: line numbers / paths / timestamps / sandbox errors must NOT match.
+	const negative = [
+		"299:\treturn parsePeerResponse(text).status;",
+		"304:\tparsePeerResponse,",
+		"file.md:295:- GitHub Sponsors support",
+		"InvalidOperation: Cannot set property. Property setting is supported only on core types in this language mode.",
+		"[14:29:00] log entry",
+		"/home/user/code/4290/util.js",
+		"discussion about rate of adoption",
+		"set a limit for yourself",
+		"their quota seems fine",
+		"benign error without context",
+		"deploy 1429 succeeded",
+		"build #4290 finished",
+	];
+	for (const stderr of negative) {
+		assert(
+			peerSpawn.matchRateLimitLexeme(stderr) === null,
+			`v1.4.0 §6.25 (A): non-rate-limit text must NOT match -> '${stderr}'`,
+		);
+	}
+	results.push({
+		step: "v1.4.0 §6.25 (A): line numbers / paths / timestamps / sandbox errors / benign mentions correctly classified as non-rate-limit",
+		ok: true,
+	});
+
+	// detectSpawnRateLimit composed-shape regression with new patterns.
+	const rl = peerSpawn.detectSpawnRateLimit("HTTP 429\nRetry-After: 42\nBody");
+	assert(
+		rl &&
+			rl.detection_source === "spawn" &&
+			rl.retry_after_seconds === 42 &&
+			rl.lexeme_matched === "429",
+		"v1.4.0 §6.25 (A): detectSpawnRateLimit composed shape preserved",
+	);
+	assert(
+		peerSpawn.detectSpawnRateLimit("299:foo()") === null,
+		"v1.4.0 §6.25 (A): line-number stderr no longer trips detectSpawnRateLimit",
+	);
+	assert(
+		peerSpawn.detectSpawnRateLimit(
+			"InvalidOperation: Cannot set property. Property setting is supported only on core types in this language mode.",
+		) === null,
+		"v1.4.0 §6.25 (A): Codex sandbox InvalidOperation no longer trips detectSpawnRateLimit",
+	);
+	results.push({
+		step: "v1.4.0 §6.25 (A): detectSpawnRateLimit composed shape preserved while line-number + sandbox false-positives are eliminated",
+		ok: true,
+	});
+
+	// Backward-compat: RATE_LIMIT_LEXEMES export still a string array.
+	assert(
+		Array.isArray(peerSpawn.RATE_LIMIT_LEXEMES) &&
+			peerSpawn.RATE_LIMIT_LEXEMES.includes("429") &&
+			peerSpawn.RATE_LIMIT_LEXEMES.includes("RESOURCE_EXHAUSTED"),
+		"v1.4.0 §6.25 (A): RATE_LIMIT_LEXEMES export retains string-array shape (back-compat)",
+	);
+	results.push({
+		step: "v1.4.0 §6.25 (A): RATE_LIMIT_LEXEMES export shape preserved for back-compat consumers",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.4.0 §6.25 — Item (B): classifyStderr returns 'codex_windows_sandbox'
+// for ConstrainedLanguage / InvalidOperation / PowerShell AST parser
+// signals AND that class has precedence over rate_limit.
+async function driveV140CodexWindowsSandboxClassUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/session-store.js")];
+	const store = require("../src/lib/session-store.js");
+
+	const positives = [
+		"InvalidOperation: Cannot set property. Property setting is supported only on core types in this language mode.",
+		"PowerShell session: ConstrainedLanguage",
+		"PowerShell AST parser failed during invocation",
+		"blocked by sandbox (windows): exec policy denied",
+		// v1.4.0 R2 (gemini@10b7a12b R2 finding): the ConstrainedLanguage
+		// "Cannot invoke method" sibling and the empirically-observed
+		// "rejected: blocked by policy" shape from the codex CLI router
+		// must classify here too.
+		"InvalidOperation: Cannot invoke method. Method invocation is supported only on core types in this language mode.",
+		"`\"C:\\Program Files\\PowerShell\\7\\pwsh.exe\" -Command 'npx biome check'` rejected: blocked by policy",
+		"Execution of scripts is disabled on this system.",
+		"see about_Execution_Policies for details",
+	];
+	for (const text of positives) {
+		const r = store.classifyStderr(text);
+		assert(
+			r.class === "codex_windows_sandbox",
+			`v1.4.0 §6.25 (B): expected codex_windows_sandbox for '${text.slice(0, 60)}...' (got ${r.class})`,
+		);
+		assert(
+			Array.isArray(r.signals) && r.signals.length >= 1,
+			"v1.4.0 §6.25 (B): codex_windows_sandbox classifications must populate signals[]",
+		);
+	}
+	results.push({
+		step: "v1.4.0 §6.25 (B): classifyStderr identifies codex_windows_sandbox for InvalidOperation / ConstrainedLanguage / PowerShell AST / sandbox-blocked patterns",
+		ok: true,
+	});
+
+	// Precedence: stderr containing BOTH a sandbox error AND a 429-shape
+	// line-number must classify as codex_windows_sandbox (NOT rate_limit).
+	const mixed = store.classifyStderr(
+		"299:return parsePeerResponse(text).status\n" +
+			"304:parsePeerResponse,\n" +
+			"InvalidOperation: Cannot set property. Property setting is supported only on core types in this language mode.\n",
+	);
+	assert(
+		mixed.class === "codex_windows_sandbox",
+		`v1.4.0 §6.25 (B): primary class for mixed stderr is codex_windows_sandbox (got ${mixed.class})`,
+	);
+	results.push({
+		step: "v1.4.0 §6.25 (B): codex_windows_sandbox has precedence over rate_limit when both signals appear (regression for session bf4ffea3 R1 misclassification)",
+		ok: true,
+	});
+
+	// Source-level wiring: the new class must be registered BEFORE rate_limit.
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src/lib/session-store.js"),
+		"utf8",
+	);
+	const idxSandbox = src.indexOf('class: "codex_windows_sandbox"');
+	const idxRateLimit = src.indexOf('class: "rate_limit"');
+	assert(
+		idxSandbox > 0 && idxRateLimit > 0 && idxSandbox < idxRateLimit,
+		"v1.4.0 §6.25 (B): codex_windows_sandbox MUST be defined BEFORE rate_limit in STDERR_CLASS_PATTERNS (precedence by array order)",
+	);
+	results.push({
+		step: "v1.4.0 §6.25 (B) anti-drift: source order in STDERR_CLASS_PATTERNS keeps codex_windows_sandbox above rate_limit",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.4.0 §6.25 — Item (C): buildCodexArgs reads CROSS_REVIEW_CODEX_SANDBOX
+// / CROSS_REVIEW_CODEX_APPROVAL / CROSS_REVIEW_CODEX_BYPASS env vars,
+// preserves the read-only/never default, validates inputs, and emits
+// --dangerously-bypass-approvals-and-sandbox when bypass is on.
+async function driveV140CodexSandboxEnvConfigUnit() {
+	const results = [];
+	const saved = {
+		sandbox: process.env.CROSS_REVIEW_CODEX_SANDBOX,
+		approval: process.env.CROSS_REVIEW_CODEX_APPROVAL,
+		bypass: process.env.CROSS_REVIEW_CODEX_BYPASS,
+	};
+	const restore = () => {
+		const setOrUnset = (name, value) => {
+			if (typeof value === "undefined") delete process.env[name];
+			else process.env[name] = value;
+		};
+		setOrUnset("CROSS_REVIEW_CODEX_SANDBOX", saved.sandbox);
+		setOrUnset("CROSS_REVIEW_CODEX_APPROVAL", saved.approval);
+		setOrUnset("CROSS_REVIEW_CODEX_BYPASS", saved.bypass);
+	};
+
+	try {
+		const reload = () => {
+			delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+			return require("../src/lib/peer-spawn.js");
+		};
+
+		// (1) Default: -a never -s read-only when env unset.
+		delete process.env.CROSS_REVIEW_CODEX_SANDBOX;
+		delete process.env.CROSS_REVIEW_CODEX_APPROVAL;
+		delete process.env.CROSS_REVIEW_CODEX_BYPASS;
+		let peerSpawn = reload();
+		const policyDefault = peerSpawn.resolveCodexSandboxPolicy();
+		assert(
+			policyDefault.sandbox === "read-only" &&
+				policyDefault.approval === "never" &&
+				policyDefault.bypass === false &&
+				policyDefault.source.sandbox === "default" &&
+				policyDefault.source.approval === "default",
+			`v1.4.0 §6.25 (C): default policy is read-only/never/no-bypass (got ${JSON.stringify(policyDefault)})`,
+		);
+		const argsDefault = peerSpawn.buildCodexArgs();
+		assert(
+			argsDefault.includes("-a") &&
+				argsDefault.includes("never") &&
+				argsDefault.includes("-s") &&
+				argsDefault.includes("read-only") &&
+				!argsDefault.includes("--dangerously-bypass-approvals-and-sandbox"),
+			"v1.4.0 §6.25 (C): default buildCodexArgs emits -a never -s read-only and NO bypass flag",
+		);
+		results.push({
+			step: "v1.4.0 §6.25 (C): default policy preserved (read-only / never / no bypass) when env vars unset",
+			ok: true,
+		});
+
+		// (2) CROSS_REVIEW_CODEX_SANDBOX=danger-full-access overrides sandbox.
+		process.env.CROSS_REVIEW_CODEX_SANDBOX = "danger-full-access";
+		peerSpawn = reload();
+		const argsDanger = peerSpawn.buildCodexArgs();
+		assert(
+			argsDanger.includes("-s") && argsDanger.includes("danger-full-access"),
+			`v1.4.0 §6.25 (C): CROSS_REVIEW_CODEX_SANDBOX overrides -s value (got ${JSON.stringify(argsDanger)})`,
+		);
+		assert(
+			argsDanger.includes("never"),
+			"v1.4.0 §6.25 (C): approval default preserved when only sandbox is overridden",
+		);
+		delete process.env.CROSS_REVIEW_CODEX_SANDBOX;
+		results.push({
+			step: "v1.4.0 §6.25 (C): CROSS_REVIEW_CODEX_SANDBOX overrides sandbox while preserving default approval",
+			ok: true,
+		});
+
+		// (3) CROSS_REVIEW_CODEX_APPROVAL=on-request overrides approval.
+		process.env.CROSS_REVIEW_CODEX_APPROVAL = "on-request";
+		peerSpawn = reload();
+		const argsApproval = peerSpawn.buildCodexArgs();
+		assert(
+			argsApproval.includes("-a") && argsApproval.includes("on-request"),
+			"v1.4.0 §6.25 (C): CROSS_REVIEW_CODEX_APPROVAL overrides -a value",
+		);
+		delete process.env.CROSS_REVIEW_CODEX_APPROVAL;
+		results.push({
+			step: "v1.4.0 §6.25 (C): CROSS_REVIEW_CODEX_APPROVAL overrides approval mode",
+			ok: true,
+		});
+
+		// (4) CROSS_REVIEW_CODEX_BYPASS=1 emits --dangerously-bypass... and
+		// drops -a/-s entirely.
+		process.env.CROSS_REVIEW_CODEX_BYPASS = "1";
+		peerSpawn = reload();
+		const argsBypass = peerSpawn.buildCodexArgs();
+		assert(
+			argsBypass.includes("--dangerously-bypass-approvals-and-sandbox"),
+			"v1.4.0 §6.25 (C): bypass=1 emits --dangerously-bypass-approvals-and-sandbox flag",
+		);
+		assert(
+			!argsBypass.includes("-a") && !argsBypass.includes("-s"),
+			"v1.4.0 §6.25 (C): bypass mode strips -a/-s flags (mutually exclusive with bypass)",
+		);
+		delete process.env.CROSS_REVIEW_CODEX_BYPASS;
+		results.push({
+			step: "v1.4.0 §6.25 (C): CROSS_REVIEW_CODEX_BYPASS=1 emits --dangerously-bypass-approvals-and-sandbox and drops -a/-s",
+			ok: true,
+		});
+
+		// (5) Invalid sandbox value throws.
+		process.env.CROSS_REVIEW_CODEX_SANDBOX = "not-a-policy";
+		peerSpawn = reload();
+		let threwSandbox = false;
+		try {
+			peerSpawn.buildCodexArgs();
+		} catch (err) {
+			threwSandbox =
+				/CROSS_REVIEW_CODEX_SANDBOX/.test(err.message) &&
+				/not-a-policy/.test(err.message);
+		}
+		assert(
+			threwSandbox,
+			"v1.4.0 §6.25 (C): invalid CROSS_REVIEW_CODEX_SANDBOX value throws with descriptive message",
+		);
+		delete process.env.CROSS_REVIEW_CODEX_SANDBOX;
+		results.push({
+			step: "v1.4.0 §6.25 (C): invalid sandbox value throws (loud over silent default)",
+			ok: true,
+		});
+
+		// (6) Invalid approval value throws.
+		process.env.CROSS_REVIEW_CODEX_APPROVAL = "yolo";
+		peerSpawn = reload();
+		let threwApproval = false;
+		try {
+			peerSpawn.buildCodexArgs();
+		} catch (err) {
+			threwApproval =
+				/CROSS_REVIEW_CODEX_APPROVAL/.test(err.message) &&
+				/yolo/.test(err.message);
+		}
+		assert(
+			threwApproval,
+			"v1.4.0 §6.25 (C): invalid CROSS_REVIEW_CODEX_APPROVAL value throws with descriptive message",
+		);
+		delete process.env.CROSS_REVIEW_CODEX_APPROVAL;
+		results.push({
+			step: "v1.4.0 §6.25 (C): invalid approval value throws",
+			ok: true,
+		});
+
+		// (7) logCodexSandboxPolicy emits stderr only when policy diverges.
+		peerSpawn._resetCodexSandboxPolicyLogForTests();
+		let captured = "";
+		peerSpawn.logCodexSandboxPolicy((s) => {
+			captured += s;
+		});
+		assert(
+			captured === "",
+			"v1.4.0 §6.25 (C): logCodexSandboxPolicy is silent on the default path",
+		);
+		process.env.CROSS_REVIEW_CODEX_BYPASS = "1";
+		peerSpawn = reload();
+		peerSpawn._resetCodexSandboxPolicyLogForTests();
+		captured = "";
+		peerSpawn.logCodexSandboxPolicy((s) => {
+			captured += s;
+		});
+		assert(
+			captured.includes("codex policy") && captured.includes("bypass=on"),
+			`v1.4.0 §6.25 (C): logCodexSandboxPolicy emits one-line notice when policy diverges (got: '${captured.trim()}')`,
+		);
+		delete process.env.CROSS_REVIEW_CODEX_BYPASS;
+		results.push({
+			step: "v1.4.0 §6.25 (C): logCodexSandboxPolicy quiet on default + emits notice on divergence",
+			ok: true,
+		});
+	} finally {
+		restore();
+		delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	}
+
+	return { results };
+}
+
+// v1.4.0 — server_info exposes publisher + sponsors_url + links.sponsors.
+async function driveV140ServerInfoPublisherSponsorsUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src/server.js"),
+		"utf8",
+	);
+	assert(
+		/publisher:\s*"LCV Ideas & Software"/.test(src),
+		"v1.4.0: server_info MUST include publisher: 'LCV Ideas & Software'",
+	);
+	assert(
+		/sponsors_url:\s*\n?\s*"http:\/\/cross-review-mcp\.lcv\.app\.br"/.test(src),
+		"v1.4.0: server_info MUST include sponsors_url: 'http://cross-review-mcp.lcv.app.br'",
+	);
+	assert(
+		/sponsors:\s*\n?\s*"http:\/\/cross-review-mcp\.lcv\.app\.br"/.test(src),
+		"v1.4.0: server_info.links MUST include the sponsors mirror",
+	);
+	results.push({
+		step: "v1.4.0: server_info publisher + sponsors_url + links.sponsors wired",
+		ok: true,
+	});
 	return { results };
 }
 

@@ -218,21 +218,87 @@ function authoritativeModelAttestationAvailable(descriptor) {
 const PEER_STREAM_MAX_BYTES = 4 * 1024 * 1024;
 const PROBE_STREAM_MAX_BYTES = 256 * 1024;
 
-const RATE_LIMIT_LEXEMES = Object.freeze([
-	"429",
-	"rate limit",
-	"usage limit",
-	"quota exceeded",
-	"insufficient_quota",
-	"RESOURCE_EXHAUSTED",
-	"Retry-After",
+// v1.4.0 §6.25 (gemini audit + codex follow-up, session bf4ffea3): rate-
+// limit lexemes are regex-anchored to provider error shapes. Pre-v1.4.0,
+// "429" was a bare-substring match — line numbers like `299:` / `429:` /
+// `1429` from grep listings, file paths, timestamps, and benign code
+// listings tripped the classifier and surfaced as
+// `failure_class: "rate_limit_induced_response"`. Empirically observed in
+// session bf4ffea3 R1: the codex peer rejection was actually a Windows-
+// sandbox PowerShell ConstrainedLanguage failure (upstream Codex CLI bug —
+// see memory `reference_codex_cli_sandbox_constrained_language.md`), but
+// the classifier mismatched grep line numbers as 429.
+//
+// The contract is now:
+//   - "429" only matches in HTTP / status / error / parens shapes
+//     (e.g. `HTTP 429`, `status: 429`, `statusCode: 429`, `(429)`,
+//     `"status": 429`, `error 429`, `code: 429`).
+//   - Phrase tokens (Too Many Requests, rate limit, usage limit, quota
+//     exceeded, insufficient_quota, RESOURCE_EXHAUSTED, Retry-After) match
+//     on word boundaries — strict enough that benign mentions of "rate of
+//     adoption" or "set a limit" don't trip.
+//   - Pure substring matching is gone; a `429:` line number, a path
+//     containing `/429/`, and a timestamp like `[14:29:00]` no longer
+//     classify as rate-limit.
+const RATE_LIMIT_PATTERNS = Object.freeze([
+	{
+		lexeme: "429",
+		// Each anchored alternation member carries its own \b where the
+		// member starts on a word char; the JSON shapes (`"status"`,
+		// `"code"`) and the parens `(` member are quote/paren-anchored
+		// on their own. Outer \b is intentionally absent because `\b`
+		// doesn't fire before `"` (non-word) and would block the JSON
+		// shape.
+		//
+		// v1.4.0 R2 (gemini@10b7a12b R2 finding): added
+		//   - `Status-Code: 429` / `status_code: 429` via [-_]? separator
+		//   - `"code": 429` (JSON-RPC error envelope)
+		//   - `error: 429` / `error=429` / `error_code: 429` via
+		//     [\s:=_-]+ separator class instead of strict whitespace
+		re: /(?:\bHTTP\/[\d.]+\s+|\bHTTP\s+|\bstatus(?:[-_]?[Cc]ode)?\s*[:=]\s*|\bcode\s*[:=]\s*|"(?:status|code)"\s*:\s*|\berror[\s:=_-]+(?:code[\s:=_-]+)?|\(\s*)429\b/i,
+	},
+	{
+		lexeme: "Too Many Requests",
+		re: /\bToo\s+Many\s+Requests\b/i,
+	},
+	{
+		lexeme: "rate limit",
+		re: /\brate[-_\s]?limit(?:s)?(?:\s*(?:exceeded|reached|hit|enforced))?\b/i,
+	},
+	{
+		lexeme: "usage limit",
+		re: /\busage\s*limit(?:\s*(?:reached|exceeded|hit))?\b/i,
+	},
+	{
+		lexeme: "quota exceeded",
+		re: /\bquota\s*exceeded\b/i,
+	},
+	{
+		lexeme: "insufficient_quota",
+		re: /\binsufficient[_-]quota\b/i,
+	},
+	{
+		lexeme: "RESOURCE_EXHAUSTED",
+		re: /\bRESOURCE[_-]EXHAUSTED\b/i,
+	},
+	{
+		lexeme: "Retry-After",
+		re: /\bRetry[-_]After\b/i,
+	},
 ]);
+
+// Backward-compat export: the historical `RATE_LIMIT_LEXEMES` was a frozen
+// string array consumed by smoke tests as an enumeration. Preserved as an
+// extracted view of `RATE_LIMIT_PATTERNS` so external introspection still
+// returns the same lexeme list.
+const RATE_LIMIT_LEXEMES = Object.freeze(
+	RATE_LIMIT_PATTERNS.map((p) => p.lexeme),
+);
 
 function matchRateLimitLexeme(text) {
 	if (typeof text !== "string" || !text.length) return null;
-	const lower = text.toLowerCase();
-	for (const lex of RATE_LIMIT_LEXEMES) {
-		if (lower.includes(lex.toLowerCase())) return lex;
+	for (const { lexeme, re } of RATE_LIMIT_PATTERNS) {
+		if (re.test(text)) return lexeme;
 	}
 	return null;
 }
@@ -321,6 +387,109 @@ function listCodexConfiguredServers() {
 	return [...names];
 }
 
+// v1.4.0 §6.25 (codex follow-up, session bf4ffea3): Codex sandbox/approval
+// policy is configurable via env vars. Default behavior is UNCHANGED for
+// public consumers — `-a never -s read-only` is still the baseline. The
+// motivation is operational: Codex CLI 0.125.0 on Windows runs PowerShell
+// in ConstrainedLanguage under its sandbox, breaking the CLI's own command-
+// safety layer (see memory `reference_codex_cli_sandbox_constrained_language.md`).
+// On affected hosts the operator can opt in to a relaxed policy via:
+//
+//   CROSS_REVIEW_CODEX_SANDBOX = read-only | workspace-write | danger-full-access
+//   CROSS_REVIEW_CODEX_APPROVAL = never | on-request | on-failure | untrusted
+//   CROSS_REVIEW_CODEX_BYPASS  = 1 | true   (overrides both, emits
+//                                            --dangerously-bypass-approvals-and-sandbox)
+//
+// Invalid values throw at spawn time so typos are loud, not silent. The
+// resolved policy is logged once at module load via `logCodexSandboxPolicy`
+// (called from server.js startup) so meta.json's spawn audit trail can be
+// correlated with the operator's local env.
+const CODEX_SANDBOX_VALID = Object.freeze([
+	"read-only",
+	"workspace-write",
+	"danger-full-access",
+]);
+const CODEX_APPROVAL_VALID = Object.freeze([
+	"never",
+	"on-request",
+	"on-failure",
+	"untrusted",
+]);
+const CODEX_SANDBOX_DEFAULT = "read-only";
+const CODEX_APPROVAL_DEFAULT = "never";
+
+function resolveCodexSandboxPolicy() {
+	const sandboxRaw = process.env.CROSS_REVIEW_CODEX_SANDBOX;
+	const approvalRaw = process.env.CROSS_REVIEW_CODEX_APPROVAL;
+	const bypassRaw = process.env.CROSS_REVIEW_CODEX_BYPASS;
+
+	const sandbox = sandboxRaw ? sandboxRaw.toLowerCase() : CODEX_SANDBOX_DEFAULT;
+	const approval = approvalRaw
+		? approvalRaw.toLowerCase()
+		: CODEX_APPROVAL_DEFAULT;
+	const bypass =
+		typeof bypassRaw === "string" &&
+		(bypassRaw.toLowerCase() === "1" || bypassRaw.toLowerCase() === "true");
+
+	if (!CODEX_SANDBOX_VALID.includes(sandbox)) {
+		throw new Error(
+			`buildCodexArgs: invalid CROSS_REVIEW_CODEX_SANDBOX='${sandboxRaw}'. ` +
+				`Valid values: ${CODEX_SANDBOX_VALID.join(", ")}.`,
+		);
+	}
+	if (!CODEX_APPROVAL_VALID.includes(approval)) {
+		throw new Error(
+			`buildCodexArgs: invalid CROSS_REVIEW_CODEX_APPROVAL='${approvalRaw}'. ` +
+				`Valid values: ${CODEX_APPROVAL_VALID.join(", ")}.`,
+		);
+	}
+
+	return {
+		sandbox,
+		approval,
+		bypass,
+		// Source labels surface intent in audit/log lines without exposing
+		// the raw env-var strings (which the operator may consider host-local).
+		source: {
+			sandbox: sandboxRaw ? "env" : "default",
+			approval: approvalRaw ? "env" : "default",
+			bypass: bypass ? "env" : "default",
+		},
+	};
+}
+
+let _codexSandboxPolicyLogged = false;
+function logCodexSandboxPolicy(write = (s) => process.stderr.write(s)) {
+	if (_codexSandboxPolicyLogged) return null;
+	_codexSandboxPolicyLogged = true;
+	let policy;
+	try {
+		policy = resolveCodexSandboxPolicy();
+	} catch (err) {
+		write(`[cross-review-mcp] codex sandbox config invalid: ${err.message}\n`);
+		return { error: err.message };
+	}
+	if (
+		policy.source.sandbox === "default" &&
+		policy.source.approval === "default" &&
+		!policy.bypass
+	) {
+		// Quiet on the default path so untouched installs don't add noise.
+		return policy;
+	}
+	const parts = [
+		`sandbox=${policy.sandbox}(${policy.source.sandbox})`,
+		`approval=${policy.approval}(${policy.source.approval})`,
+		policy.bypass ? "bypass=on(env)" : null,
+	].filter(Boolean);
+	write(`[cross-review-mcp] codex policy: ${parts.join(" ")}\n`);
+	return policy;
+}
+
+function _resetCodexSandboxPolicyLogForTests() {
+	_codexSandboxPolicyLogged = false;
+}
+
 function buildCodexArgs() {
 	const ex = loadExclusions();
 	const configured = listCodexConfiguredServers();
@@ -347,11 +516,13 @@ function buildCodexArgs() {
 		],
 	);
 
+	const policy = resolveCodexSandboxPolicy();
+	const policyArgs = policy.bypass
+		? ["--dangerously-bypass-approvals-and-sandbox"]
+		: ["-a", policy.approval, "-s", policy.sandbox];
+
 	return [
-		"-a",
-		"never",
-		"-s",
-		"read-only",
+		...policyArgs,
 		"-m",
 		CODEX_MODEL,
 		"-c",
@@ -1954,6 +2125,14 @@ module.exports = {
 	buildCodexArgs,
 	buildClaudeArgs,
 	buildGeminiArgs,
+	// v1.4.0 §6.25: Codex sandbox/approval policy is configurable.
+	resolveCodexSandboxPolicy,
+	logCodexSandboxPolicy,
+	CODEX_SANDBOX_VALID,
+	CODEX_APPROVAL_VALID,
+	CODEX_SANDBOX_DEFAULT,
+	CODEX_APPROVAL_DEFAULT,
+	_resetCodexSandboxPolicyLogForTests,
 	listCodexConfiguredServers,
 	loadExclusions,
 	// v1.2.15 / spec §6.22 Item H additions.

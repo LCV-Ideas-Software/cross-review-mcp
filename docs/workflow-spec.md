@@ -3413,6 +3413,121 @@ existing tools change behavior. Minor bump per CONTRIBUTING.md
 because new tools require minor (not patch) under the v1.x semver
 policy.
 
+### 6.25 Classifier hardening + Codex sandbox config + DeepSeek deferral (NEW in v1.4.0)
+
+**Trigger.** Cross-review session `bf4ffea3-de08-4899-a21a-642906c1d4e9`
+(R1 of v1.4.0 pre-commit review) surfaced two distinct problems:
+
+1. The Codex peer rejected with stderr `InvalidOperation: Cannot set property.
+   Property setting is supported only on core types in this language mode.`
+   `cross-review-mcp` then misclassified that failure as
+   `failure_class: 'rate_limit_induced_response'` with `lexeme_matched: '429'`.
+   No `429` actually appeared in the stderr — the substring matcher tripped
+   on grep-shaped line numbers (`299:`, `304:`, `1429`).
+2. The Codex CLI 0.125.0 Windows sandbox forces PowerShell into
+   `ConstrainedLanguage` mode, and the CLI's own Rust command-safety layer
+   (`codex-rs/shell-command/src/command_safety/powershell_parser.ps1`)
+   does property assignment incompatible with that mode. This is an
+   upstream bug, not a provider error; on Windows hosts the Codex peer is
+   operationally unusable under the default `-a never -s read-only`.
+
+A side-channel ambition — integrating DeepSeek as the 4th peer via
+`deepseek-cli` — also surfaced a third problem: the CLI accepts the
+prompt only as positional argv (no stdin / file mode), and `shell: true`
+on Windows runs `cmd.exe`, which truncates argv at the first `\n` even
+inside double quotes. Cross-review prompts are multi-line markdown, so
+the prompt arrived truncated AND subsequent lines were reinterpretable
+as shell commands (data truncation + command injection). The patch
+shape considered (resolve `deepseek-cli` JS entrypoint + spawn
+`node.exe` with `shell: false`) was deemed paliative: the prompt would
+still live in argv / process list with command-line length caps and
+audit-trail concerns. DeepSeek as a peer is therefore deferred until a
+secure transport is available.
+
+**Items shipped (additive, no breaking changes).**
+
+**(A) `detectSpawnRateLimit` contextual `429` matching.** `RATE_LIMIT_LEXEMES`
+is now a regex-anchored array (internally `RATE_LIMIT_PATTERNS`) where the
+`429` lexeme requires an HTTP / status / error / parens context — e.g.
+`HTTP 429`, `HTTP/1.1 429`, `status: 429`, `statusCode: 429`,
+`"status": 429`, `error code 429`, `error 429`, `(429)`. Phrase tokens
+(`Too Many Requests`, `rate limit`, `usage limit (reached|exceeded|hit)?`,
+`quota exceeded`, `insufficient_quota`, `RESOURCE_EXHAUSTED`,
+`Retry-After`) match on word boundaries with provider-shaped phrase
+constraints. Bare substring `429` no longer counts.
+
+The historical `RATE_LIMIT_LEXEMES` export is preserved as a
+`Object.freeze(RATE_LIMIT_PATTERNS.map(p => p.lexeme))` view so smoke and
+external introspection still see the same string-array shape.
+
+**(B) `classifyStderr` new `codex_windows_sandbox` class.** `STDERR_CLASS_PATTERNS`
+gains a class with regex matching the canonical sandbox-induced patterns:
+`InvalidOperation: Cannot set property. Property setting is supported only on
+core types`, `ConstrainedLanguage`, `PowerShell AST parser`,
+`blocked by sandbox (windows)`. Precedence is ABOVE `rate_limit` so the
+v4.14 R1 misclassification cannot recur. The `rate_limit` class regex was
+also tightened to the same contextual-`429` shape used by (A), so signals
+remain consistent across the two classifiers.
+
+**(C) Codex sandbox/approval policy is configurable.** `buildCodexArgs`
+reads three env vars and falls back to the historical defaults:
+
+| Env var | Values | Default |
+|---------|--------|---------|
+| `CROSS_REVIEW_CODEX_SANDBOX` | `read-only` / `workspace-write` / `danger-full-access` | `read-only` |
+| `CROSS_REVIEW_CODEX_APPROVAL` | `never` / `on-request` / `on-failure` / `untrusted` | `never` |
+| `CROSS_REVIEW_CODEX_BYPASS` | `1` / `true` | unset |
+
+When `BYPASS` is truthy, `buildCodexArgs` emits
+`--dangerously-bypass-approvals-and-sandbox` and drops `-a`/`-s`
+entirely. Invalid values throw at spawn time with descriptive messages
+(loud over silent default). The resolved policy is logged once at startup
+via `logCodexSandboxPolicy()` (called from `server.js#main`); the log
+line is silent on the default path so untouched installs add no noise.
+
+**(D) Regression smoke (`functional-smoke.js`).** Four new drive
+functions:
+
+- `driveV140RateLimitContextualUnit` — positive HTTP 429 / status / error
+  / parens / JSON shapes, phrase tokens, and the negative cases that
+  used to trip pre-v1.4.0 (line numbers, file paths, timestamps,
+  `InvalidOperation` sandbox text, deploy IDs containing `429` / `1429`).
+- `driveV140CodexWindowsSandboxClassUnit` — positive sandbox patterns,
+  precedence regression (mixed sandbox + `429:` line numbers
+  classify as `codex_windows_sandbox`, not `rate_limit`), source-level
+  anti-drift on the array-order precedence in `STDERR_CLASS_PATTERNS`.
+- `driveV140CodexSandboxEnvConfigUnit` — default policy preserved when
+  env vars unset, each env var override exercised independently (with
+  process.env save/restore around each), invalid values throw, bypass
+  emits the bypass flag and drops `-a`/`-s`, `logCodexSandboxPolicy`
+  silent on default and verbose on divergence.
+- `driveV140ServerInfoPublisherSponsorsUnit` — source-level anti-drift
+  on `publisher` / `sponsors_url` / `links.sponsors`.
+
+**(E) `server_info` ownership fields.** The handler returns
+`publisher: "LCV Ideas & Software"` and
+`sponsors_url: "http://cross-review-mcp.lcv.app.br"` (mirrored under
+`links.sponsors`) so operators can confirm package ownership and
+sponsorship landing in the same call they use for runtime
+identification.
+
+**DeepSeek deferral.** DeepSeek as the 4th peer is NOT introduced in
+v1.4.0. The future integration must use a secure transport — direct
+SDK / API or a CLI that accepts stdin/file. The deferral is explicit
+(no `deepseek` entry in `VALID_AGENTS`, no `top-models.json` row, no
+peer-spawn / probe / classifier scaffolding) so the v1.5.0 design
+starts from a clean slate.
+
+**Backwards compatibility.** All items are additive. Default Codex
+policy is the historical `-a never -s read-only`; consumers who don't
+set the env vars see no change. `RATE_LIMIT_LEXEMES` retains its
+string-array shape. `STDERR_CLASS_PATTERNS` gains an entry; consumers
+using primary `class` see the more accurate `codex_windows_sandbox`
+classification on Windows hosts; consumers reading the full
+`signals[]` see the same patterns previously detected as
+`rate_limit` plus the new sandbox class. Patch-additive within the
+v1.x frozen public surface.
+
 ---
 
 ## 7. Summary of conventions for immediate use (UPDATED through v4.10)

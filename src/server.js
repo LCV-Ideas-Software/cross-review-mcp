@@ -51,6 +51,7 @@ const {
 	matchRateLimitLexeme,
 	extractRetryAfterSeconds,
 	sweepOrphanPeerProcesses,
+	logCodexSandboxPolicy,
 } = require("./lib/peer-spawn.js");
 const { parsePeerResponse } = require("./lib/status-parser.js");
 const {
@@ -60,7 +61,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.3.0";
+const VERSION = "1.4.0";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -772,6 +773,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 									version: VERSION,
 									release_date: RELEASE_DATE,
 									spec_version: store.SESSION_SPEC_VERSION,
+									// v1.4.0: publisher + sponsors_url surface
+									// project ownership and the sponsorship landing
+									// page in the same payload operators already
+									// hit for runtime identification.
+									publisher: "LCV Ideas & Software",
+									sponsors_url: "http://cross-review-mcp.lcv.app.br",
 									tools: [
 										"server_info",
 										"session_init",
@@ -790,6 +797,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										spec: "https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/docs/workflow-spec.md",
 										changelog:
 											"https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/CHANGELOG.md",
+										sponsors: "http://cross-review-mcp.lcv.app.br",
 									},
 								},
 								null,
@@ -1952,6 +1960,10 @@ async function main() {
 	log(
 		`starting v${VERSION}, caller resolved per session via spec v4.14 §6.20 (args.caller > clientInfo.name)`,
 	);
+	// v1.4.0 §6.25: surface non-default Codex sandbox/approval/bypass policy
+	// once at startup so operators can correlate the runtime invocation with
+	// any deviation from the baseline (read-only / never).
+	logCodexSandboxPolicy();
 	const transport = new StdioServerTransport();
 	await server.connect(transport);
 	log("stdio transport connected");
