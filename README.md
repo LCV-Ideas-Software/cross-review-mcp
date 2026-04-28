@@ -1,3 +1,7 @@
+<p align="center">
+  <img src=".github/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="220">
+</p>
+
 # cross-review-mcp
 
 > MCP server orchestrating cross-review between Claude Code, ChatGPT Codex, and Gemini CLI.
