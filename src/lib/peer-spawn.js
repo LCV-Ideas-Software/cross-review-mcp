@@ -1753,6 +1753,21 @@ function parseArgv0AndRest(cmdLine) {
 // subcommand alternation from the claude pattern (peer claude uses
 // `-p --output-format text ...`, see buildClaudeArgs; `claude code` is
 // the *interactive* host invocation, never a peer spawn).
+//
+// v1.2.17 expansion: accept Windows npm-shim shapes that wrap a peer
+// CLI through cmd.exe and/or node.exe. `spawnPeer` runs with
+// `shell: true` (per spec §6.21), so on Windows an npm-installed peer
+// surfaces as TWO descendant processes:
+//   1. cmd.exe /d /s /c "<peer> <args>"           ← shell wrapper
+//   2. node.exe "<path>\<peer>.js" <args>         ← actual worker
+// `parseArgv0AndRest` extracts `cmd.exe` and `node.exe` as basenames
+// for these processes — pre-v1.2.17, both bypassed the strict basename
+// check, leaving npm-installed peers uncovered by the orphan sweep
+// (gemini R1 catch in retro session `cb41f835`). v1.2.17 adds two
+// `argv-tail-recurse` patterns that recognize peer-CLI invocations
+// inside cmd.exe / node.exe argv tails. The argv[0] ancestor guard
+// in `findOrphans` continues to protect the host (Bug #2 fix is
+// independent of this matcher).
 function isPeerCliCommand(cmdLine) {
 	const { argv0Basename, rest } = parseArgv0AndRest(cmdLine);
 	if (!argv0Basename) return false;
@@ -1773,6 +1788,66 @@ function isPeerCliCommand(cmdLine) {
 		/(?:^|\s)(-p|--print)(?:\s|$)/.test(rest)
 	) {
 		return true;
+	}
+	// v1.2.17 npm-shim recognition: cmd.exe wrapper invoking a peer CLI.
+	// Match shape: `cmd.exe /d /s /c "<peer-name>(.cmd|.exe) ... <peer-flag> ..."`
+	// or `cmd.exe /c <peer-name> ... <peer-flag> ...`. The peer name must
+	// appear as a token (preceded by whitespace, quote, or slash) and the
+	// peer-spawn-only flag must follow somewhere in the same rest string.
+	// Flag terminator accepts whitespace, quote, or end-of-string because
+	// cmd.exe wrappers commonly close the inner quote right after the flag.
+	if (argv0Basename === "cmd.exe" || argv0Basename === "cmd") {
+		if (
+			/(?:[\s"'\\/]|^)codex(?:\.cmd|\.exe)?(?:[\s"']|$)/.test(rest) &&
+			/(?:^|\s)exec(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/(?:[\s"'\\/]|^)gemini(?:\.cmd|\.exe)?(?:[\s"']|$)/.test(rest) &&
+			/(?:^|\s)(-p|--prompt)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/(?:[\s"'\\/]|^)claude(?:\.cmd|\.exe)?(?:[\s"']|$)/.test(rest) &&
+			/(?:^|\s)(-p|--print)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		return false;
+	}
+	// v1.2.17 npm-shim recognition: node.exe worker invoking a peer CLI's
+	// JavaScript entrypoint. Match shape: `node.exe "<path>\<peer>(-cli)?\
+	// (bin\)?<peer>.js" ... <peer-flag> ...`. Restricted to argv1 path
+	// components named after a peer (in path segment or basename) so we
+	// don't false-positive on arbitrary `node script.js` invocations.
+	if (argv0Basename === "node.exe" || argv0Basename === "node") {
+		if (
+			/[\s"'][^\s"']*[\\/]codex[^\s"']*\.(?:js|cjs|mjs)(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)exec(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/[\s"'][^\s"']*[\\/]gemini[^\s"']*\.(?:js|cjs|mjs)(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)(-p|--prompt)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/[\s"'][^\s"']*[\\/]claude[^\s"']*\.(?:js|cjs|mjs)(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)(-p|--print)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		return false;
 	}
 	return false;
 }
@@ -1799,7 +1874,7 @@ function ancestorPidSet(ofPid, allProcs) {
 	while (current && depth < 32) {
 		ancestors.add(current);
 		const node = allProcs.find((p) => p.pid === current);
-		if (!node || !node.parentPid || node.parentPid === current) break;
+		if (!node?.parentPid || node.parentPid === current) break;
 		current = node.parentPid;
 		depth += 1;
 	}

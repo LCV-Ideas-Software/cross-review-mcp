@@ -15,6 +15,31 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 
 ---
 
+## [1.2.17] — 2026-04-28
+
+**npm-shim recognition + findOrphans wiring anti-drift (spec §6.22.1 v1.2.17 amendment).**
+
+Surfaced by gemini in retro cross-review session `cb41f835-2458-43dc-9597-f2f4b255245d` R1 (post-deploy validation of v1.2.16 under operator-authorized exception per `feedback_cross_review_self_repair_exception.md`). Two follow-up findings shipped together as v1.2.17.
+
+### Corrigido
+- **npm-shim false-negative in `isPeerCliCommand`**: Gemini caught that `spawnPeer` runs with `shell: true` per spec §6.21, which on Windows produces a TWO-process tree for an npm-installed peer CLI: (1) `cmd.exe /d /s /c "<peer> <args>"` shell wrapper, (2) `node.exe "<path>\<peer>.js" <args>` actual worker. `parseArgv0AndRest` extracts `cmd.exe` and `node.exe` as the basenames for these processes — under the strict v1.2.16 argv[0] check, NEITHER matched the peer-CLI shape, so the orphan sweep was effectively dead for npm-installed peers. v1.2.17 adds two argv-tail-recurse patterns to `isPeerCliCommand`: (a) `cmd.exe`/`cmd` argv0 with the peer name token (`/codex(?:\.cmd|\.exe)?(?:\s|$)/`-shape) AND a peer-spawn-only flag in the rest; (b) `node.exe`/`node` argv0 with a path containing `/<peer>...\.(js|cjs|mjs)` AND a peer-spawn-only flag. Negative cases are explicitly tested (cross-review-mcp's own `node ... server.js` does not contain any peer name in its path; `cmd.exe /c dir`, `node script.js`, `gemini --version` without `-p` all reject).
+- The Bug #2 ancestor guard from v1.2.16 continues to protect cross-review-mcp's own ancestors INDEPENDENTLY of the matcher's verdict — even if a future change made the matcher more permissive, `findOrphans`'s `ancestorPidSet` check would still catch the host process. Defense in depth holds across v1.2.17.
+
+### Adicionado
+- **2 new anti-drift smoke invariants** (`scripts/functional-smoke.js`):
+  - `driveV1217NpmShimRecognitionUnit` — 5 cmd.exe wrapper shapes + 4 node.exe worker shapes that MUST match (covers `.cmd`/`.exe`/bare resolution + `.js`/`.cjs`/`.mjs` extensions + POSIX/Windows paths) + 5 negative cases (cross-review-mcp's own server.js path, random Node scripts, cmd.exe with no peer, peer-named paths without peer-spawn flag).
+  - `driveV1217FindOrphansWiringAntiDriftUnit` — Gemini's R1 caller_request #2: source-level regex assertion that `sweepOrphanPeerProcesses` MUST call `findOrphans(` AND `findOrphans` body MUST call `ancestorPidSet(` AND check `ancestors.has(p.pid)`. Locks the structural wiring of Bug #2 ancestor guard against silent in-line classification regressions (mirrors the existing v1.2.16 anti-drift assertion for Bug #3 `killProcessTreeIsSuicide` wiring before the win32 branch).
+
+### Cross-review
+- Retro session `cb41f835-2458-43dc-9597-f2f4b255245d` R1: codex `prompt_flagged_by_moderation` (re-submit after reformulation), gemini NOT_READY with both findings (verified, evidence_sources cited). v1.2.17 addresses both before R2 resubmit. Per `feedback_peer_review_rigor.md`: NOT_READY from a peer with a real residual MUST be addressed; never declare unilateral READY.
+
+### Validação
+- `npm test`: 209 GREEN (was 204, +5 invariants from 2 new functions — 3 in npm-shim test, 2 in wiring test).
+- `npm run check-models`: no drift.
+- `npx biome check src scripts`: clean.
+
+---
+
 ## [1.2.16] — 2026-04-28
 
 **Hotfix crítico — orphan peer sweep estava matando o próprio Claude Code (spec §6.22.1 NEW).**

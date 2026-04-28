@@ -3067,15 +3067,89 @@ the env var after v1.2.16 is loaded (`server_info` returns
 primitive's new refusal path is observable only via stderr telemetry;
 no successful peer kill should ever target self/ppid in the first
 place, so the change is invisible to legitimate callers. The
-`isPeerCliCommand` tightening is conservative — it can now produce
-*more* false-negatives (e.g. a future peer CLI invoked through a
-`cmd.exe /c codex exec` shell wrapper would no longer match because
-argv[0] basename would be `cmd.exe`). This is acceptable for v1.x:
-all current peer spawns invoke the binaries directly (see
-`buildXxxArgs`), so the false-negative window is empty under the
-v1.x frozen surface. If a future v1.3.x re-introduces a shell
-wrapper, the matcher will need to recurse one level to follow `/c
-<argv0> ...` and `-c <argv0> ...` shapes.
+`isPeerCliCommand` tightening is conservative — it can produce
+*more* false-negatives where the argv[0] basename is a shell or node
+wrapper rather than the peer binary itself; v1.2.17 (below) addresses
+the most common npm-shim case but the principle holds: any future
+spawn pathway that puts a non-peer basename at argv[0] without one
+of the recognized wrapper shapes will silently bypass the orphan
+sweep. The Bug #2 ancestor guard and Bug #3 kill-primitive guard
+remain in force regardless; only the orphan-cleanup recall is
+affected.
+
+#### v1.2.17 amendment (npm-shim recognition + findOrphans wiring anti-drift)
+
+**Surfaced by.** Gemini in retro cross-review session
+`cb41f835-2458-43dc-9597-f2f4b255245d` R1, the post-deploy
+validation of v1.2.16 under operator-authorized exception per
+`feedback_cross_review_self_repair_exception.md`. Two findings
+shipped together as v1.2.17.
+
+**Finding 1 — npm-shim false-negative in `isPeerCliCommand`.**
+`spawnPeer` runs with `shell: true` (spec §6.21 normative). On
+Windows, invoking an npm-installed peer CLI like `gemini` surfaces
+as a TWO-process tree:
+
+1. `cmd.exe /d /s /c "<peer> <args>"`  — shell wrapper, argv[0] = `cmd.exe`.
+2. `node.exe "<path>\<peer>.js" <args>`  — actual worker, argv[0] = `node.exe`.
+
+`parseArgv0AndRest` extracts `cmd.exe` and `node.exe` as the
+basenames for these processes. Under the strict v1.2.16 argv[0]
+check (which required basename ∈ {codex, codex.exe, claude,
+claude.exe, gemini, gemini.exe}), NEITHER wrapper nor worker
+matched the peer-CLI shape, so `findOrphans` excluded them and the
+kill loop never ran. The orphan sweep was effectively dead for
+npm-installed peers — counter to the §6.22 Item H intent.
+
+**Fix 1.** v1.2.17 adds two argv-tail-recurse branches to
+`isPeerCliCommand`:
+
+- **cmd.exe wrapper.** When `argv0Basename ∈ {cmd.exe, cmd}`, accept
+  if the rest contains a peer-name token (`/codex(?:\.cmd|\.exe)?(?:\s|$)/`,
+  preceded by whitespace, quote, slash, or start-of-string) AND a
+  peer-spawn-only flag (`(?:^|\s)(exec|-p|--prompt|--print)(?:\s|$)`).
+- **node.exe worker.** When `argv0Basename ∈ {node.exe, node}`, accept
+  if the rest contains a peer-named JavaScript/CommonJS/module path
+  (`/[\s"'][^\s"']*[\\/](codex|gemini|claude)[^\s"']*\.(?:js|cjs|mjs)/`)
+  AND a peer-spawn-only flag.
+
+Negative cases are explicitly tested:
+
+- cross-review-mcp's own `node.exe ...\\cross-review-mcp\\src\\server.js`
+  contains no peer-name segment in its path → no match.
+- `node "C:\\path\\to\\random\\app.js" --port 3000` has no peer name → no match.
+- `cmd.exe /c dir` has no peer-spawn flag → no match.
+- `node.exe "C:\\path\\to\\codex.js"` has the peer name but no peer-spawn
+  flag → no match.
+
+**Finding 2 — `findOrphans` wiring anti-drift.** v1.2.16 added a
+source-level smoke assertion that `killProcessTreeIsSuicide(proc.pid)`
+is wired BEFORE the `process.platform === "win32"` branch in
+`killProcessTree` (Bug #3 wiring guard). It did NOT add an
+equivalent assertion for Bug #2: that `sweepOrphanPeerProcesses`
+delegates classification to `findOrphans`, and that `findOrphans`
+in turn calls `ancestorPidSet` + checks `ancestors.has(p.pid)`. A
+silent regression (e.g. someone re-introducing in-line iteration
+over `procs` inside the sweep) could bypass the ancestor guard
+while leaving `findOrphans` exported and unused.
+
+**Fix 2.** v1.2.17 adds `driveV1217FindOrphansWiringAntiDriftUnit`:
+two source-level regex assertions over `src/lib/peer-spawn.js`:
+
+- `sweepOrphanPeerProcesses` body must call `findOrphans(`, AND the
+  `findOrphans(` call must precede any `killProcessTree(` call in
+  the same body.
+- `findOrphans` body must call `ancestorPidSet(` AND check
+  `ancestors.has(`.
+
+**Defense-in-depth invariant preserved.** The v1.2.17 npm-shim
+recognition broadens the matcher's positive surface, but the Bug #2
+ancestor guard in `findOrphans` still rejects any candidate whose
+PID is in `ancestorPidSet(ourPid, procs)`. The Bug #3 kill-primitive
+guard still rejects any pid equal to `process.pid` or `process.ppid`.
+Together, these layers ensure that even if a future regression made
+the matcher excessively permissive, the host cross-review-mcp's
+ancestors cannot be killed.
 
 ---
 

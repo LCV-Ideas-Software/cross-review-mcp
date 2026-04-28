@@ -1412,6 +1412,13 @@ async function runAll() {
 	all.push(...s72.results);
 	const s73 = await driveV1216KillProcessTreeRefusesSuicideUnit();
 	all.push(...s73.results);
+	// v1.2.17 / spec §6.22.1 v1.2.17 amendment — npm-shim recognition +
+	// findOrphans wiring anti-drift (gemini retro-review session
+	// `cb41f835` R1 caller_requests).
+	const s74 = await driveV1217NpmShimRecognitionUnit();
+	all.push(...s74.results);
+	const s75 = await driveV1217FindOrphansWiringAntiDriftUnit();
+	all.push(...s75.results);
 	return all;
 }
 
@@ -6047,6 +6054,158 @@ async function driveV1216KillProcessTreeRefusesSuicideUnit() {
 	);
 	results.push({
 		step: "v1.2.16 §6.22.1 anti-drift: source-level wiring of killProcessTreeIsSuicide guard precedes win32 branch in killProcessTree",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.2.17 / spec §6.22.1 v1.2.17 amendment — npm-shim recognition.
+// Gemini caught in retro-review session `cb41f835` that on Windows,
+// `spawn(..., { shell: true })` of an npm-installed peer creates a TWO-
+// process tree:
+//   1. cmd.exe /d /s /c "<peer> <args>"
+//   2. node.exe "<path>\<peer>.js" <args>
+// `parseArgv0AndRest` extracts `cmd.exe` and `node.exe` as basenames for
+// these — the strict argv[0] basename check in v1.2.16 missed BOTH, so
+// the orphan sweep was effectively dead for npm-installed peer CLIs.
+// v1.2.17 adds two argv-tail-recurse patterns recognizing peer
+// invocations through cmd.exe and node.exe wrappers.
+async function driveV1217NpmShimRecognitionUnit() {
+	const results = [];
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	const peerSpawn = require("../src/lib/peer-spawn.js");
+
+	// cmd.exe wrapper shapes — must match.
+	const cmdExeWrappers = [
+		// Codex via cmd.exe with .cmd shim.
+		'cmd.exe /d /s /c "codex.cmd -a never -s read-only exec -"',
+		// Codex via cmd.exe with bare name (PATHEXT resolves).
+		"cmd.exe /d /s /c codex exec -",
+		// Gemini via cmd.exe.
+		'cmd.exe /d /s /c "gemini -m gemini-3.1-pro-preview -p"',
+		// Claude via cmd.exe.
+		"cmd.exe /c claude -p --output-format text",
+		// Cmd alias (no .exe in some shells).
+		"cmd /c codex.cmd exec",
+	];
+	for (const cmd of cmdExeWrappers) {
+		assert(
+			peerSpawn.isPeerCliCommand(cmd) === true,
+			`v1.2.17 npm-shim: isPeerCliCommand should match cmd.exe wrapper: ${cmd}`,
+		);
+	}
+	results.push({
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand matches cmd.exe wrappers for codex/gemini/claude with .cmd/.exe/bare resolution",
+		ok: true,
+	});
+
+	// node.exe worker shapes — must match.
+	const nodeExeWorkers = [
+		// Codex npm-shim worker.
+		'node.exe "C:\\Users\\X\\AppData\\Roaming\\npm\\node_modules\\@openai\\codex-cli\\bin\\codex.js" exec',
+		// Gemini npm-shim worker.
+		'node.exe "C:\\Users\\X\\AppData\\Roaming\\npm\\node_modules\\@google\\gemini-cli\\bin\\gemini.js" -p',
+		// Claude npm-shim worker (.cjs ext).
+		'node.exe "C:\\path\\to\\@anthropic-ai\\claude-cli\\bin\\claude.cjs" -p',
+		// POSIX node-shim.
+		"node /usr/lib/node_modules/@openai/codex-cli/bin/codex.mjs exec",
+	];
+	for (const cmd of nodeExeWorkers) {
+		assert(
+			peerSpawn.isPeerCliCommand(cmd) === true,
+			`v1.2.17 npm-shim: isPeerCliCommand should match node.exe worker: ${cmd}`,
+		);
+	}
+	results.push({
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand matches node.exe workers invoking peer .js/.cjs/.mjs entrypoints",
+		ok: true,
+	});
+
+	// Negative cases — must NOT match.
+	const nonPeerNodeInvocations = [
+		// cross-review-mcp's own server (no claude/codex/gemini in path).
+		"node.exe C:\\Users\\X\\lcv-workspace\\cross-review-mcp\\src\\server.js",
+		// Random Node script.
+		'node "C:\\path\\to\\random\\app.js" --port 3000',
+		// cmd.exe with no peer.
+		"cmd.exe /c dir",
+		// node.exe with peer NAME but no peer-spawn flag.
+		'node.exe "C:\\path\\to\\codex.js"',
+		// cmd.exe with peer name but no flag.
+		"cmd.exe /c gemini --version",
+	];
+	for (const cmd of nonPeerNodeInvocations) {
+		assert(
+			peerSpawn.isPeerCliCommand(cmd) === false,
+			`v1.2.17 npm-shim: isPeerCliCommand should NOT match non-peer invocation: ${cmd}`,
+		);
+	}
+	results.push({
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand rejects cmd.exe/node.exe invocations without a peer-spawn-only flag (cross-review-mcp server.js, dir, --version, etc.)",
+		ok: true,
+	});
+
+	return { results };
+}
+
+// v1.2.17 / spec §6.22.1 v1.2.17 amendment — anti-drift wiring assertion
+// for the Bug #2 ancestor-skip. Gemini caught in retro-review session
+// `cb41f835` that we had source-level wiring assertion for Bug #3
+// (killProcessTreeIsSuicide before win32 branch) but NOT for Bug #2
+// (findOrphans wired in sweepOrphanPeerProcesses). A regression could
+// reintroduce in-line iteration over `procs` in the sweep and bypass
+// the ancestor guard while leaving findOrphans exported. This locks
+// the wiring.
+async function driveV1217FindOrphansWiringAntiDriftUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src", "lib", "peer-spawn.js"),
+		"utf8",
+	);
+
+	// Locate the body of sweepOrphanPeerProcesses.
+	const sweepStart = src.search(
+		/async\s+function\s+sweepOrphanPeerProcesses\s*\(/,
+	);
+	assert(
+		sweepStart > 0,
+		"v1.2.17 anti-drift: sweepOrphanPeerProcesses must exist in src/lib/peer-spawn.js",
+	);
+	// Take the next ~3000 chars (function body); function is small.
+	const sweepBody = src.slice(sweepStart, sweepStart + 3000);
+
+	// Must call findOrphans inside the sweep body.
+	assert(
+		/findOrphans\s*\(/.test(sweepBody),
+		"v1.2.17 anti-drift: sweepOrphanPeerProcesses MUST delegate classification to findOrphans (wiring)",
+	);
+	// Must NOT contain in-line `for (const p of procs)` calling killProcessTree
+	// directly without first going through findOrphans — pre-v1.2.16 shape.
+	const sweepKillIdx = sweepBody.search(/killProcessTree\s*\(/);
+	const sweepFindIdx = sweepBody.search(/findOrphans\s*\(/);
+	assert(
+		sweepFindIdx > 0 && sweepKillIdx > 0 && sweepFindIdx < sweepKillIdx,
+		"v1.2.17 anti-drift: findOrphans call MUST precede killProcessTree call inside sweepOrphanPeerProcesses (kill loop runs only on findOrphans output)",
+	);
+	results.push({
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment anti-drift: findOrphans wired inside sweepOrphanPeerProcesses, called BEFORE killProcessTree (Bug #2 ancestor-skip cannot regress to in-line classification)",
+		ok: true,
+	});
+
+	// Also assert findOrphans body itself contains the ancestor check.
+	const findStart = src.search(/function\s+findOrphans\s*\(/);
+	assert(findStart > 0, "v1.2.17 anti-drift: findOrphans helper must exist");
+	const findBody = src.slice(findStart, findStart + 2000);
+	assert(
+		/ancestorPidSet\s*\(/.test(findBody) &&
+			/ancestors\.has\s*\(/.test(findBody),
+		"v1.2.17 anti-drift: findOrphans body MUST call ancestorPidSet AND check ancestors.has(p.pid) — the Bug #2 guard",
+	);
+	results.push({
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment anti-drift: findOrphans body wires ancestorPidSet + ancestors.has(p.pid) (Bug #2 ancestor-skip is structurally locked)",
 		ok: true,
 	});
 
