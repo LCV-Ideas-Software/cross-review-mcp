@@ -16,6 +16,7 @@
 
 const fs = require("node:fs");
 const path = require("node:path");
+const { execFileSync } = require("node:child_process");
 const { Client } = require("@modelcontextprotocol/sdk/client/index.js");
 const {
 	StdioClientTransport,
@@ -239,8 +240,50 @@ function endpoint(baseUrl) {
 	return `${String(baseUrl || DEFAULT_BASE_URL).replace(/\/+$/, "")}/chat/completions`;
 }
 
+function readWindowsRegistryEnv(name) {
+	if (process.platform !== "win32") return undefined;
+	const roots = [
+		"HKCU\\Environment",
+		"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+	];
+	for (const root of roots) {
+		try {
+			const output = execFileSync(
+				"reg",
+				["query", root, "/v", name],
+				{
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "ignore"],
+					windowsHide: true,
+				},
+			);
+			const line = output
+				.split(/\r?\n/)
+				.map((entry) => entry.trim())
+				.find((entry) => entry.toLowerCase().startsWith(name.toLowerCase()));
+			if (!line) continue;
+			const match = line.match(
+				new RegExp(`^${name}\\s+REG_\\w+\\s+(.+)$`, "i"),
+			);
+			if (match && match[1].trim()) return match[1].trim();
+		} catch {}
+	}
+	return undefined;
+}
+
+function envValue(name) {
+	if (process.env[name] !== undefined && process.env[name] !== "") {
+		return process.env[name];
+	}
+	const registryValue = readWindowsRegistryEnv(name);
+	if (registryValue !== undefined && registryValue !== "") {
+		return registryValue;
+	}
+	return undefined;
+}
+
 async function postChat(opts, messages, tools) {
-	const apiKey = process.env.DEEPSEEK_API_KEY;
+	const apiKey = envValue("DEEPSEEK_API_KEY");
 	if (!apiKey) {
 		throw new Error("DEEPSEEK_API_KEY is required");
 	}

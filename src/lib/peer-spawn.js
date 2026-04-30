@@ -79,6 +79,7 @@ const { spawn } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
 const os = require("node:os");
+const { execFileSync } = require("node:child_process");
 
 const CONFIGS_DIR = path.resolve(__dirname, "..", "..", "reviewer-configs");
 const EXCLUSIONS_PATH = path.join(CONFIGS_DIR, "peer-exclusions.json");
@@ -109,6 +110,53 @@ const DEEPSEEK_ALLOWED_MCP_SERVERS = [
 
 function copyEnvIfPresent(target, name) {
 	if (process.env[name] !== undefined) target[name] = process.env[name];
+}
+
+function readWindowsRegistryEnv(name) {
+	if (process.platform !== "win32") return undefined;
+	const roots = [
+		"HKCU\\Environment",
+		"HKLM\\SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment",
+	];
+	for (const root of roots) {
+		try {
+			const output = execFileSync(
+				"reg",
+				["query", root, "/v", name],
+				{
+					encoding: "utf8",
+					stdio: ["ignore", "pipe", "ignore"],
+					windowsHide: true,
+				},
+			);
+			const line = output
+				.split(/\r?\n/)
+				.map((entry) => entry.trim())
+				.find((entry) => entry.toLowerCase().startsWith(name.toLowerCase()));
+			if (!line) continue;
+			const match = line.match(
+				new RegExp(`^${name}\\s+REG_\\w+\\s+(.+)$`, "i"),
+			);
+			if (match && match[1].trim()) return match[1].trim();
+		} catch {}
+	}
+	return undefined;
+}
+
+function envValue(name) {
+	if (process.env[name] !== undefined && process.env[name] !== "") {
+		return process.env[name];
+	}
+	const registryValue = readWindowsRegistryEnv(name);
+	if (registryValue !== undefined && registryValue !== "") {
+		return registryValue;
+	}
+	return undefined;
+}
+
+function copyEnvValueIfPresent(target, name) {
+	const value = envValue(name);
+	if (value !== undefined) target[name] = value;
 }
 
 function buildDeepSeekEnv() {
@@ -144,7 +192,7 @@ function buildDeepSeekEnv() {
 		"DEEPSEEK_MCP_CONFIG",
 		"DEEPSEEK_ALLOWED_MCP_SERVERS",
 	]) {
-		copyEnvIfPresent(env, name);
+		copyEnvValueIfPresent(env, name);
 	}
 	return env;
 }

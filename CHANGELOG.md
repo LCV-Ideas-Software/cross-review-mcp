@@ -17,6 +17,25 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.6.4] — 2026-04-30
+
+### Corrigido
+
+- O caminho embutido do DeepSeek agora resolve `DEEPSEEK_API_KEY` com fallback do registry do Windows (`HKCU\Environment` e `HKLM\...\Environment`) quando o host MCP ainda está com ambiente de processo stale depois de uma mudança recente nas env vars. A correção vale tanto para o subprocesso criado por `buildDeepSeekEnv()` quanto para a própria `cross-review-v1-deepseek-cli`.
+- `collectSessionExclusions()` e os snapshots de convergência deixaram de manter um peer em `excluded_probe` quando esse peer respondeu de fato na rodada. Isso elimina o quadro enganoso em que o probe inicial marcava Gemini como offline, mas a rodada seguinte trazia resposta válida e ainda assim o snapshot persistia com exclusão de probe.
+
+### Alterado
+
+- As instruções públicas de registro do MCP agora mostram explicitamente `DEEPSEEK_API_KEY` nos exemplos de configuração do Codex e do Gemini Code Assist, e documentam o fallback de registry como contingência de runtime no Windows, não como substituto da passagem explícita da variável pelo host.
+
+### Validação
+
+- `npm test` — 259 passos GREEN, incluindo duas novas coberturas:
+  - anti-drift do fallback Windows de `DEEPSEEK_API_KEY` no peer spawn e na embedded CLI;
+  - reconciliação `probe -> runtime` para não manter `excluded_probe` quando o peer respondeu na rodada.
+
+---
+
 ## [1.6.3] — 2026-04-30
 
 ### Corrigido

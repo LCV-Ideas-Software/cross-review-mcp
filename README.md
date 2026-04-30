@@ -14,12 +14,13 @@
 
 **Install.** `npm install -g @lcv-ideas-software/cross-review-v1` (npmjs.com) or `npm install -g @lcv-ideas-software/cross-review-v1 --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.6.3** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.6.4** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
+| **`v1.6.4`** | v4.14 | **DeepSeek env fallback + probe/runtime reconciliation.** The embedded DeepSeek path now falls back to the Windows User/Machine environment registry when the current process env is stale, and convergence telemetry no longer keeps a peer in `excluded_probe` after that peer actually responded in the round. |
 | **`v1.6.3`** | v4.14 | **Review focus shielding.** The front-loaded `review_focus` block is now wrapped in `<review_focus>...</review_focus>` tags, escaped as scope data, and explicitly marked as non-authoritative content that cannot override protocol, schema, safety, or task directives. |
 | **`v1.6.2`** | v4.14 | **README organizational standardization.** Harmonized the public README opening with the shared organizational pattern: larger centered branding, normalized section capitalization, and a version-history table layout aligned with the rest of the portfolio. |
 | **`v1.6.1`** | v4.14 | **Review focus tightening.** The existing provider-neutral `review_focus` block is now explicitly treated as a front-loaded scope anchor and tells reviewers to label unrelated findings as `OUT OF SCOPE` instead of turning them into blockers, unless the issue is a critical cross-cutting blocker that invalidates the result. |
@@ -171,6 +172,7 @@ Add to the project `.codex/config.toml` when possible:
 command = "/absolute/path/to/cross-review-v1.cmd"
 args = []
 tool_timeout_sec = 1800
+env_vars = ["DEEPSEEK_API_KEY"]
 ```
 
 Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdio`. The Codex CLI declares a `clientInfo.name` containing `codex`, so the server resolves the caller as `codex` automatically.
@@ -184,7 +186,10 @@ Add to the project `.gemini/settings.json` under `mcpServers`:
   "mcpServers": {
     "cross-review-v1": {
       "command": "/absolute/path/to/cross-review-v1.cmd",
-      "args": []
+      "args": [],
+      "env": {
+        "DEEPSEEK_API_KEY": "$DEEPSEEK_API_KEY"
+      }
     }
   }
 }
@@ -207,6 +212,8 @@ If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one o
 The file may contain a larger stdio-only MCP catalog for manual DeepSeek CLI runs. Use `--allowed-mcp-server-names <name>` repeatedly, or `DEEPSEEK_ALLOWED_MCP_SERVERS=name1,name2`, to expose only the servers needed for that invocation. The default allowlist is the safe reasoning trio above; use `--allow-all-mcp-servers` only for manual diagnostic runs where recursion and tool exposure are intentional. The embedded CLI supports environment placeholders in the common forms `${env:NAME}`, `${NAME}`, and `$NAME`, and it intentionally does not read or write Gemini profile/config directories.
 
 The embedded catalog deliberately excludes `cross-review-v1` and `cross-review-v2`, even in the manual `--allow-all-mcp-servers` path. DeepSeek child processes also receive a filtered environment containing only OS launch essentials plus `DEEPSEEK_*` settings; unrelated provider keys are not forwarded.
+
+`DEEPSEEK_API_KEY` must be available to the `cross-review-v1` host process. On Windows, the embedded DeepSeek path also falls back to the User/Machine environment values from the registry when the current process environment is stale after a recent env-var change, but host configs should still pass the variable explicitly whenever the host supports it.
 
 DeepSeek tool calls are bounded by `DEEPSEEK_MAX_TOOL_TURNS` (default `8`) or `--max-tool-turns <n>` for manual CLI runs. If the model still asks for tools after the cap, the CLI fails the round loudly with a max-tool-turns error instead of looping forever or silently truncating the review.
 

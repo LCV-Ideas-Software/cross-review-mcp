@@ -1455,6 +1455,8 @@ async function runAll() {
 	all.push(...s88.results);
 	const s89 = await driveV140ServerInfoPublisherSponsorsUnit();
 	all.push(...s89.results);
+	const s90 = await driveV164ProbeRuntimeReconciliationUnit();
+	all.push(...s90.results);
 	return all;
 }
 
@@ -5422,6 +5424,25 @@ async function driveDeepSeekCliShapeUnit() {
 		ok: true,
 	});
 
+	assert(
+		/readWindowsRegistryEnv\s*\(/.test(cliSrc) &&
+			/envValue\s*\(\s*"DEEPSEEK_API_KEY"\s*\)/.test(cliSrc),
+		"embedded DeepSeek CLI falls back to Windows registry env when the current process env is stale",
+	);
+	assert(
+		/readWindowsRegistryEnv\s*\(/.test(
+			fs.readFileSync(
+				path.resolve(__dirname, "..", "src/lib/peer-spawn.js"),
+				"utf8",
+			),
+		),
+		"DeepSeek peer spawn path includes Windows registry env fallback",
+	);
+	results.push({
+		step: "v1.6.4: DeepSeek env resolution includes Windows registry fallback in both peer spawn and embedded CLI paths",
+		ok: true,
+	});
+
 	const deepseekCli = require("../src/deepseek-cli.js");
 	const savedDeepSeekAllowed = process.env.DEEPSEEK_ALLOWED_MCP_SERVERS;
 	try {
@@ -5512,6 +5533,38 @@ async function driveDeepSeekCliShapeUnit() {
 		} catch {}
 	}
 
+	return { results };
+}
+
+async function driveV164ProbeRuntimeReconciliationUnit() {
+	const results = [];
+	const store = require("../src/lib/session-store.js");
+	const meta = {
+		capability_snapshot: {
+			peers: [
+				{ agent: "gemini", tier: "offline" },
+				{ agent: "deepseek", tier: "offline" },
+			],
+		},
+		failed_attempts: [{ agent: "deepseek", round: 2 }],
+	};
+	const round = {
+		peers: [{ agent: "claude" }, { agent: "gemini" }],
+	};
+	const exclusions = store.collectSessionExclusions(meta, 2, round);
+	assert(
+		Array.isArray(exclusions.excluded_probe) &&
+			exclusions.excluded_probe.length === 0,
+		"probe-offline peer that actually responded in the round must not remain in excluded_probe",
+	);
+	assert(
+		JSON.stringify(exclusions.excluded_runtime) === JSON.stringify(["deepseek"]),
+		"runtime rejection remains in excluded_runtime for the affected round",
+	);
+	results.push({
+		step: "v1.6.4: convergence exclusions reconcile probe-offline peers with real round responders",
+		ok: true,
+	});
 	return { results };
 }
 

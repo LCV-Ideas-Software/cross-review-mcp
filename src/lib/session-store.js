@@ -916,20 +916,29 @@ function classifyBlockingLegacy(round) {
 	return "status_missing";
 }
 
-function collectSessionExclusions(meta, roundIndex) {
-	const excludedProbe = (meta.capability_snapshot?.peers || [])
-		.filter((p) => p.tier === "offline" || p.tier === "excluded")
-		.map((p) => p.agent);
+function collectSessionExclusions(meta, roundIndex, round = null) {
+	const respondedPeers =
+		round && Array.isArray(round.peers)
+			? new Set(round.peers.map((peer) => peer.agent).filter(Boolean))
+			: new Set();
 	const excludedRuntime = (meta.failed_attempts || [])
 		.filter((fa) => Number(fa.round) === Number(roundIndex))
 		.map((fa) => fa.agent);
+	const runtimeSeen = new Set([
+		...respondedPeers,
+		...excludedRuntime.filter(Boolean),
+	]);
+	const excludedProbe = (meta.capability_snapshot?.peers || [])
+		.filter((p) => p.tier === "offline" || p.tier === "excluded")
+		.filter((p) => !runtimeSeen.has(p.agent))
+		.map((p) => p.agent);
 	return { excluded_probe: excludedProbe, excluded_runtime: excludedRuntime };
 }
 
 function appendRound(sessionId, round) {
 	const meta = readMeta(sessionId);
 	const roundIndex = meta.rounds.length + 1;
-	const context = collectSessionExclusions(meta, roundIndex);
+	const context = collectSessionExclusions(meta, roundIndex, round);
 	round.convergence_snapshot = computeConvergenceSnapshot(
 		roundIndex,
 		round,
@@ -1270,7 +1279,7 @@ function checkConvergence(sessionId) {
 		computeConvergenceSnapshot(
 			lastIndex,
 			last,
-			collectSessionExclusions(meta, lastIndex),
+			collectSessionExclusions(meta, lastIndex, last),
 		);
 
 	const reason = buildConvergenceReason(snapshot, last);
