@@ -21,6 +21,12 @@ jobs:
   gate:
     name: Pre-publish gate (smoke + drift)
     runs-on: ubuntu-latest
+    outputs:
+      name: ${{ steps.meta.outputs.name }}
+      version: ${{ steps.meta.outputs.version }}
+      tag: ${{ steps.meta.outputs.tag }}
+      display_tag: ${{ steps.meta.outputs.display_tag }}
+      dist_tag: ${{ steps.meta.outputs.dist_tag }}
     steps:
       - name: Validate publish ref
         env:
@@ -52,6 +58,34 @@ jobs:
 
       - name: Model drift audit
         run: npm run check-models
+
+      - name: Resolve release metadata
+        id: meta
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          DISPLAY_TAG="$(echo "${VERSION%%-*}" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')"
+          TAG="${{ github.event.inputs.tag }}"
+          if [ -z "$TAG" ] && [[ "$GITHUB_REF" == refs/tags/* ]]; then
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          if [ -z "$TAG" ]; then
+            TAG="$DISPLAY_TAG"
+          fi
+          if [[ "$VERSION" == *-* ]]; then
+            DIST_TAG="${VERSION#*-}"
+            DIST_TAG="${DIST_TAG%%.*}"
+          else
+            DIST_TAG="latest"
+          fi
+          echo "name=$NAME" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "display_tag=$DISPLAY_TAG" >> "$GITHUB_OUTPUT"
+          echo "dist_tag=$DIST_TAG" >> "$GITHUB_OUTPUT"
+          echo "Publish metadata: $NAME@$VERSION -> $TAG ($DIST_TAG)"
 
   publish-npmjs:
     name: Publish to npmjs.com
@@ -152,19 +186,17 @@ jobs:
       - name: Check npmjs.com package version
         id: npmjs-version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          NAME=$(node -p "require('./package.json').name")
-          if npm view "$NAME@$VERSION" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
+          if npm view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version --registry=https://registry.npmjs.org >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION already exists on npmjs.com; skipping publish."
+            echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} already exists on npmjs.com; skipping publish."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION is not published on npmjs.com yet."
+            echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} is not published on npmjs.com yet."
           fi
 
       - name: Publish (public, with provenance)
         if: steps.npmjs-version.outputs.exists != 'true'
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
 
   publish-gh-packages:
     name: Publish to GitHub Packages
@@ -230,21 +262,19 @@ jobs:
       - name: Check GitHub Packages version
         id: gh-packages-version
         run: |
-          VERSION=$(node -p "require('./package.json').version")
-          NAME=$(node -p "require('./package.json').name")
-          if npm view "$NAME@$VERSION" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
+          if npm view "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }}" version --registry=https://npm.pkg.github.com >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION already exists on GitHub Packages; skipping publish."
+            echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} already exists on GitHub Packages; skipping publish."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "$NAME@$VERSION is not published on GitHub Packages yet."
+            echo "${{ needs.gate.outputs.name }}@${{ needs.gate.outputs.version }} is not published on GitHub Packages yet."
           fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Publish (public, with provenance)
         if: steps.gh-packages-version.outputs.exists != 'true'
-        run: npm publish --access public --provenance
+        run: npm publish --access public --provenance --tag "${{ needs.gate.outputs.dist_tag }}"
         env:
           NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
@@ -255,7 +285,7 @@ jobs:
     # it as the body. Idempotent: if a release already exists for the tag,
     # the step exits cleanly without recreating.
     name: Create GitHub Release
-    needs: [publish-npmjs, publish-gh-packages]
+    needs: [gate, publish-npmjs, publish-gh-packages]
     runs-on: ubuntu-latest
     permissions:
       contents: write  # required to create releases
@@ -266,20 +296,10 @@ jobs:
           ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0
 
-      - name: Resolve tag
-        id: tag
-        run: |
-          TAG="${{ github.event.inputs.tag }}"
-          if [ -z "$TAG" ]; then
-            TAG="${GITHUB_REF#refs/tags/}"
-          fi
-          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
-          echo "Resolved tag: $TAG"
-
       - name: Extract release notes from CHANGELOG.md
         id: notes
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.gate.outputs.tag }}
         run: |
           # Strip leading 'v' and normalize zero-padded universal tags
           # (v01.05.00) back to semver headers used by CHANGELOG.md ([1.5.0]).
@@ -310,7 +330,7 @@ jobs:
 
       - name: Create or update release (idempotent)
         env:
-          TAG: ${{ steps.tag.outputs.tag }}
+          TAG: ${{ needs.gate.outputs.tag }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           NOTES: ${{ steps.notes.outputs.notes }}
         run: |
