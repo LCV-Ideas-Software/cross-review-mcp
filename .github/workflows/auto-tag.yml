@@ -10,9 +10,10 @@ name: Auto-tag on version bump
 # duplicate release when the repo's history has tags from before the
 # universal convention was adopted.
 #
-# Triggered by push to main + workflow_dispatch. The tag-push event fires
-# the existing publish.yml which handles npm publish, GitHub Packages
-# publish, and GitHub Release creation.
+# Triggered by push to main + workflow_dispatch. GitHub does not start a
+# second workflow from a tag push created with GITHUB_TOKEN, so this workflow
+# explicitly dispatches publish.yml on the freshly-created tag ref. The
+# npm-production environment allows v* tag refs, not main.
 
 on:
   push:
@@ -20,6 +21,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
 
 concurrency:
@@ -65,12 +67,15 @@ jobs:
           set -euo pipefail
           if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "publish_tag=${TAG}" >> "$GITHUB_OUTPUT"
             echo "Tag ${TAG} already exists; skipping."
           elif git ls-remote --exit-code --tags origin "refs/tags/${LEGACY_TAG}" >/dev/null 2>&1; then
             echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "publish_tag=${LEGACY_TAG}" >> "$GITHUB_OUTPUT"
             echo "Legacy tag ${LEGACY_TAG} already exists for this version; skipping (transition guard)."
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "publish_tag=${TAG}" >> "$GITHUB_OUTPUT"
             echo "Neither ${TAG} nor ${LEGACY_TAG} exists; will create universal-format tag ${TAG}."
           fi
 
@@ -84,4 +89,28 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git tag -a "${TAG}" -m "${TAG}: auto-tagged from package.json on push to main"
           git push origin "${TAG}"
-          echo "Created and pushed ${TAG}; publish.yml will fire on the tag-push event."
+          echo "Created and pushed ${TAG}; publish.yml will be dispatched on the tag ref."
+
+      - name: Dispatch publish workflow on tag ref
+        if: steps.check.outputs.exists == 'false' || github.event_name == 'workflow_dispatch'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.check.outputs.publish_tag }}
+        run: |
+          set -euo pipefail
+          # Use the tag ref so the npm-production environment branch policy
+          # (v* tags only) accepts the trusted-publishing deployment.
+          for attempt in {1..10}; do
+            if git ls-remote --exit-code --tags origin "refs/tags/${TAG}" >/dev/null 2>&1; then
+              echo "Tag ${TAG} is visible on origin."
+              break
+            fi
+            if [ "$attempt" -eq 10 ]; then
+              echo "::error::Tag ${TAG} was not visible on origin after push; refusing to dispatch publish.yml."
+              exit 1
+            fi
+            echo "Waiting for tag ${TAG} to become visible on origin (${attempt}/10)."
+            sleep 2
+          done
+          gh workflow run publish.yml --ref "${TAG}" -f tag="${TAG}"
+          echo "Dispatched publish.yml for ${TAG}."

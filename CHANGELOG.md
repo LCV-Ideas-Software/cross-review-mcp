@@ -21,6 +21,9 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
   - environment GitHub `npm-production` criado com política de deployment restrita a tags `v*`;
   - `publish-npmjs` agora declara `environment: npm-production`;
   - publish npmjs.com deixou de exigir `NPM_TOKEN` permanente, preservando provenance.
+- Automação de release reforçada para não depender de encadeamento implícito por `GITHUB_TOKEN`:
+  - `auto-tag.yml` passa a declarar `actions: write`, cria/verifica a tag universal e despacha explicitamente `publish.yml` na ref da tag;
+  - `publish.yml` passa a validar a ref de publicação como tag versionada antes do checkout, usa Node.js 24 / npm 11+ nos jobs de publicação e falha cedo se a toolchain não suportar Trusted Publishing.
 
 ### Removido
 
