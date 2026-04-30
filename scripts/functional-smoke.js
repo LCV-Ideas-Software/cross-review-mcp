@@ -4594,9 +4594,20 @@ async function driveAskPeersNAry() {
 		proc.stdin.write(notifLine("notifications/initialized"));
 		const init = await call(2, "tools/call", {
 			name: "session_init",
-			arguments: { task: "ask_peers N-ary smoke", artifacts: [] },
+			arguments: {
+				task: "ask_peers N-ary smoke",
+				review_focus: "services/billing",
+				artifacts: [],
+			},
 		});
 		sessionId = JSON.parse(init.result.content[0].text).session_id;
+		const meta = JSON.parse(
+			fs.readFileSync(path.join(STATE_DIR, sessionId, "meta.json"), "utf8"),
+		);
+		assert(
+			meta.review_focus === "services/billing",
+			"session_init persists provider-neutral review_focus",
+		);
 		const askResp = await call(3, "tools/call", {
 			name: "ask_peers",
 			arguments: {
@@ -4606,6 +4617,47 @@ async function driveAskPeersNAry() {
 			},
 		});
 		const askPayload = JSON.parse(askResp.result.content[0].text);
+		const promptPath = path.join(STATE_DIR, sessionId, "round-01-prompt.md");
+		const persistedPrompt = fs.readFileSync(promptPath, "utf8");
+		assert(
+			persistedPrompt.includes("## Review Focus") &&
+				persistedPrompt.includes("services/billing"),
+			"ask_peers prepends Review Focus block from session metadata",
+		);
+		assert(
+			!/\/focus\s+services\/billing/.test(persistedPrompt),
+			"ask_peers does not inject Claude Code /focus slash command",
+		);
+		const focusSecret = ["sk", "test", "B".repeat(24)].join("-");
+		const longFocus = `/focus ${focusSecret} ${"x".repeat(2200)}`;
+		await call(4, "tools/call", {
+			name: "ask_peers",
+			arguments: {
+				session_id: sessionId,
+				prompt: "quadrilateral stub probe with per-round focus override",
+				review_focus: longFocus,
+				caller_status: "READY",
+			},
+		});
+		const overridePromptPath = path.join(STATE_DIR, sessionId, "round-02-prompt.md");
+		const overridePrompt = fs.readFileSync(overridePromptPath, "utf8");
+		assert(
+			overridePrompt.includes("## Review Focus") &&
+				overridePrompt.includes("[REDACTED]"),
+			"ask_peers redacts per-round Review Focus before prompt persistence",
+		);
+		assert(
+			!overridePrompt.includes(focusSecret),
+			"ask_peers never persists raw secrets from Review Focus",
+		);
+		assert(
+			!/\/focus\s+/.test(overridePrompt),
+			"ask_peers strips accidental Claude Code /focus prefix from Review Focus",
+		);
+		assert(
+			!overridePrompt.includes("x".repeat(2100)),
+			"ask_peers bounds oversized Review Focus before prompt persistence",
+		);
 		assert(Array.isArray(askPayload.peers), "ask_peers: peers array returned");
 		assert(
 			askPayload.peers.length === 3,

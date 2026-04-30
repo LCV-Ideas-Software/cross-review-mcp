@@ -587,6 +587,7 @@ function initSession({
 	peers,
 	capabilitySnapshot,
 	callerResolution,
+	reviewFocus,
 }) {
 	ensureStateDir();
 	const id = crypto.randomUUID();
@@ -605,6 +606,7 @@ function initSession({
 		session_id: id,
 		spec_version: SESSION_SPEC_VERSION,
 		task: String(task || ""),
+		...(reviewFocus ? { review_focus: String(reviewFocus) } : {}),
 		artifacts: Array.isArray(artifacts) ? artifacts.map(String) : [],
 		caller: callerAgent,
 		peers: peersArray,
@@ -646,6 +648,9 @@ function initSession({
 		path.join(sessionDir(id), "meta.json"),
 		JSON.stringify(meta, null, 2),
 	);
+	if (reviewFocus) {
+		atomicWriteFile(path.join(sessionDir(id), "review-focus.md"), String(reviewFocus));
+	}
 	return id;
 }
 

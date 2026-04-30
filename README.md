@@ -14,12 +14,13 @@
 
 **Install.** `npm install -g @lcv-ideas-software/cross-review-v1` (npmjs.com) or `npm install -g @lcv-ideas-software/cross-review-v1 --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.5.1** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.6.0** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
+| **`v1.6.0`** | v4.14 | **Provider-neutral review focus.** `session_init`, `ask_peer` and `ask_peers` accept optional `review_focus` so callers can anchor reviewers on a specific code area or decision surface without sending provider-specific slash commands. The value is persisted as `meta.review_focus`, bounded/redacted before prompt injection, and prepended as a plain `Review Focus` Markdown block for all CLI peers. This is a minor release because it adds optional public MCP tool parameters without breaking existing callers. |
 | **`v1.5.1`** | v4.14 | **Release automation and CodeQL hardening.** `auto-tag.yml` now dispatches `publish.yml` explicitly after creating a tag because tag pushes made with `GITHUB_TOKEN` do not trigger a second workflow. `publish.yml` validates version-tag refs before checkout and uses Node.js 24 / npm 11+ for Trusted Publishing. The v1.5.0 CodeQL `js/insecure-temporary-file` alert in the smoke harness was closed by moving the DeepSeek MCP fixture config into a unique `fs.mkdtempSync(...)` directory. |
 | **`v1.5.0`** | v4.14 (§6.26 NEW — embedded DeepSeek CLI + quadrilateral peer set) | **DeepSeek joins as a fourth peer while v1 remains CLI-only.** The server still spawns peers as subprocesses and sends prompts through stdin; DeepSeek is invoked through `cross-review-v1`'s own embedded CLI (`cross-review-v1-deepseek-cli`) instead of any Gemini-derived third-party CLI. The embedded CLI calls DeepSeek's OpenAI-compatible API with `deepseek-v4-pro`, `thinking=enabled`, `reasoning_effort=max`, supports stdio MCP servers through `--mcp-config` / `--allowed-mcp-server-names`, and deliberately contains no references to other provider profile directories. `VALID_AGENTS` remains `claude|codex|gemini` for caller resolution; `VALID_PEERS` is now `claude|codex|gemini|deepseek`, so `ask_peers` runs quadrilateral consensus when one of the three caller agents opens a session. |
 | **`v1.4.1`** | v4.14 | **Public rename to cross-review-v1.** Package, bin, repository, Sponsors/Page URL, `server_info` links, active documentation, and publishing workflows now use `cross-review-v1`. No protocol behavior changed. |
@@ -216,7 +217,7 @@ After registering, reload each host (VS Code extensions: Command Palette → "De
 
 A high-level session from the caller's perspective:
 
-1. **Initialize.** Call `session_init(task, artifacts[])`. The server runs a parallel capability probe (target 20-25s, hard ceiling 30s) and persists `meta.capability_snapshot` with per-agent tier (`ok` | `offline`).
+1. **Initialize.** Call `session_init(task, artifacts[], review_focus?)`. The server runs a parallel capability probe (target 20-25s, hard ceiling 30s) and persists `meta.capability_snapshot` with per-agent tier (`ok` | `offline`).
 2. **Round 1: caller drafts.** Caller forms its parecer (opinion/analysis). Caller then calls `ask_peers(session_id, prompt, caller_status: 'NOT_READY')` sending the parecer to all peers in parallel. The server attaches a **tail directive** to the prompt requiring the peer to close with two structured blocks:
    - `<cross_review_peer_model>{"model_id":"..."}</cross_review_peer_model>`
    - `<cross_review_status>{"status":"READY|NOT_READY|NEEDS_EVIDENCE", ...}</cross_review_status>`
@@ -225,6 +226,12 @@ A high-level session from the caller's perspective:
 4. **Iterate.** If any peer is `NOT_READY` or `NEEDS_EVIDENCE`, address their findings (incorporate valid ones, refute invalid with evidence, run commands requested via `caller_requests[]`) and repeat step 2.
 5. **Converge.** When caller is satisfied AND all peers declared `READY`, call `ask_peers` with `caller_status: 'READY'`. Call `session_check_convergence(session_id)` to confirm `converged === true`. Finalize with `session_finalize(session_id, outcome: 'converged')`.
 6. **Safety cap.** Abort after a reasonable max-rounds (commonly 10) with `session_finalize(session_id, outcome: 'max-rounds')`.
+
+### Review focus
+
+`review_focus` is an optional, provider-neutral scope anchor. Use it when a large codebase or broad task needs reviewers to prioritize a specific area, such as `services/billing`, `src/core/session-store.ts`, or `release automation`.
+
+The value can be supplied at `session_init` and is then stored as `meta.review_focus`, or supplied per call to `ask_peer` / `ask_peers` to override the session-level focus for that round. The server injects it as a plain Markdown `Review Focus` block before the normal prompt. It deliberately does **not** send Claude Code's `/focus` slash command; official Claude Code docs describe `/focus` as a focus-mode UI toggle, while Cross Review needs the same scope anchor to work across Claude, Codex, Gemini and DeepSeek. If an operator accidentally pastes a leading `/focus`, the prefix is stripped during normalization and only the plain scope text is forwarded.
 
 ### Anti-hallucination discipline (spec v4.10 §6.14)
 
@@ -315,12 +322,12 @@ cross-review-v1/
 
 | Tool | Since | Purpose |
 |---|---|---|
-| `session_init(task, artifacts)` | v0.3.0-alpha | Create session dir; run capability probe; persist `capability_snapshot`. |
+| `session_init(task, artifacts, review_focus?)` | v0.3.0-alpha | Create session dir; run capability probe; persist `capability_snapshot` and optional `meta.review_focus`. |
 | `session_read(session_id)` | v0.3.0-alpha | Return full `meta.json` (rounds, snapshot, escalations, failed_attempts). |
 | `session_check_convergence(session_id)` | v0.3.0-alpha | Read the persisted `convergence_snapshot` (or compute for legacy rounds). |
 | `session_finalize(session_id, outcome)` | v0.3.0-alpha | Seal with `converged` / `aborted` / `max-rounds`. |
-| `ask_peer(session_id, prompt, caller_status)` | v0.3.0-alpha | Bilateral `claude<->codex` only. |
-| `ask_peers(session_id, prompt, caller_status)` | v0.5.0-alpha | N-ary parallel spawn; canonical for triangular. |
+| `ask_peer(session_id, prompt, caller_status, review_focus?)` | v0.3.0-alpha | Bilateral `claude<->codex` only; optional per-round focus override. |
+| `ask_peers(session_id, prompt, caller_status, review_focus?)` | v0.5.0-alpha | N-ary parallel spawn; canonical for triangular/quadrilateral sessions; optional per-round focus override. |
 | `escalate_to_operator(session_id, question, context)` | v0.7.0-alpha | Record anti-hallucination escalation under `meta.escalations[]`. |
 
 ---

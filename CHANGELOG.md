@@ -17,6 +17,27 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.6.0] — 2026-04-30
+
+### Adicionado
+
+- `review_focus` opcional em `session_init`, `ask_peer` e `ask_peers`:
+  - `session_init` persiste o valor em `meta.review_focus` e em `review-focus.md`;
+  - `ask_peer` e `ask_peers` aceitam override por rodada;
+  - o prompt enviado aos peers recebe um bloco Markdown `Review Focus` antes do conteúdo normal, com limite de tamanho, redaction de segredos e remoção de prefixo acidental `/focus`.
+
+### Alterado
+
+- A recomendação comunitária sobre `/focus` foi incorporada como mecanismo neutro entre provedores, não como slash command literal. A documentação deixa explícito que o `/focus` oficial do Claude Code é um toggle de modo/foco da interface, enquanto o Cross Review precisa de um anchor de escopo que funcione também para Codex, Gemini e DeepSeek.
+- Versionamento promovido para minor porque `review_focus` adiciona parâmetros públicos opcionais à superfície MCP preservada do v1, sem quebrar chamadas existentes.
+
+### Validação
+
+- `npm test` — inclui persistência de `meta.review_focus`, injeção sem `/focus`, remoção de prefixo acidental `/focus`, redaction de segredo sintético e limite de tamanho antes de persistir prompt.
+- `npm run check-models`
+
+---
+
 ## [1.5.1] — 2026-04-30
 
 **Release automation and CodeQL hardening.** This patch keeps the v1.5.0 runtime topology intact and fixes the repository release path so future version bumps publish automatically through GitHub Actions Trusted Publishing. It also closes the CodeQL `js/insecure-temporary-file` alert opened against the v1.5.0 smoke test.

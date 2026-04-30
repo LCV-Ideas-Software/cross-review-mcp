@@ -61,7 +61,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.5.1";
+const VERSION = "1.6.0";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -300,6 +300,37 @@ function detectPromptLanguageDrift(text) {
 	};
 }
 
+const REVIEW_FOCUS_MAX_CHARS = 2000;
+
+function normalizeReviewFocus(value) {
+	if (value == null) return null;
+	const cleaned = store
+		.redactSensitive(String(value))
+		.replace(/\r\n/g, "\n")
+		.replace(/(^|\n)\s*\/focus\b\s*/gi, "$1")
+		.trim();
+	if (!cleaned) return null;
+	if (cleaned.length <= REVIEW_FOCUS_MAX_CHARS) return cleaned;
+	return `${cleaned.slice(0, REVIEW_FOCUS_MAX_CHARS - 3)}...`;
+}
+
+function resolveReviewFocus(args, meta) {
+	return normalizeReviewFocus(args?.review_focus ?? meta?.review_focus);
+}
+
+function prependReviewFocus(prompt, reviewFocus) {
+	const normalized = normalizeReviewFocus(reviewFocus);
+	if (!normalized) return prompt;
+	return [
+		"## Review Focus",
+		normalized,
+		"",
+		"Treat this as the primary review anchor. Prioritize this area, but still report critical cross-cutting blockers if they invalidate the result.",
+		"",
+		prompt,
+	].join("\n");
+}
+
 // Append the tail directives the peer must honor: both structured
 // blocks, peer-model then status, with status as the last non-empty
 // token. Idempotent-ish: if the caller already embedded the directive,
@@ -529,6 +560,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 						description:
 							"Explicit caller identity (spec v4.14 §6.20, v1.2.12 simplified). Overrides clientInfo-derived resolution. Use this when the calling agent does not match what the MCP server's clientInfo would report, or to be explicit about identity in mixed-host setups. The legacy env-var fallback was removed in v1.2.12; if neither this arg nor a recognizable clientInfo.name is provided, session_init throws.",
 					},
+					review_focus: {
+						type: "string",
+						description:
+							"Optional provider-neutral review scope anchor, persisted as meta.review_focus and prepended to future ask_peer/ask_peers prompts as a 'Review Focus' block. This is not Claude Code's /focus UI command; do not pass slash commands here.",
+						maxLength: REVIEW_FOCUS_MAX_CHARS,
+					},
 				},
 				required: ["task"],
 			},
@@ -684,6 +721,12 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 						description:
 							"Full prompt for the peer. The server automatically appends the tail directive so the peer emits both the peer-model and status blocks in the correct order.",
 					},
+					review_focus: {
+						type: "string",
+						description:
+							"Optional per-round provider-neutral review scope anchor. Overrides meta.review_focus for this prompt only and is prepended as a 'Review Focus' block.",
+						maxLength: REVIEW_FOCUS_MAX_CHARS,
+					},
 					caller_status: {
 						type: "string",
 						enum: ["READY", "NOT_READY"],
@@ -710,6 +753,12 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 						type: "string",
 						description:
 							"Full prompt for all peers. Same tail-directive injection as ask_peer.",
+					},
+					review_focus: {
+						type: "string",
+						description:
+							"Optional per-round provider-neutral review scope anchor. Overrides meta.review_focus for this prompt only and is prepended as a 'Review Focus' block for every selected peer.",
+						maxLength: REVIEW_FOCUS_MAX_CHARS,
 					},
 					caller_status: {
 						type: "string",
@@ -818,6 +867,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 				const resolution = resolveCallerForSession(args.caller, clientInfo);
 				const callerForSession = resolution.caller;
 				const peersForSession = peersForCaller(callerForSession);
+				const reviewFocus = normalizeReviewFocus(args.review_focus);
 				// Spec v4.14 §6.10 enforcement (advisory): detect non-en-US in
 				// task field. Warn-only — does not block session creation.
 				const taskLanguageWarning = detectPromptLanguageDrift(args.task);
@@ -839,6 +889,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						source: resolution.source,
 						client_info_name: resolution.client_info_name,
 					},
+					reviewFocus,
 				});
 				log("session_init created", {
 					session_id: id,
@@ -847,6 +898,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					client_info_name: resolution.client_info_name,
 					probe_duration_ms: Date.now() - t0,
 					probe_skipped: capabilitySnapshot.skipped === true,
+					review_focus: Boolean(reviewFocus),
 				});
 				// v1.2.15 / spec §6.22 Item D — surface dangling sessions
 				// belonging to the same resolved caller. Advisory only:
@@ -862,6 +914,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						client_info_name: resolution.client_info_name,
 					},
 					peers: peersForSession,
+					...(reviewFocus ? { review_focus: reviewFocus } : {}),
 					capability_snapshot: capabilitySnapshot,
 				};
 				if (taskLanguageWarning) {
@@ -1200,8 +1253,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						);
 					}
 					const roundNum = (meta.rounds?.length || 0) + 1;
+					const reviewFocus = resolveReviewFocus(args, meta);
+					const promptWithFocus = prependReviewFocus(rawPrompt, reviewFocus);
 					// Spec v4.14 §6.10 enforcement (advisory).
-					const promptLanguageWarning = detectPromptLanguageDrift(rawPrompt);
+					const promptLanguageWarning =
+						detectPromptLanguageDrift(`${reviewFocus || ""}\n${rawPrompt}`);
 					if (promptLanguageWarning) {
 						log("ask_peer: prompt language drift detected", {
 							round: roundNum,
@@ -1218,7 +1274,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					// own prior verdict instead of returning NEEDS_EVIDENCE.
 					const concurrenceRequested = args.concurrence === true;
 					let priorArtifact = null;
-					let promptWithArtifact = rawPrompt;
+					let promptWithArtifact = promptWithFocus;
 					if (concurrenceRequested) {
 						priorArtifact = store.findLastReadyPeerArtifact(
 							sessionId,
@@ -1226,7 +1282,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						);
 						if (priorArtifact) {
 							promptWithArtifact =
-								store.formatPriorArtifactForPrompt(priorArtifact) + rawPrompt;
+								store.formatPriorArtifactForPrompt(priorArtifact) +
+								promptWithFocus;
 							log("ask_peer: concurrence artifact injected", {
 								session: sessionId,
 								round: roundNum,
@@ -1250,6 +1307,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						round: roundNum,
 						caller_status: callerStatus,
 						prompt_bytes: Buffer.byteLength(promptWithTail, "utf8"),
+						review_focus: Boolean(reviewFocus),
 						concurrence_artifact_injected: priorArtifact
 							? priorArtifact.peer_file
 							: null,
@@ -1470,6 +1528,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										...(promptLanguageWarning && {
 											prompt_language_warning: promptLanguageWarning,
 										}),
+										review_focus: Boolean(reviewFocus),
 										duration_ms: durationMs,
 										content: stdout,
 										stderr_tail: (stderr || "").slice(-600),
@@ -1559,8 +1618,11 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						}
 					}
 					const roundNum = (meta.rounds?.length || 0) + 1;
+					const reviewFocus = resolveReviewFocus(args, meta);
+					const promptWithFocus = prependReviewFocus(rawPrompt, reviewFocus);
 					// Spec v4.14 §6.10 enforcement (advisory).
-					const promptLanguageWarning = detectPromptLanguageDrift(rawPrompt);
+					const promptLanguageWarning =
+						detectPromptLanguageDrift(`${reviewFocus || ""}\n${rawPrompt}`);
 					if (promptLanguageWarning) {
 						log("ask_peers: prompt language drift detected", {
 							round: roundNum,
@@ -1579,7 +1641,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 					const concurrenceRequested = args.concurrence === true;
 					const concurrenceArtifactsInjected = {};
 					const perAgentPrompts = {};
-					const promptWithTail = attachPromptTailDirective(rawPrompt);
+					const promptWithTail = attachPromptTailDirective(promptWithFocus);
 					if (concurrenceRequested) {
 						for (const agent of metaPeers) {
 							const artifact = store.findLastReadyPeerArtifact(
@@ -1588,7 +1650,8 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 							);
 							if (artifact) {
 								const enriched =
-									store.formatPriorArtifactForPrompt(artifact) + rawPrompt;
+									store.formatPriorArtifactForPrompt(artifact) +
+									promptWithFocus;
 								perAgentPrompts[agent] = attachPromptTailDirective(enriched);
 								concurrenceArtifactsInjected[agent] = {
 									round: artifact.round,
@@ -1623,6 +1686,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						round: roundNum,
 						caller_status: callerStatus,
 						prompt_bytes: Buffer.byteLength(promptWithTail, "utf8"),
+						review_focus: Boolean(reviewFocus),
 						concurrence_requested: concurrenceRequested,
 						concurrence_injected_for: Object.keys(
 							concurrenceArtifactsInjected,
@@ -1897,6 +1961,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						peers_responded: roundPeers.length,
 						peers_requested: metaPeers.length,
 						converged_this_round: callerStatus === "READY" && allPeersReady,
+						review_focus: Boolean(reviewFocus),
 						duration_ms: durationMs,
 					});
 
@@ -1920,6 +1985,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										...(promptLanguageWarning && {
 											prompt_language_warning: promptLanguageWarning,
 										}),
+										review_focus: Boolean(reviewFocus),
 										duration_ms: durationMs,
 										// v1.2.18 / Finding 1+2 audit trail: per-peer
 										// record of whether concurrence injection
