@@ -15,10 +15,15 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 ### Adicionado
 - (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period.)
 
+---
+
+## [1.6.2] — 2026-04-30
+
 ### Alterado
 
 - `publish.yml` agora resolve metadados de release no job `gate` e publica com `--tag "${dist_tag}"` tanto no npmjs.com quanto no GitHub Packages, alinhando a política de provenance e dist-tags ao padrão já usado em `cross-review-v2`.
 - A página pública de apoio em `site/index.html` passou a usar o nome atual do produto, `Cross Review v1`, removendo o branding legado `Cross Review MCP`.
+- `README.md` agora segue o padrão organizacional de abertura adotado nos repositórios públicos: branding harmonizado, headings públicos normalizados e o mesmo layout de tabela histórica no topo.
 
 ---
 

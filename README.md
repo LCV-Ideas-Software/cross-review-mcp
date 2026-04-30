@@ -1,5 +1,5 @@
 <p align="center">
-  <img src=".github/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="220">
+  <img src=".github/assets/lcv-ideas-software-logo.svg" alt="LCV Ideas &amp; Software" width="520" />
 </p>
 
 # cross-review-v1
@@ -14,12 +14,13 @@
 
 **Install.** `npm install -g @lcv-ideas-software/cross-review-v1` (npmjs.com) or `npm install -g @lcv-ideas-software/cross-review-v1 --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.6.1** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.6.2** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
+| **`v1.6.2`** | v4.14 | **README organizational standardization.** Harmonized the public README opening with the shared organizational pattern: larger centered branding, normalized section capitalization, and a version-history table layout aligned with the rest of the portfolio. |
 | **`v1.6.1`** | v4.14 | **Review focus tightening.** The existing provider-neutral `review_focus` block is now explicitly treated as a front-loaded scope anchor and tells reviewers to label unrelated findings as `OUT OF SCOPE` instead of turning them into blockers, unless the issue is a critical cross-cutting blocker that invalidates the result. |
 | **`v1.6.0`** | v4.14 | **Provider-neutral review focus.** `session_init`, `ask_peer` and `ask_peers` accept optional `review_focus` so callers can anchor reviewers on a specific code area or decision surface without sending provider-specific slash commands. The value is persisted as `meta.review_focus`, bounded/redacted before prompt injection, and prepended as a plain `Review Focus` Markdown block for all CLI peers. This is a minor release because it adds optional public MCP tool parameters without breaking existing callers. |
 | **`v1.5.1`** | v4.14 | **Release automation and CodeQL hardening.** `auto-tag.yml` now dispatches `publish.yml` explicitly after creating a tag because tag pushes made with `GITHUB_TOKEN` do not trigger a second workflow. `publish.yml` validates version-tag refs before checkout and uses Node.js 24 / npm 11+ for Trusted Publishing. The v1.5.0 CodeQL `js/insecure-temporary-file` alert in the smoke harness was closed by moving the DeepSeek MCP fixture config into a unique `fs.mkdtempSync(...)` directory. |
@@ -63,7 +64,7 @@ The version history at a glance:
 
 ---
 
-## What it does
+## What It Does
 
 `cross-review-v1` is an **MCP stdio server** that orchestrates **structured review sessions** between four top-tier AI peers:
 
@@ -91,7 +92,7 @@ Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No
 
 ---
 
-## Peers and transport
+## Peers and Transport
 
 All peers are spawned via a **CLI process**. Claude, Codex, and Gemini use their vendor CLIs. DeepSeek uses the project-owned embedded `cross-review-v1-deepseek-cli`; the v1 server still treats it as a subprocess peer with stdin/stdout, preserving the CLI-only orchestration contract.
 
@@ -214,7 +215,7 @@ After registering, reload each host (VS Code extensions: Command Palette → "De
 
 ---
 
-## Running a session
+## Running a Session
 
 A high-level session from the caller's perspective:
 
@@ -228,7 +229,7 @@ A high-level session from the caller's perspective:
 5. **Converge.** When caller is satisfied AND all peers declared `READY`, call `ask_peers` with `caller_status: 'READY'`. Call `session_check_convergence(session_id)` to confirm `converged === true`. Finalize with `session_finalize(session_id, outcome: 'converged')`.
 6. **Safety cap.** Abort after a reasonable max-rounds (commonly 10) with `session_finalize(session_id, outcome: 'max-rounds')`.
 
-### Review focus
+### Review Focus
 
 `review_focus` is an optional, provider-neutral scope anchor. Use it when a large codebase or broad task needs reviewers to prioritize a specific area, such as `services/billing`, `src/core/session-store.ts`, or `release automation`.
 
@@ -236,7 +237,7 @@ The value can be supplied at `session_init` and is then stored as `meta.review_f
 
 The injected block also tells reviewers to label possible findings outside that focus as `OUT OF SCOPE` instead of counting them as blocking issues, unless the issue is a critical cross-cutting blocker that invalidates the result. This keeps broad reviews anchored without hiding genuinely fatal problems.
 
-### Anti-hallucination discipline (spec v4.10 §6.14)
+### Anti-Hallucination Discipline (spec v4.10 §6.14)
 
 When any participant lacks verified information to complete a claim:
 
@@ -252,7 +253,7 @@ Optional structured fields to self-declare epistemic state:
 
 ---
 
-## Observe the session
+## Observe the Session
 
 Session state is live on disk under `~/.cross-review/<session-id>/`:
 
@@ -264,7 +265,7 @@ Useful for debugging when a session diverges from expectations.
 
 ---
 
-## Protocol contract
+## Protocol Contract
 
 The full normative spec lives at **[`docs/workflow-spec.md`](./docs/workflow-spec.md)** (v4.11 at the time of writing; ~2200 lines; en-US per §6.10).
 
