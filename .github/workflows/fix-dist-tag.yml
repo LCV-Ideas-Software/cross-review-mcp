@@ -22,5 +22,5 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm dist-tag add @lcv-ideas-software/cross-review-mcp@${{ inputs.version }} latest
-          npm view @lcv-ideas-software/cross-review-mcp dist-tags
+          npm dist-tag add @lcv-ideas-software/cross-review-v1@${{ inputs.version }} latest
+          npm view @lcv-ideas-software/cross-review-v1 dist-tags

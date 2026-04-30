@@ -108,7 +108,7 @@ async function driveServer(extraEnv = {}) {
 			clientInfo: { name: "claude-code-smoke", version: "0.1" },
 		});
 		assert(
-			init.result?.serverInfo?.name === "cross-review-mcp",
+			init.result?.serverInfo?.name === "cross-review-v1",
 			"initialize: serverInfo.name",
 		);
 		results.push({ step: "initialize", ok: true });
@@ -2324,7 +2324,7 @@ async function driveV414PromptLanguageDetectorUnit() {
 
 	// The actual offending prompt from field-evidence 2026-04-26 (Gemini-initiated, pt-BR).
 	const ptOffender =
-		"Por favor, realize uma auditoria de segurança e robustez no código fonte do servidor cross-review-mcp. Concentre-se em identificar vulnerabilidades de injeção no spawn de processos, vazamento de sessão, falhas de sincronização na leitura do stdout/stderr, fragilidades nos regex dos parsers e falhas no modelo de concorrência.";
+		"Por favor, realize uma auditoria de segurança e robustez no código fonte do servidor cross-review-v1. Concentre-se em identificar vulnerabilidades de injeção no spawn de processos, vazamento de sessão, falhas de sincronização na leitura do stdout/stderr, fragilidades nos regex dos parsers e falhas no modelo de concorrência.";
 	const flagged = server.detectPromptLanguageDrift(ptOffender);
 	assert(
 		flagged !== null,
@@ -5217,11 +5217,11 @@ async function driveGeminiArgsShape() {
 		assert(args.includes(name), `allowed MCP '${name}' in args`);
 	}
 	assert(
-		!args.includes("cross-review-mcp"),
-		"cross-review-mcp NOT in allowed MCPs (recursion prevented)",
+		!args.includes("cross-review-v1"),
+		"cross-review-v1 NOT in allowed MCPs (recursion prevented)",
 	);
 	results.push({
-		step: "buildGeminiArgs: -m GEMINI_MODEL + --approval-mode plan + --output-format text + --allowed-mcp-server-names x3 (memory, ultrathink, code-reasoning; cross-review-mcp excluded)",
+		step: "buildGeminiArgs: -m GEMINI_MODEL + --approval-mode plan + --output-format text + --allowed-mcp-server-names x3 (memory, ultrathink, code-reasoning; cross-review-v1 excluded)",
 		ok: true,
 	});
 
@@ -5847,7 +5847,7 @@ async function driveV1215BootSweepWiringUnit() {
 // --print|-p)\b` matched the substring "code" inside `\anthropic.claude-
 // code-X.Y.Z\claude.exe` paths, classifying every Claude Code installation
 // as a peer-CLI orphan and triggering taskkill /T on its tree (which
-// includes cross-review-mcp itself — coordinated suicide).
+// includes cross-review-v1 itself — coordinated suicide).
 async function driveV1216ArgvBasenameMatchUnit() {
 	const results = [];
 	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
@@ -5943,7 +5943,7 @@ async function driveV1216FindOrphansAncestorSkipUnit() {
 	//   1234 vscode extension host (ancestor of ourPid)
 	//      → 5678 claude.exe peer-spawned by us (would be FALSE-positive
 	//        in a future regex regression — argv[0]=claude.exe + has -p)
-	//      → 9012 cross-review-mcp Node (ourPid)
+	//      → 9012 cross-review-v1 Node (ourPid)
 	//   And a true orphan codex 7777 with dead parent 8888.
 	const procs = [
 		{
@@ -5964,7 +5964,7 @@ async function driveV1216FindOrphansAncestorSkipUnit() {
 		{
 			pid: 9012,
 			parentPid: 5678,
-			command: "node.exe C:\\path\\to\\cross-review-mcp\\src\\server.js",
+			command: "node.exe C:\\path\\to\\cross-review-v1\\src\\server.js",
 		},
 		{
 			pid: 7777,
@@ -5979,7 +5979,7 @@ async function driveV1216FindOrphansAncestorSkipUnit() {
 	// matches isPeerCliCommand (defense-in-depth guard).
 	assert(
 		!orphans.some((o) => o.pid === 5678),
-		"v1.2.16 Bug #2 regression: findOrphans included ancestor PID 5678 (Claude Code host) as orphan — would suicide cross-review-mcp",
+		"v1.2.16 Bug #2 regression: findOrphans included ancestor PID 5678 (Claude Code host) as orphan — would suicide cross-review-v1",
 	);
 	assert(
 		!orphans.some((o) => o.pid === 1234),
@@ -6158,8 +6158,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 
 	// Negative cases — must NOT match.
 	const nonPeerNodeInvocations = [
-		// cross-review-mcp's own server (no claude/codex/gemini in path).
-		"node.exe C:\\Users\\X\\lcv-workspace\\cross-review-mcp\\src\\server.js",
+		// cross-review-v1's own server (no claude/codex/gemini in path).
+		"node.exe C:\\Users\\X\\lcv-workspace\\cross-review-v1\\src\\server.js",
 		// Random Node script.
 		'node "C:\\path\\to\\random\\app.js" --port 3000',
 		// cmd.exe with no peer.
@@ -6176,7 +6176,7 @@ async function driveV1217NpmShimRecognitionUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand rejects cmd.exe/node.exe invocations without a peer-spawn-only flag (cross-review-mcp server.js, dir, --version, etc.)",
+		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand rejects cmd.exe/node.exe invocations without a peer-spawn-only flag (cross-review-v1 server.js, dir, --version, etc.)",
 		ok: true,
 	});
 
@@ -6604,7 +6604,7 @@ async function driveV1218ConcurrenceArtifactInjectionUnit() {
 	// anti-hallucination guidance.
 	const formatted = store.formatPriorArtifactForPrompt(found);
 	assert(
-		/Prior round artifact \(auto-injected by cross-review-mcp v1\.2\.18 for concurrence\)/.test(
+		/Prior round artifact \(auto-injected by cross-review-v1 v1\.2\.18 for concurrence\)/.test(
 			formatted,
 		),
 		"v1.2.18 Finding 1+2: formatted block must declare itself as concurrence auto-injection",
@@ -7496,11 +7496,11 @@ async function driveV140ServerInfoPublisherSponsorsUnit() {
 		"v1.4.0: server_info MUST include publisher: 'LCV Ideas & Software'",
 	);
 	assert(
-		/sponsors_url:\s*\n?\s*"http:\/\/cross-review-mcp\.lcv\.app\.br"/.test(src),
-		"v1.4.0: server_info MUST include sponsors_url: 'http://cross-review-mcp.lcv.app.br'",
+		/sponsors_url:\s*\n?\s*"http:\/\/cross-review-v1\.lcv\.app\.br"/.test(src),
+		"v1.4.0: server_info MUST include sponsors_url: 'http://cross-review-v1.lcv.app.br'",
 	);
 	assert(
-		/sponsors:\s*\n?\s*"http:\/\/cross-review-mcp\.lcv\.app\.br"/.test(src),
+		/sponsors:\s*\n?\s*"http:\/\/cross-review-v1\.lcv\.app\.br"/.test(src),
 		"v1.4.0: server_info.links MUST include the sponsors mirror",
 	);
 	results.push({

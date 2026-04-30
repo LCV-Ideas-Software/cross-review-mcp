@@ -1,6 +1,6 @@
 # Third-Party Components
 
-`cross-review-mcp` is a TypeScript-free CommonJS MCP server. Runtime depends solely on `@modelcontextprotocol/sdk` (MIT). The other 90 packages in the lockfile are transitive dependencies of the SDK.
+`cross-review-v1` is a TypeScript-free CommonJS MCP server. Runtime depends solely on `@modelcontextprotocol/sdk` (MIT). The other 90 packages in the lockfile are transitive dependencies of the SDK.
 
 ## License inventory (from `package-lock.json`, 91 packages total)
 

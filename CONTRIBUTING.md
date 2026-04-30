@@ -1,4 +1,4 @@
-# Contributing to cross-review-mcp
+# Contributing to cross-review-v1
 
 Thanks for your interest. This project uses its own protocol as the contribution model: substantive changes are **cross-reviewed by three peers** before being merged. That discipline is the product; applying it to the project itself is non-negotiable.
 

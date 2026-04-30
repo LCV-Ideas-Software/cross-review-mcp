@@ -200,13 +200,13 @@ function acquireLock(sessionId) {
 			const holderAlive = info.pid ? isPidAlive(info.pid) : true;
 			if (!holderAlive) {
 				process.stderr.write(
-					`[cross-review-mcp] lock auto-release for session ${sessionId}: holder pid=${info.pid} is dead (age=${Math.round(age / 1000)}s)\n`,
+					`[cross-review-v1] lock auto-release for session ${sessionId}: holder pid=${info.pid} is dead (age=${Math.round(age / 1000)}s)\n`,
 				);
 				fs.rmSync(lockDir, { recursive: true, force: true });
 				fs.mkdirSync(lockDir);
 			} else if (age > LOCK_TTL_MS) {
 				process.stderr.write(
-					`[cross-review-mcp] lock auto-release for session ${sessionId}: TTL exceeded (age=${Math.round(age / 1000)}s, ttl=${Math.round(LOCK_TTL_MS / 1000)}s, pid=${info.pid})\n`,
+					`[cross-review-v1] lock auto-release for session ${sessionId}: TTL exceeded (age=${Math.round(age / 1000)}s, ttl=${Math.round(LOCK_TTL_MS / 1000)}s, pid=${info.pid})\n`,
 				);
 				fs.rmSync(lockDir, { recursive: true, force: true });
 				fs.mkdirSync(lockDir);
@@ -215,7 +215,7 @@ function acquireLock(sessionId) {
 			}
 		} catch {
 			process.stderr.write(
-				`[cross-review-mcp] lock auto-release for session ${sessionId}: malformed info.json\n`,
+				`[cross-review-v1] lock auto-release for session ${sessionId}: malformed info.json\n`,
 			);
 			fs.rmSync(lockDir, { recursive: true, force: true });
 			fs.mkdirSync(lockDir);
@@ -264,7 +264,7 @@ function sweepStaleLocksOnBoot() {
 			if (!holderAlive || age > LOCK_TTL_MS) {
 				fs.rmSync(lockDir, { recursive: true, force: true });
 				process.stderr.write(
-					`[cross-review-mcp] startup-sweep removed stale lock for session ${ent.name} (pid=${info.pid}, alive=${holderAlive}, age=${Math.round(age / 1000)}s)\n`,
+					`[cross-review-v1] startup-sweep removed stale lock for session ${ent.name} (pid=${info.pid}, alive=${holderAlive}, age=${Math.round(age / 1000)}s)\n`,
 				);
 				removed += 1;
 			}
@@ -273,7 +273,7 @@ function sweepStaleLocksOnBoot() {
 			try {
 				fs.rmSync(lockDir, { recursive: true, force: true });
 				process.stderr.write(
-					`[cross-review-mcp] startup-sweep removed malformed lock for session ${ent.name}\n`,
+					`[cross-review-v1] startup-sweep removed malformed lock for session ${ent.name}\n`,
 				);
 				removed += 1;
 			} catch {
@@ -732,7 +732,7 @@ async function withRoundHeartbeat(sessionId, round, agents, asyncFn) {
 			updateRoundHeartbeat(sessionId);
 		} catch (err) {
 			process.stderr.write(
-				`[cross-review-mcp] heartbeat update failed for ${sessionId}: ${err?.message || err}\n`,
+				`[cross-review-v1] heartbeat update failed for ${sessionId}: ${err?.message || err}\n`,
 			);
 		}
 	}, HEARTBEAT_INTERVAL_MS);
@@ -745,7 +745,7 @@ async function withRoundHeartbeat(sessionId, round, agents, asyncFn) {
 			clearRoundInFlight(sessionId);
 		} catch (err) {
 			process.stderr.write(
-				`[cross-review-mcp] heartbeat clear failed for ${sessionId}: ${err?.message || err}\n`,
+				`[cross-review-v1] heartbeat clear failed for ${sessionId}: ${err?.message || err}\n`,
 			);
 		}
 	}
@@ -1192,7 +1192,7 @@ function findLastReadyPeerArtifact(sessionId, peerAgent) {
 function formatPriorArtifactForPrompt(artifact) {
 	if (!artifact || typeof artifact.content !== "string") return "";
 	return [
-		"## Prior round artifact (auto-injected by cross-review-mcp v1.2.18 for concurrence)",
+		"## Prior round artifact (auto-injected by cross-review-v1 v1.2.18 for concurrence)",
 		"",
 		`Source: \`${artifact.peer_file}\` (this session, round ${artifact.round})`,
 		"",
@@ -1391,7 +1391,7 @@ const SWEEP_MIN_AGE_MS = (() => {
 	const clamped = Math.max(raw, 60_000);
 	if (clamped !== SWEEP_MIN_AGE_DEFAULT_MS) {
 		process.stderr.write(
-			`[cross-review-mcp] notice: CROSS_REVIEW_SWEEP_MIN_AGE_MS override active (${clamped}ms = ${Math.round(clamped / 1000)}s); default is ${SWEEP_MIN_AGE_DEFAULT_MS}ms (24h). Reset env var after recovery.\n`,
+			`[cross-review-v1] notice: CROSS_REVIEW_SWEEP_MIN_AGE_MS override active (${clamped}ms = ${Math.round(clamped / 1000)}s); default is ${SWEEP_MIN_AGE_DEFAULT_MS}ms (24h). Reset env var after recovery.\n`,
 		);
 	}
 	return clamped;
@@ -1569,7 +1569,7 @@ function sweepStaleSessions({
 						// outcome already marked finalized; cleanup failure
 						// is non-fatal.
 						process.stderr.write(
-							`[cross-review-mcp] session_sweep purge failed for ${row.session_id}: ${err.message}\n`,
+							`[cross-review-v1] session_sweep purge failed for ${row.session_id}: ${err.message}\n`,
 						);
 					}
 				}

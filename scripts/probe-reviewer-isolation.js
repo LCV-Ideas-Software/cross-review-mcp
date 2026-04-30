@@ -3,7 +3,7 @@
 /**
  * probe-reviewer-isolation.js
  *
- * Hard gate of Commit 1 of Phase 1 of cross-review-mcp.
+ * Hard gate of Commit 1 of Phase 1 of cross-review-v1.
  *
  * Goal: empirically validate whether the contained reviewer spawn works
  * with the real set of MCPs, or whether a fallback to bypass is needed.

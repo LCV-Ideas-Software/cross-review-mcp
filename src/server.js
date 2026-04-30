@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * cross-review-mcp / server.js
+ * cross-review-v1 / server.js
  *
  * MCP server (stdio) exposing the cross-review orchestration surface.
  * Identity is determined by CROSS_REVIEW_CALLER (claude | codex |
@@ -61,13 +61,13 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.4.0";
+const VERSION = "1.4.1";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
 // CHANGELOG.md `## [VERSION] — DATE` heading matches this constant, so a
 // bump that forgets to update either side fails the gate.
-const RELEASE_DATE = "2026-04-28";
+const RELEASE_DATE = "2026-04-30";
 
 // v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
 // Requires ALL THREE of (1) status block absent, (2) body < 200 chars,
@@ -121,7 +121,7 @@ const TEST_IMPORT = process.env.CROSS_REVIEW_TEST_IMPORT === "1";
 // would let the env var look authoritative when it isn't).
 if (!TEST_IMPORT && process.env.CROSS_REVIEW_CALLER) {
 	process.stderr.write(
-		`[cross-review-mcp] notice: CROSS_REVIEW_CALLER='${process.env.CROSS_REVIEW_CALLER}' is set but ignored as of v1.2.12 (spec v4.14 §6.20). Caller is resolved dynamically per session via args.caller > clientInfo.name. Remove the env var from your MCP host config to silence this notice.\n`,
+		`[cross-review-v1] notice: CROSS_REVIEW_CALLER='${process.env.CROSS_REVIEW_CALLER}' is set but ignored as of v1.2.12 (spec v4.14 §6.20). Caller is resolved dynamically per session via args.caller > clientInfo.name. Remove the env var from your MCP host config to silence this notice.\n`,
 	);
 }
 
@@ -197,7 +197,7 @@ const PROBE_BUDGET_MS =
 // caller= prefix is informational ("this server instance was started by X")
 // rather than authoritative ("this round was driven by X").
 function log(msg, meta) {
-	const base = `[cross-review-mcp ${new Date().toISOString()}] ${msg}`;
+	const base = `[cross-review-v1 ${new Date().toISOString()}] ${msg}`;
 	process.stderr.write(
 		meta ? `${base} ${JSON.stringify(meta)}\n` : `${base}\n`,
 	);
@@ -309,7 +309,7 @@ function attachPromptTailDirective(prompt) {
 
 ---
 
-**cross-review-mcp tail directive (v${VERSION}):** Close your response with BOTH structured blocks in this exact order. The status block MUST be the last non-empty token of your response; the peer-model block MUST appear immediately before the status block.
+**cross-review-v1 tail directive (v${VERSION}):** Close your response with BOTH structured blocks in this exact order. The status block MUST be the last non-empty token of your response; the peer-model block MUST appear immediately before the status block.
 
 1. \`${MODEL_OPEN_TAG}{"model_id":"<your exact canonical model id>"}${MODEL_CLOSE_TAG}\`
 2. \`<cross_review_status>{"status":"READY|NOT_READY|NEEDS_EVIDENCE", ...}</cross_review_status>\`
@@ -490,7 +490,7 @@ function parsePeerOutputs(
 }
 
 const server = new Server(
-	{ name: "cross-review-mcp", version: VERSION },
+	{ name: "cross-review-v1", version: VERSION },
 	{ capabilities: { tools: {} } },
 );
 
@@ -769,7 +769,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 							text: JSON.stringify(
 								{
 									ok: true,
-									name: "cross-review-mcp",
+									name: "cross-review-v1",
 									version: VERSION,
 									release_date: RELEASE_DATE,
 									spec_version: store.SESSION_SPEC_VERSION,
@@ -778,7 +778,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 									// page in the same payload operators already
 									// hit for runtime identification.
 									publisher: "LCV Ideas & Software",
-									sponsors_url: "http://cross-review-mcp.lcv.app.br",
+									sponsors_url: "http://cross-review-v1.lcv.app.br",
 									tools: [
 										"server_info",
 										"session_init",
@@ -792,12 +792,12 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										"escalate_to_operator",
 									],
 									links: {
-										repo: "https://github.com/LCV-Ideas-Software/cross-review-mcp",
-										npm: "https://www.npmjs.com/package/@lcv-ideas-software/cross-review-mcp",
-										spec: "https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/docs/workflow-spec.md",
+										repo: "https://github.com/LCV-Ideas-Software/cross-review-v1",
+										npm: "https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1",
+										spec: "https://github.com/LCV-Ideas-Software/cross-review-v1/blob/main/docs/workflow-spec.md",
 										changelog:
-											"https://github.com/LCV-Ideas-Software/cross-review-mcp/blob/main/CHANGELOG.md",
-										sponsors: "http://cross-review-mcp.lcv.app.br",
+											"https://github.com/LCV-Ideas-Software/cross-review-v1/blob/main/CHANGELOG.md",
+										sponsors: "http://cross-review-v1.lcv.app.br",
 									},
 								},
 								null,
@@ -1980,7 +1980,7 @@ async function main() {
 	// reload / SIGKILL of the previous server instance.
 	// (H) orphan peer sweep: kill peer-CLI subprocesses (codex / gemini /
 	// claude) whose parent process is dead or is not a current
-	// cross-review-mcp instance. Recovers token/CPU consumption from
+	// cross-review-v1 instance. Recovers token/CPU consumption from
 	// abandoned LLM calls left behind by the previous instance.
 	//
 	// Test/CI may opt out via CROSS_REVIEW_SKIP_BOOT_SWEEPS=1 (the orphan
@@ -1995,7 +1995,7 @@ async function main() {
 				}
 			} catch (err) {
 				process.stderr.write(
-					`[cross-review-mcp] startup lock sweep error: ${err?.message || err}\n`,
+					`[cross-review-v1] startup lock sweep error: ${err?.message || err}\n`,
 				);
 			}
 		});
@@ -2011,7 +2011,7 @@ async function main() {
 				})
 				.catch((err) => {
 					process.stderr.write(
-						`[cross-review-mcp] startup orphan sweep error: ${err?.message || err}\n`,
+						`[cross-review-v1] startup orphan sweep error: ${err?.message || err}\n`,
 					);
 				});
 		});
@@ -2021,7 +2021,7 @@ async function main() {
 if (!TEST_IMPORT) {
 	main().catch((err) => {
 		process.stderr.write(
-			`[cross-review-mcp] fatal: ${err?.stack || err?.message || err}\n`,
+			`[cross-review-v1] fatal: ${err?.stack || err?.message || err}\n`,
 		);
 		process.exit(1);
 	});

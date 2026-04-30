@@ -1,4 +1,4 @@
-# cross-review-mcp
+# cross-review-v1
 
 MCP server orquestrando revisao cruzada entre Claude Code e ChatGPT Codex.
 
@@ -118,7 +118,7 @@ narracao:
   existe** no `codex-cli 0.124.0` (apenas `list/get/add/remove/login/
   logout/help`), entao esse caminho precisa ser implementado em Node, nao
   via wrapper CLI.
-- Opcao B: criar um MCP tool no proprio server cross-review-mcp que chama
+- Opcao B: criar um MCP tool no proprio server cross-review-v1 que chama
   `memory.search_nodes` internamente e reporta sucesso -- testa o
   dispatcher a partir de outro MCP.
 - Opcao C: aceitar o parecer cruzado como evidencia suficiente (Codex ja
@@ -132,7 +132,7 @@ O probe refinado pode rodar em paralelo.
 ## Estrutura do projeto
 
 ```
-cross-review-mcp/
+cross-review-v1/
 |-- package.json
 |-- reviewer-configs/
 |   |-- peer-exclusions.json         # disables e approve_tools do Codex reviewer
@@ -159,7 +159,7 @@ cross-review-mcp/
 ```toml
 [mcp_servers.cross-review]
 command = "node"
-args = ["C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js"]
+args = ["C:/Users/leona/lcv-workspace/cross-review-v1/src/server.js"]
 env = { CROSS_REVIEW_CALLER = "codex" }
 tool_timeout_sec = 1800
 ```
@@ -214,7 +214,7 @@ codex -a never -s read-only exec --skip-git-repo-check
 ```
 claude -p --output-format text
   --permission-mode default
-  --strict-mcp-config --mcp-config C:/Users/leona/lcv-workspace/cross-review-mcp/reviewer-configs/reviewer-minimal.mcp.json
+  --strict-mcp-config --mcp-config C:/Users/leona/lcv-workspace/cross-review-v1/reviewer-configs/reviewer-minimal.mcp.json
   --disallowed-tools "Write,Edit,NotebookEdit"
 ```
 
@@ -235,12 +235,12 @@ Design aceito cruzadamente; Commit 2 pode iniciar.
 ### Pre-requisitos
 - Node.js 18+
 - `claude` (Claude Code CLI) e `codex` (Codex CLI) instalados, autenticados, no PATH
-- `cd C:/Users/leona/lcv-workspace/cross-review-mcp && npm install` (instala `@modelcontextprotocol/sdk`)
+- `cd C:/Users/leona/lcv-workspace/cross-review-v1 && npm install` (instala `@modelcontextprotocol/sdk`)
 
 ### Registrar no Claude Code
 
 ```powershell
-claude mcp add -e CROSS_REVIEW_CALLER=claude -s user cross-review -- node C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js
+claude mcp add -e CROSS_REVIEW_CALLER=claude -s user cross-review -- node C:/Users/leona/lcv-workspace/cross-review-v1/src/server.js
 ```
 
 Verificar: `claude mcp get cross-review` deve mostrar `Status: Connected`.
@@ -252,7 +252,7 @@ Adicionar ao final de `~/.codex/config.toml`:
 ```toml
 [mcp_servers.cross-review]
 command = "node"
-args = ["C:/Users/leona/lcv-workspace/cross-review-mcp/src/server.js"]
+args = ["C:/Users/leona/lcv-workspace/cross-review-v1/src/server.js"]
 env = { CROSS_REVIEW_CALLER = "codex" }
 tool_timeout_sec = 1800
 ```

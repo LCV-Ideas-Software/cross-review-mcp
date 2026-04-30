@@ -49,7 +49,7 @@ jobs:
           # Universal format: vXX.XX.XX with zero-pad. Strips any pre-release suffix from the tag.
           BASE=$(echo "$VERSION" | sed -E 's/-.*$//')
           PAD=$(echo "$BASE" | awk -F. '{ printf "v%02d.%02d.%02d", $1, $2, $3 }')
-          # Legacy format: v${VERSION} (unpadded; what cross-review-mcp shipped before 2026-04-28).
+          # Legacy format: v${VERSION} (unpadded; what cross-review-v1 shipped before 2026-04-28).
           LEGACY="v${VERSION}"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "tag=$PAD" >> "$GITHUB_OUTPUT"

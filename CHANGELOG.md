@@ -1,6 +1,8 @@
-# CHANGELOG — cross-review-mcp
+# CHANGELOG — cross-review-v1
 
 Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex e, desde v0.5.0-alpha, triangular claude↔codex↔gemini).
+
+Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote npm e binário público passam a se chamar **cross-review-v1**. Menções anteriores a `cross-review-mcp` neste changelog são históricas e preservam o nome usado na época.
 
 **Convenção de versão:** SemVer para código (`package.json` `version` + `src/server.js` MCP identity). O versionamento da spec (`docs/workflow-spec.md`) tem seu próprio ciclo (v2/v3/v4/v4.1/.../v4.8) documentado internamente; releases spec-only NÃO bumpam o código.
 
@@ -13,6 +15,26 @@ Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔code
 ### Adicionado
 - (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period.)
 - **DeepSeek as a 4th peer (deferred from v1.4.0)** — pending a secure transport (direct SDK/API or a CLI that accepts stdin/file). The `deepseek-cli` MVP only takes the prompt as positional argv, and `shell: true` on Windows runs `cmd.exe`, which truncates argv at the first `\n` even inside double quotes — silent prompt truncation + command injection on subsequent lines. The `node.exe + shell:false` paliative was rejected (prompt still in argv / process list with command-line caps). v1.5.0 will integrate via the OpenAI-compatible DeepSeek API or an SDK transport.
+
+---
+
+## [1.4.1] — 2026-04-30
+
+### Alterado
+
+- Rename público da linha CLI para **cross-review-v1**:
+  - pacote npm: `@lcv-ideas-software/cross-review-v1`;
+  - binário global: `cross-review-v1`;
+  - repositório: `https://github.com/LCV-Ideas-Software/cross-review-v1`;
+  - Sponsors/Page: `https://cross-review-v1.lcv.app.br`;
+  - `server_info.name`, links públicos, documentação ativa e workflows de publish/dist-tag atualizados.
+- Sem mudança comportamental no protocolo v1.x: a release apenas estabiliza a identidade pública para diferenciar a linha CLI (`v1`) da linha API/SDK (`v2`).
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
+- `npm pack --dry-run --json`
 
 ---
 

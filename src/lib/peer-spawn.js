@@ -87,7 +87,7 @@ const CLAUDE_MODEL = "claude-opus-4-7";
 const GEMINI_MODEL = "gemini-3.1-pro-preview";
 
 // Gemini peer containment: allowlist of MCP servers the peer may use while
-// analyzing. Deliberately excludes cross-review-mcp to prevent recursion
+// analyzing. Deliberately excludes cross-review-v1 to prevent recursion
 // (spec v4 section 6.9.2). Includes the canonical reasoning stack so the
 // peer can honor the tri-tool mandate (spec v4 section 6.2 per
 // feedback_tri_tool_cross_review).
@@ -466,7 +466,7 @@ function logCodexSandboxPolicy(write = (s) => process.stderr.write(s)) {
 	try {
 		policy = resolveCodexSandboxPolicy();
 	} catch (err) {
-		write(`[cross-review-mcp] codex sandbox config invalid: ${err.message}\n`);
+		write(`[cross-review-v1] codex sandbox config invalid: ${err.message}\n`);
 		return { error: err.message };
 	}
 	if (
@@ -482,7 +482,7 @@ function logCodexSandboxPolicy(write = (s) => process.stderr.write(s)) {
 		`approval=${policy.approval}(${policy.source.approval})`,
 		policy.bypass ? "bypass=on(env)" : null,
 	].filter(Boolean);
-	write(`[cross-review-mcp] codex policy: ${parts.join(" ")}\n`);
+	write(`[cross-review-v1] codex policy: ${parts.join(" ")}\n`);
 	return policy;
 }
 
@@ -621,7 +621,7 @@ function killProcessTree(proc) {
 	// v1.2.16: refuse to suicide. See `killProcessTreeIsSuicide`.
 	if (killProcessTreeIsSuicide(proc.pid)) {
 		process.stderr.write(
-			`[cross-review-mcp] killProcessTree REFUSED PID=${proc.pid}: target is self (PID=${process.pid}) or direct parent (PPID=${process.ppid}); killing would suicide cross-review-mcp\n`,
+			`[cross-review-v1] killProcessTree REFUSED PID=${proc.pid}: target is self (PID=${process.pid}) or direct parent (PPID=${process.ppid}); killing would suicide cross-review-v1\n`,
 		);
 		return;
 	}
@@ -641,7 +641,7 @@ function killProcessTree(proc) {
 			// tree to the actual peer CLI grandchild. Full tree-kill is a
 			// v1.3.x deferral tied to the shell:false migration.
 			process.stderr.write(
-				`[cross-review-mcp] taskkill spawn error PID=${proc.pid}: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
+				`[cross-review-v1] taskkill spawn error PID=${proc.pid}: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 			);
 			try {
 				proc.kill("SIGKILL");
@@ -661,7 +661,7 @@ function killProcessTree(proc) {
 		killer.on("close", (code) => {
 			if (code !== 0) {
 				process.stderr.write(
-					`[cross-review-mcp] taskkill PID=${proc.pid} exit=${code}: ${stderrTail.slice(-400)}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
+					`[cross-review-v1] taskkill PID=${proc.pid} exit=${code}: ${stderrTail.slice(-400)}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 				);
 				// v1.2.7 / external-audit round-5 F4: nonzero-exit fallback.
 				// Pre-v1.2.7 we only logged. taskkill rarely fails (typical
@@ -681,7 +681,7 @@ function killProcessTree(proc) {
 		});
 		killer.on("error", (err) => {
 			process.stderr.write(
-				`[cross-review-mcp] taskkill PID=${proc.pid} runtime error: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
+				`[cross-review-v1] taskkill PID=${proc.pid} runtime error: ${err.message}; falling back to proc.kill (best-effort; on Windows shell:true, peer CLI grandchild may orphan if cmd.exe was the immediate child — see spec §6.18.3 v1.2.8 caveat)\n`,
 			);
 			// v1.2.7 / external-audit round-5 F4: same fallback for runtime errors.
 			// v1.2.8 caveat: same shell:true grandchild-orphan limitation as
@@ -703,7 +703,7 @@ function killProcessTree(proc) {
 		// are unexpected and worth surfacing.
 		if (err.code !== "ESRCH") {
 			process.stderr.write(
-				`[cross-review-mcp] kill PID=${proc.pid}: ${err.message}\n`,
+				`[cross-review-v1] kill PID=${proc.pid}: ${err.message}\n`,
 			);
 		}
 	}
@@ -1764,7 +1764,7 @@ function spawnPeers(agents, prompt, options = {}) {
 
 // v1.2.15 / spec §6.22 Item H — orphan peer-CLI sweep at boot.
 //
-// When the cross-review-mcp parent process is killed (host reload, crash,
+// When the cross-review-v1 parent process is killed (host reload, crash,
 // SIGKILL) BEFORE the per-peer timeout fires, the spawned peer-CLI
 // subprocess (codex / gemini / claude exec) becomes an orphan: it
 // continues consuming API tokens and CPU until the LLM call finishes,
@@ -1778,7 +1778,7 @@ function spawnPeers(agents, prompt, options = {}) {
 //      or "claude code".
 //   2. For each match, look up its parent PID.
 //   3. If parent PID is dead OR alive but is NOT a Node process running
-//      cross-review-mcp/src/server.js, classify as orphan.
+//      cross-review-v1/src/server.js, classify as orphan.
 //   4. Kill the orphan + its children via killProcessTree (already
 //      taskkill /T /F on Windows, kill -- -<pgid> on POSIX).
 //
@@ -1800,7 +1800,7 @@ async function sweepOrphanPeerProcesses() {
 		// so smoke can exercise filters with synthetic procs without spawning.
 		// `scanned` = procs whose argv[0] basename matched a peer-CLI shape;
 		// `findOrphans` filters out our ancestors / descendants / sibling-
-		// cross-review-mcp peers. Kill loop only touches the residue.
+		// cross-review-v1 peers. Kill loop only touches the residue.
 		for (const p of procs) {
 			if (isPeerCliCommand(p.command)) result.scanned += 1;
 		}
@@ -1809,7 +1809,7 @@ async function sweepOrphanPeerProcesses() {
 			try {
 				killProcessTree({ pid: o.pid });
 				process.stderr.write(
-					`[cross-review-mcp] orphan-sweep killed peer pid=${o.pid} agent=${o.agent || "unknown"} parent=${o.parentPid}\n`,
+					`[cross-review-v1] orphan-sweep killed peer pid=${o.pid} agent=${o.agent || "unknown"} parent=${o.parentPid}\n`,
 				);
 				result.killed += 1;
 				result.candidates.push({
@@ -1820,7 +1820,7 @@ async function sweepOrphanPeerProcesses() {
 				});
 			} catch (err) {
 				process.stderr.write(
-					`[cross-review-mcp] orphan-sweep failed to kill pid=${o.pid}: ${err?.message || err}\n`,
+					`[cross-review-v1] orphan-sweep failed to kill pid=${o.pid}: ${err?.message || err}\n`,
 				);
 				result.candidates.push({
 					pid: o.pid,
@@ -1833,7 +1833,7 @@ async function sweepOrphanPeerProcesses() {
 		}
 	} catch (err) {
 		process.stderr.write(
-			`[cross-review-mcp] orphan-sweep aborted: ${err?.message || err}\n`,
+			`[cross-review-v1] orphan-sweep aborted: ${err?.message || err}\n`,
 		);
 	}
 	return result;
@@ -1905,7 +1905,7 @@ function enumerateProcesses() {
 // inside every Claude Code install path (`\anthropic.claude-code-X.Y.Z\
 // claude.exe`), so the boot orphan sweep classified the host Claude Code
 // process as a peer-CLI orphan and SIGKILL-tree'd it — suiciding
-// cross-review-mcp itself in the process. Anchoring matches to argv[0]'s
+// cross-review-v1 itself in the process. Anchoring matches to argv[0]'s
 // basename eliminates the substring escape hatch. See spec §6.22.1.
 function parseArgv0AndRest(cmdLine) {
 	if (typeof cmdLine !== "string" || cmdLine.length === 0) {
@@ -1933,7 +1933,7 @@ function parseArgv0AndRest(cmdLine) {
 	return { argv0Basename, rest: rest.toLowerCase() };
 }
 
-// Heuristic: argv shape that cross-review-mcp uses for peer-CLI spawns.
+// Heuristic: argv shape that cross-review-v1 uses for peer-CLI spawns.
 // Conservative — argv[0] basename must be the exact peer CLI binary AND
 // the argv tail must contain a peer-spawn-only flag.
 //
@@ -2052,7 +2052,7 @@ function isDescendantOfPid(proc, ancestorPid, allProcs, depth = 0) {
 
 // v1.2.16 hotfix: build the set of PIDs that are ancestors of `ofPid`
 // (inclusive of `ofPid` itself). Used by `findOrphans` to refuse to ever
-// classify an ancestor of cross-review-mcp's own process as an orphan,
+// classify an ancestor of cross-review-v1's own process as an orphan,
 // independent of the argv-shape match. Defense in depth alongside the
 // `isPeerCliCommand` argv[0] tightening.
 function ancestorPidSet(ofPid, allProcs) {
@@ -2077,8 +2077,8 @@ function ancestorPidSet(ofPid, allProcs) {
 //   1. argv[0] basename + flag shape match via `isPeerCliCommand`;
 //   2. NEVER classify an ancestor of `ourPid` as orphan (Bug #2 guard);
 //   3. NEVER classify a descendant of `ourPid` as orphan (our own child);
-//   4. sibling-parent rescue: if parent is a live cross-review-mcp Node
-//      process (matches `node ... cross-review-mcp/src/server.js`), the
+//   4. sibling-parent rescue: if parent is a live cross-review-v1 Node
+//      process (matches `node ... cross-review-v1/src/server.js`), the
 //      peer is being managed by another instance — skip.
 function findOrphans(procs, ourPid) {
 	const ancestors = ancestorPidSet(ourPid, procs);
@@ -2090,12 +2090,12 @@ function findOrphans(procs, ourPid) {
 		if (ancestors.has(p.pid)) continue;
 		// (3) own-descendant skip.
 		if (isDescendantOfPid(p, ourPid, procs)) continue;
-		// (4) sibling cross-review-mcp parent — leave alone.
+		// (4) sibling cross-review-v1 parent — leave alone.
 		const parent = procs.find((x) => x.pid === p.parentPid);
 		if (parent) {
 			const parentArgv0 = parent.command.split(/\s+/)[0] || "";
 			if (/node(?:\.exe)?$/i.test(parentArgv0)) {
-				if (/cross-review-mcp[\\/]src[\\/]server\.js/i.test(parent.command)) {
+				if (/cross-review-v1[\\/]src[\\/]server\.js/i.test(parent.command)) {
 					continue;
 				}
 			}

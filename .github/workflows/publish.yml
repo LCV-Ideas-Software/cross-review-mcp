@@ -73,8 +73,8 @@ jobs:
           node <<'JS'
           const fs = require('node:fs');
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const CANONICAL_NAME = '@lcv-ideas-software/cross-review-mcp';
-          const CANONICAL_REPO = 'https://github.com/LCV-Ideas-Software/cross-review-mcp';
+          const CANONICAL_NAME = '@lcv-ideas-software/cross-review-v1';
+          const CANONICAL_REPO = 'https://github.com/LCV-Ideas-Software/cross-review-v1';
           let mutated = false;
           if (pkg.name !== CANONICAL_NAME) {
             console.log(`Renaming package: ${pkg.name} -> ${CANONICAL_NAME}`);
@@ -161,8 +161,8 @@ jobs:
           node <<'JS'
           const fs = require('node:fs');
           const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-          const CANONICAL_NAME = '@lcv-ideas-software/cross-review-mcp';
-          const CANONICAL_REPO = 'https://github.com/LCV-Ideas-Software/cross-review-mcp';
+          const CANONICAL_NAME = '@lcv-ideas-software/cross-review-v1';
+          const CANONICAL_REPO = 'https://github.com/LCV-Ideas-Software/cross-review-v1';
           let mutated = false;
           if (pkg.name !== CANONICAL_NAME) {
             pkg.name = CANONICAL_NAME;

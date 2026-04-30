@@ -31,7 +31,7 @@ satisfying ASCII-only without transliteration.
 
 **Single normative addition driven by field-evidence regression: §6.20
 dynamic caller resolution.** Operator observed that Gemini-initiated
-sessions on a cross-review-mcp instance configured with
+sessions on a cross-review-v1 instance configured with
 `CROSS_REVIEW_CALLER=claude` were recording `meta.caller: 'claude'` —
 the env-var was overriding actual caller identity. The audit
 distribution skew (claude 78% / codex 20% / gemini 2%) was therefore
@@ -435,7 +435,7 @@ without modifying the MCP server itself.
 - **Section 6.7 PROMOTED FROM FOLLOW-UP TO NORMATIVE**: minimal
   evidence matrix per artifact class in tabular form, covering classes
   empirically observed in historical sessions (JS, TS, JSON, Markdown,
-  cross-review-mcp itself). Normative link with section 3: peers use
+  cross-review-v1 itself). Normative link with section 3: peers use
   the matrix as a baseline when deciding NEEDS_EVIDENCE. "Class not
   listed" rule as documented fallback. `wrangler deploy --dry-run`
   removed (see `feedback_no_wrangler_deploy`: deploy verification is a
@@ -520,7 +520,7 @@ is mistaken.
 - **Section 6.6 (overflow) no change** (non-blocking FOLLOW-UP).
 - **Section 6.7 UPDATED**: minimal evidence matrix now cites
   `vitest/test script` generic (instead of `vitest` specific) and adds
-  an entry for `cross-review-mcp` itself (= `npm test`).
+  an entry for `cross-review-v1` itself (= `npm test`).
 - **Section 6.8 NEW**: FOLLOW-UP for the expanded JSON schema of the
   structured block (v0.4.0+).
 
@@ -1044,7 +1044,7 @@ API, not via file read). Only files on disk need ASCII-only.
 
 **New in v3**: the rule also applies to PRE-EXISTING files in the repo
 that are promoted to review session artifact. In session 0e427278 round
-1 the peer flagged the `README.md` of cross-review-mcp itself as
+1 the peer flagged the `README.md` of cross-review-v1 itself as
 non-ASCII; the correction was to rewrite the entire README with
 transliteration before READY.
 
@@ -1070,7 +1070,7 @@ effect if/when it is adopted (section 6.6.2).
 
 Promoted from FOLLOW-UP to normative contract via session a847f897
 (2026-04-24, bilateral-approved). Policy-only -- no code change in
-cross-review-mcp was made, and none is justified by the empirical data
+cross-review-v1 was made, and none is justified by the empirical data
 collected so far.
 
 #### 6.6.1 Transcript (artifact assembled by the caller)
@@ -1194,7 +1194,7 @@ Both artifacts assembled by the caller, both outside the server-managed
 
 Promoted from FOLLOW-UP to normative contract via session f1fdbee4
 (2026-04-24, bilateral-approved). Policy-only -- no code change in
-cross-review-mcp was made, and none is justified by the empirical data
+cross-review-v1 was made, and none is justified by the empirical data
 collected so far.
 
 This matrix defines what the caller MUST execute as dynamic evidence
@@ -1220,7 +1220,7 @@ matrix until they emerge in real use -- same discipline as section 6.5
 | TypeScript (.ts, .tsx) | type-check | `tsc --noEmit` (using the nearest `tsconfig.json`) | linter; test script |
 | JSON (.json) | parse-sanity | `node -e "JSON.parse(require('fs').readFileSync('<path>','utf8'))"` | schema validation if local schema available |
 | Markdown (.md) | semantic review | N/A (direct reading) | N/A |
-| cross-review-mcp itself (this spec + src/ + scripts/) | full smoke | `npm test` (alias of `node scripts/functional-smoke.js`) | direct inspection of parser/server. Step count is dynamic per release (v0.4.0: 60 steps); peer must confirm `all GREEN` independently of the exact count |
+| cross-review-v1 itself (this spec + src/ + scripts/) | full smoke | `npm test` (alias of `node scripts/functional-smoke.js`) | direct inspection of parser/server. Step count is dynamic per release (v0.4.0: 60 steps); peer must confirm `all GREEN` independently of the exact count |
 
 #### Notes
 
@@ -1455,7 +1455,7 @@ every time any of these happen; v4.8 introduces a pre-session
 deliberate adaptation path (6.9.3.1 through 6.9.3.5) and a mid-round
 transient failure handling regime (6.9.3.6) that together keep
 section 6.9.2 "NO silent fallback" intact while satisfying the
-invariant that cross-review-mcp MUST NOT stop due to provider-side
+invariant that cross-review-v1 MUST NOT stop due to provider-side
 conditions it can reasonably handle.
 
 ##### 6.9.3.1 Pre-session capability probe
@@ -1623,7 +1623,7 @@ session 5fce39ce round 1 before the agreed session prompt landed):
 - `provider_error_transient`: provider-side HTTP 5xx, outage,
   incident, or server overload.
 
-The invariant "cross-review-mcp must not stop due to transient
+The invariant "cross-review-v1 must not stop due to transient
 provider-side conditions" applies. Treatment:
 
 - Server MAY retry the SAME prompt to the SAME model once with a
@@ -1982,7 +1982,7 @@ rate_limited_peers: [{ agent, retry_after_seconds,
 ```
 
 The caller decides retry-after-wait vs abort based on this surface.
-cross-review-mcp itself does NOT auto-retry (the retry semantic is
+cross-review-v1 itself does NOT auto-retry (the retry semantic is
 orchestrated by the caller to preserve the billing/cost contract).
 
 **Ordering in parsePeerOutputs.** Rate-limit detection runs BEFORE
@@ -2676,7 +2676,7 @@ change is triggered by `convergence_health`.
 **Trigger.** A field-evidence session in 2026-04-26 surfaced that the
 runtime was treating `CROSS_REVIEW_CALLER` env var as the
 authoritative caller identity, even when the actual MCP host calling
-the tool was a different agent. Specifically: a cross-review-mcp
+the tool was a different agent. Specifically: a cross-review-v1
 instance configured with `CROSS_REVIEW_CALLER=claude` recorded
 `meta.caller: 'claude'` even on a session opened by Gemini. The
 operator's earlier directive (embryonic phase) was that the caller
@@ -2812,7 +2812,7 @@ evidence-rigor discipline.
 
 ### 6.22 Lock & session resilience (NEW in v1.2.15)
 
-**Trigger.** Operator-reported incident on 2026-04-27: a cross-review-mcp
+**Trigger.** Operator-reported incident on 2026-04-27: a cross-review-v1
 instance was killed by the host (Claude Code reload) mid-`ask_peers`,
 leaving the session's `.lock` directory present on disk with no live
 holder process. The next attempt to operate on that session_id was
@@ -2918,10 +2918,10 @@ enumerates running processes via `Get-CimInstance Win32_Process`
 enumeration is in flight. For each process whose command-line argv
 matches a peer-CLI signature (`codex exec`, `gemini -p`/`--prompt`,
 `claude code`/`--print`/`-p`), the parent is looked up:
-- If the process is a descendant of the current cross-review-mcp pid →
+- If the process is a descendant of the current cross-review-v1 pid →
   skip (active management).
 - Else if parent is a live Node process running
-  `cross-review-mcp/src/server.js` → skip (sibling instance).
+  `cross-review-v1/src/server.js` → skip (sibling instance).
 - Else (parent dead OR alive but unrelated) → classify as orphan and
   kill via `killProcessTree({ pid })` (Windows: `taskkill /T /F`;
   POSIX: best-effort `proc.kill('SIGKILL')`).
@@ -2959,7 +2959,7 @@ started exiting with code 1 immediately after MCP initialize. Bisection
 isolated the regression to the boot orphan peer sweep introduced by
 §6.22 Item H. Two independent flaws in `src/lib/peer-spawn.js`,
 together, produced coordinated suicide of the host Claude Code tree
-(which contains cross-review-mcp itself):
+(which contains cross-review-v1 itself):
 
 **Bug #1 — `isPeerCliCommand` substring false-positive.** Pre-v1.2.16:
 
@@ -2975,10 +2975,10 @@ peer-CLI orphan even when its argv tail was empty.
 
 **Bug #2 — `sweepOrphanPeerProcesses` ancestor blind spot.** The
 classifier only excluded *descendants* of `ourPid` via
-`isDescendantOfPid`. Claude Code is an *ancestor* of cross-review-mcp
-(Claude Code → spawns cross-review-mcp via stdio), never a descendant,
+`isDescendantOfPid`. Claude Code is an *ancestor* of cross-review-v1
+(Claude Code → spawns cross-review-v1 via stdio), never a descendant,
 so nothing protected the host. The sibling-parent rescue only fires
-when `parent.command` matches `node ... cross-review-mcp/src/server.js`
+when `parent.command` matches `node ... cross-review-v1/src/server.js`
 — Claude Code's parent is the VS Code extension host, no match.
 
 **Mechanics of the crash.** `setImmediate(sweepOrphanPeerProcesses)`
@@ -2987,7 +2987,7 @@ enumerates all PIDs; the false-positive regex tags claude.exe (parent);
 descendant-check + sibling-parent-rescue both miss; the kill loop runs
 `killProcessTree({ pid: claude.exe.pid })`; on Windows this issues
 `taskkill /PID <claude.exe> /T /F`; the `/T` flag terminates the entire
-process tree, which contains cross-review-mcp itself — cross-review-mcp
+process tree, which contains cross-review-v1 itself — cross-review-v1
 suicides while reaping its parent. The host registers Claude Code as
 "prior session exited uncleanly"; the operator can't keep a session
 alive long enough to investigate.
@@ -3042,7 +3042,7 @@ behind dedicated unit tests in `scripts/functional-smoke.js`:
   asserts on `parseArgv0AndRest` covering quoted/unquoted/argv-only.
 - `driveV1216FindOrphansAncestorSkipUnit` — synthetic process tree
   mirroring the real failure topology (VS Code ext host → claude.exe
-  → cross-review-mcp Node), with a `claude.exe -p --resume foo` ancestor
+  → cross-review-v1 Node), with a `claude.exe -p --resume foo` ancestor
   designed to *also* match `isPeerCliCommand` after Bug #1's fix;
   validates `findOrphans` skips it independently. Includes direct
   assertions on `ancestorPidSet`.
@@ -3115,7 +3115,7 @@ npm-installed peers — counter to the §6.22 Item H intent.
 
 Negative cases are explicitly tested:
 
-- cross-review-mcp's own `node.exe ...\\cross-review-mcp\\src\\server.js`
+- cross-review-v1's own `node.exe ...\\cross-review-v1\\src\\server.js`
   contains no peer-name segment in its path → no match.
 - `node "C:\\path\\to\\random\\app.js" --port 3000` has no peer name → no match.
 - `cmd.exe /c dir` has no peer-spawn flag → no match.
@@ -3148,13 +3148,13 @@ ancestor guard in `findOrphans` still rejects any candidate whose
 PID is in `ancestorPidSet(ourPid, procs)`. The Bug #3 kill-primitive
 guard still rejects any pid equal to `process.pid` or `process.ppid`.
 Together, these layers ensure that even if a future regression made
-the matcher excessively permissive, the host cross-review-mcp's
+the matcher excessively permissive, the host cross-review-v1's
 ancestors cannot be killed.
 
 ### 6.23 Concurrence injection + diagnostic propagation + summary field + convergence_scope (NEW in v1.2.18)
 
 **Surfaced by.** Codex's technical handoff
-(`maestro-app/.ai/handoffs/2026-04-28-cross-review-mcp-technical-prompt-for-claude.md`)
+(`maestro-app/.ai/handoffs/2026-04-28-cross-review-v1-technical-prompt-for-claude.md`)
 filed after the v0.3.10 cross-review session `28343cdb-36bf-4667-b0d0-2df115cf175a`
 identified 8 operational findings. The caller (claude) audited each
 finding empirically against current source + the actual session
@@ -3295,7 +3295,7 @@ now produce cleaner audit trails.
 ### 6.24 Heartbeat + stderr classification + evidence attach tool (NEW in v1.3.0)
 
 **Surfaced by.** Codex's technical handoff
-(`maestro-app/.ai/handoffs/2026-04-28-cross-review-mcp-technical-prompt-for-claude.md`)
+(`maestro-app/.ai/handoffs/2026-04-28-cross-review-v1-technical-prompt-for-claude.md`)
 identified eight operational findings from session `28343cdb`. Findings
 1+2, 3, 6, 7 shipped as v1.2.18 additive (covered in §6.23). Findings
 4, 5, 8 deferred to v1.3.0 minor bump because Finding 8 introduces a
@@ -3420,7 +3420,7 @@ policy.
 
 1. The Codex peer rejected with stderr `InvalidOperation: Cannot set property.
    Property setting is supported only on core types in this language mode.`
-   `cross-review-mcp` then misclassified that failure as
+   `cross-review-v1` then misclassified that failure as
    `failure_class: 'rate_limit_induced_response'` with `lexeme_matched: '429'`.
    No `429` actually appeared in the stderr — the substring matcher tripped
    on grep-shaped line numbers (`299:`, `304:`, `1429`).
@@ -3506,7 +3506,7 @@ functions:
 
 **(E) `server_info` ownership fields.** The handler returns
 `publisher: "LCV Ideas & Software"` and
-`sponsors_url: "http://cross-review-mcp.lcv.app.br"` (mirrored under
+`sponsors_url: "http://cross-review-v1.lcv.app.br"` (mirrored under
 `links.sponsors`) so operators can confirm package ownership and
 sponsorship landing in the same call they use for runtime
 identification.
@@ -3644,7 +3644,7 @@ inconsistencia.
   directives captured mid-session 5fce39ce: D3 persistent tier
   downgrade (subscription plan changes), D4 provider moderation
   flagging and rate limiting, D5 outages/overload. All three share
-  the invariant "cross-review-mcp must not stop due to provider-side
+  the invariant "cross-review-v1 must not stop due to provider-side
   conditions it can reasonably handle" while preserving section 6.9.2
   "NO silent fallback" for mid-round model switching. Code remains
   v0.4.0-alpha; the integrated F2 impl session delivers v0.5.0-alpha

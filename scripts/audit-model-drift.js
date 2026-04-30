@@ -224,7 +224,7 @@ function main() {
 		}
 	}
 
-	process.stdout.write("cross-review-mcp: model drift audit (schema v2)\n");
+	process.stdout.write("cross-review-v1: model drift audit (schema v2)\n");
 	process.stdout.write(
 		`  peer-spawn.js pinned: codex='${pinned.codex_id}' effort='${pinned.codex_effort}' ` +
 			`claude='${pinned.claude_id}' gemini='${pinned.gemini_id}'\n`,
