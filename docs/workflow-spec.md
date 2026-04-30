@@ -3513,10 +3513,10 @@ identification.
 
 **DeepSeek deferral.** DeepSeek as the 4th peer is NOT introduced in
 v1.4.0. The future integration must use a secure transport — direct
-SDK / API or a CLI that accepts stdin/file. The deferral is explicit
-(no `deepseek` entry in `VALID_AGENTS`, no `top-models.json` row, no
-peer-spawn / probe / classifier scaffolding) so the v1.5.0 design
-starts from a clean slate.
+SDK / API or a CLI that accepts stdin/file. This deferral is closed by
+§6.26 in v1.5.0 through a project-owned embedded CLI that accepts prompt
+content through stdin and is spawned by the v1 server like any other
+CLI peer.
 
 **Backwards compatibility.** All items are additive. Default Codex
 policy is the historical `-a never -s read-only`; consumers who don't
@@ -3527,6 +3527,96 @@ classification on Windows hosts; consumers reading the full
 `signals[]` see the same patterns previously detected as
 `rate_limit` plus the new sandbox class. Patch-additive within the
 v1.x frozen public surface.
+
+---
+
+### 6.26 Embedded DeepSeek CLI + quadrilateral peer set (NEW in v1.5.0)
+
+**Trigger.** The operator required DeepSeek as a fourth peer while keeping
+the v1 line CLI-only. The previously investigated third-party DeepSeek
+CLI was rejected because it accepted prompt content through argv and, in
+another implementation path, reused configuration names/directories from
+another provider CLI. The v1.5.0 requirement is therefore: DeepSeek must
+be represented as a CLI subprocess from the server's point of view, prompt
+content must flow through stdin/stdout, and the integration must not read
+or write another product's profile directory.
+
+**Topology.**
+
+- `VALID_AGENTS = claude | codex | gemini` remains the caller-resolution
+  set. DeepSeek is not a caller in v1.5.0 because it is an embedded peer
+  wrapper, not an MCP host integration.
+- `VALID_PEERS = claude | codex | gemini | deepseek` is the peer set used
+  by `peersForCaller(caller)`.
+- `ask_peers` therefore spawns three peers for a Claude, Codex, or Gemini
+  caller: the other two caller-capable agents plus DeepSeek.
+- `deriveConvergenceScope` returns `quadrilateral` when three peers
+  responded, preserving the existing `trilateral`, `bilateral`,
+  `degraded_bilateral`, and `degraded_none` labels for smaller effective
+  regimes.
+
+**DeepSeek peer transport.**
+
+- The package ships `cross-review-v1-deepseek-cli` from
+  `src/deepseek-cli.js`.
+- `spawnPeer("deepseek", prompt)` invokes `process.execPath` with the
+  embedded CLI path and writes the cross-review prompt to stdin.
+- The embedded CLI reads `DEEPSEEK_API_KEY`, calls DeepSeek's
+  OpenAI-compatible Chat Completions endpoint, pins `deepseek-v4-pro`,
+  requests `thinking=enabled`, and sets `reasoning_effort=max`.
+- Deprecated aliases `deepseek-chat` and `deepseek-reasoner` are not used.
+
+**MCP support inside the embedded CLI.**
+
+- The CLI accepts `--mcp-config <path>` and repeatable
+  `--allowed-mcp-server-names <name>`.
+- Only stdio MCP servers are supported in v1.5.0.
+- The default peer-spawn path passes `reviewer-configs/deepseek-cli.mcp.json`
+  and allows `memory`, `ultrathink`, and `code-reasoning`.
+- Manual CLI runs inherit the same safe allowlist unless the operator passes
+  `--allow-all-mcp-servers`.
+- The embedded catalog does not include `cross-review-v1` or
+  `cross-review-v2`, so even an explicit all-servers diagnostic run cannot
+  recurse into another cross-review round through DeepSeek.
+- The embedded CLI expands environment placeholders in `${env:VAR}`,
+  `${VAR}`, and `$VAR` forms so it can consume the workspace MCP config
+  styles used by VS Code, Gemini Code Assist, and Claude Code.
+- The embedded CLI converts listed MCP tools to DeepSeek/OpenAI-style
+  function tools, executes requested calls through the MCP TypeScript SDK,
+  and feeds tool results back into the chat loop up to the configured
+  `--max-tool-turns` cap.
+
+**Security and isolation.**
+
+- Prompt content is never placed in argv by cross-review-v1.
+- The embedded CLI contains no dependency on the rejected third-party
+  DeepSeek CLI.
+- The embedded CLI does not read or write another provider's profile
+  directory.
+- DeepSeek API key material is read from environment only and is never
+  logged by the CLI.
+- The DeepSeek subprocess receives a filtered environment containing only
+  OS launch essentials plus `DEEPSEEK_*` options; unrelated provider keys
+  are not forwarded to the child process.
+
+**Test coverage.**
+
+- `driveDeepSeekCliShapeUnit` verifies embedded CLI argv shape, pinned
+  `deepseek-v4-pro`, thinking mode, no deprecated aliases, no prompt in
+  argv, and no foreign-profile references.
+- The same smoke unit starts a stdio MCP fixture server and verifies that
+  the embedded CLI loads and calls a real MCP tool.
+- `driveSpawnPeersIdentityShape`, `driveProbeStubShape`,
+  `driveAskPeersNAry`, orphan-sweep matcher tests, and convergence-scope
+  tests were expanded from three peers to four-peer/quadrilateral shapes.
+- `scripts/audit-model-drift.js` now validates DeepSeek against
+  `docs/top-models.json` alongside Codex, Claude, and Gemini.
+
+**Backwards compatibility.** Existing MCP tools and session files remain
+additive-compatible. DeepSeek expands the default `ask_peers` peer set,
+so successful v1.5.0 sessions have stricter quadrilateral unanimity
+rather than trilateral unanimity. `ask_peer` remains the legacy bilateral
+surface.
 
 ---
 

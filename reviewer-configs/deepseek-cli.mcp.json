@@ -1,0 +1,123 @@
+{
+  "_comment": "MCP catalog for cross-review-v1-deepseek-cli. Values use env placeholders only; no secrets are stored here. The cross-review-v1 peer spawn keeps a restrictive allowlist by default to avoid recursive review loops.",
+  "_source_notes": [
+    "Consolidated from this workstation's workspace-scoped VS Code, Gemini Code Assist and Claude Code MCP configs on 2026-04-30, with Antigravity retained as a user-scope exception.",
+    "Only stdio servers are listed because cross-review-v1-deepseek-cli currently supports stdio MCP transport.",
+    "HTTP MCP servers used by VS Code are represented here through local stdio proxies when available."
+  ],
+  "mcpServers": {
+    "github": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/github/proxy.mjs"
+      ]
+    },
+    "memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/@modelcontextprotocol/server-memory/dist/index.js"
+      ]
+    },
+    "fetch": {
+      "type": "stdio",
+      "command": "uvx",
+      "args": [
+        "mcp-server-fetch"
+      ]
+    },
+    "puppeteer": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/@modelcontextprotocol/server-puppeteer/dist/index.js"
+      ]
+    },
+    "cloudflare-api": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/cloudflare-api/proxy.mjs"
+      ]
+    },
+    "cloudflare-bindings": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/cloudflare-bindings/proxy.mjs"
+      ]
+    },
+    "cloudflare-builds": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/cloudflare-builds/proxy.mjs"
+      ]
+    },
+    "sumup": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/sumup/node_modules/@sumup/mcp/dist/index.mjs"
+      ],
+      "env": {
+        "SUMUP_API_KEY": "${env:SUMUP_API_KEY}"
+      }
+    },
+    "google-developer-knowledge": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/mcp-remote/dist/proxy.js",
+        "https://developerknowledge.googleapis.com/mcp",
+        "--header",
+        "X-Goog-Api-Key: ${env:GOOGLE_DEVELOPER_KNOWLEDGE_API_KEY}"
+      ]
+    },
+    "ultrathink": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/@iflow-mcp/hyokunkwak-sequential-thinking-ultra/dist/index.js"
+      ]
+    },
+    "code-reasoning": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/code-reasoning/dist/src/server.js",
+        "--config-dir",
+        "C:/Users/leona/lcv-workspace/.code-reasoning"
+      ]
+    },
+    "jina-mcp-server": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/mcp-remote/dist/proxy.js",
+        "https://mcp.jina.ai/v1?exclude_tags=parallel",
+        "--header",
+        "Authorization: Bearer ${env:JINA_API_KEY}"
+      ]
+    },
+    "mcp-image": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/mcp-image/dist/index.js"
+      ],
+      "env": {
+        "GEMINI_API_KEY": "${env:GEMINI_API_KEY}"
+      }
+    },
+    "openaiDeveloperDocs": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/AppData/Roaming/npm/node_modules/mcp-remote/dist/proxy.js",
+        "https://developers.openai.com/mcp"
+      ]
+    }
+  }
+}

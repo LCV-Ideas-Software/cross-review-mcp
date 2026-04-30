@@ -1,6 +1,6 @@
 # CHANGELOG — cross-review-v1
 
-Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex e, desde v0.5.0-alpha, triangular claude↔codex↔gemini).
+Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex, desde v0.5.0-alpha triangular claude↔codex↔gemini, e desde v1.5.0 quadrilateral com DeepSeek como peer embutido).
 
 Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote npm e binário público passam a se chamar **cross-review-v1**. Menções anteriores a `cross-review-mcp` neste changelog são históricas e preservam o nome usado na época.
 
@@ -14,7 +14,6 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ### Adicionado
 - (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period.)
-- **DeepSeek as a 4th peer (deferred from v1.4.0)** — pending a secure transport (direct SDK/API or a CLI that accepts stdin/file). The `deepseek-cli` MVP only takes the prompt as positional argv, and `shell: true` on Windows runs `cmd.exe`, which truncates argv at the first `\n` even inside double quotes — silent prompt truncation + command injection on subsequent lines. The `node.exe + shell:false` paliative was rejected (prompt still in argv / process list with command-line caps). v1.5.0 will integrate via the OpenAI-compatible DeepSeek API or an SDK transport.
 
 ### Alterado
 
@@ -26,6 +25,50 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 ### Removido
 
 - Workflow manual `fix-dist-tag.yml`, que dependia de `NPM_TOKEN`; a linha v1 passa a não manter workflow ativo com token npm clássico.
+
+---
+
+## [1.5.0] — 2026-04-30
+
+**DeepSeek como quarto peer, mantendo a linha v1 CLI-only.** A integração rejeita o pacote `@sluisr/deepseek-cli` e qualquer CLI derivada do Gemini porque aquele caminho contaminava diretórios/configurações de outro produto e, na primeira alternativa investigada, carregava o prompt em argv. A v1.5.0 introduz uma CLI própria embutida no pacote (`cross-review-v1-deepseek-cli`), chamada pelo servidor como subprocesso e alimentada por stdin/stdout como qualquer outro peer da linha v1.
+
+### Adicionado
+
+- **Peer DeepSeek** em `ask_peers`, com `deepseek-v4-pro`, `thinking=enabled` e `reasoning_effort=max`.
+- **`cross-review-v1-deepseek-cli`** como binário interno do pacote:
+  - lê o prompt por stdin;
+  - usa `DEEPSEEK_API_KEY` como credencial;
+  - chama a API Chat Completions compatível com OpenAI da DeepSeek;
+  - suporta `--mcp-config`, `--allowed-mcp-server-names` e loop interno de tool calls via stdio MCP;
+  - usa allowlist MCP padrão `memory,ultrathink,code-reasoning`, com `--allow-all-mcp-servers` reservado a diagnósticos manuais;
+  - exclui `cross-review-v1` e `cross-review-v2` do catálogo MCP embutido para impedir recursão mesmo quando `--allow-all-mcp-servers` é usado manualmente;
+  - roda com ambiente filtrado: somente chaves `DEEPSEEK_*` e variáveis essenciais do Windows/Node são encaminhadas ao subprocesso;
+  - expande placeholders de ambiente nos formatos `${env:VAR}`, `${VAR}` e `$VAR`, alinhado aos configs reais de VS Code, Gemini Code Assist e Claude Code;
+  - não lê nem grava diretórios de perfil de outras CLIs.
+- **`VALID_PEERS` separado de `VALID_AGENTS`**: `VALID_AGENTS` continua `claude|codex|gemini` para caller resolution; `VALID_PEERS` passa a `claude|codex|gemini|deepseek`, com DeepSeek peer-only.
+- **Escopo `quadrilateral`** em `deriveConvergenceScope` e nos snapshots de convergência quando três peers respondem.
+- **Auditoria de drift de modelo para DeepSeek** em `scripts/audit-model-drift.js` e `docs/top-models.json`.
+- **Smoke tests v1.5.0** para a forma da CLI embutida, ausência de aliases DeepSeek depreciados, ausência de transporte de prompt em argv, peer identity com quatro agentes, probe stub quadrilateral, orphan-sweep recognition e escopo quadrilateral.
+
+### Alterado
+
+- `ask_peers` passa a spawnar três peers para sessões abertas por Claude, Codex ou Gemini.
+- README, spec e top-models documentam que a v1 continua CLI-only no orquestrador, mas inclui uma CLI DeepSeek própria como wrapper local.
+- Configurações locais do workspace foram alinhadas para preferir MCP por workspace: VS Code, Gemini Code Assist, Claude Code e Codex carregam os servidores no escopo `lcv-workspace`; Antigravity permanece como exceção por não expor separação confiável user/workspace.
+
+### Corrigido
+
+- Fecha a deferral de DeepSeek aberta em v1.4.0 sem reintroduzir o bug de newline truncation / command injection do `cmd.exe` em argv.
+- Remove o risco operacional do pacote terceiro que reutilizava nomes e diretórios de configuração de Gemini.
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
+- `npm pack --dry-run`
+- `node src/deepseek-cli.js --help`
+- `node src/deepseek-cli.js --version`
+- Real `deepseek-v4-pro` smoke using `DEEPSEEK_API_KEY`
 
 ---
 
@@ -59,7 +102,7 @@ v1.4.0 ships the surgical fixes for (1) and (2), adds the `server_info` ownershi
 
 ### Adicionado
 
-- **`server_info` publisher / sponsors fields** — the handler now returns `publisher: "LCV Ideas & Software"` plus `sponsors_url: "http://cross-review-mcp.lcv.app.br"` (mirrored under `links.sponsors`) so operators see ownership and the sponsorship landing in the same payload they already use for runtime identification. No schema break — additive only.
+- **`server_info` publisher / sponsors fields** — the handler now returns `publisher: "LCV Ideas & Software"` plus `sponsors_url: "http://cross-review-v1.lcv.app.br"` (mirrored under `links.sponsors`) so operators see ownership and the sponsorship landing in the same payload they already use for runtime identification. No schema break — additive only.
 - **(C) Codex sandbox/approval policy is configurable via env vars** in `src/lib/peer-spawn.js`'s `buildCodexArgs`. Defaults preserved (`-a never -s read-only`); operators can opt in via:
   - `CROSS_REVIEW_CODEX_SANDBOX = read-only | workspace-write | danger-full-access` (default `read-only`)
   - `CROSS_REVIEW_CODEX_APPROVAL = never | on-request | on-failure | untrusted` (default `never`)

@@ -245,9 +245,18 @@ jobs:
         env:
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
-          # Strip leading 'v' for the CHANGELOG header match (CHANGELOG uses
-          # [1.0.5], code uses v1.0.5).
-          VERSION="${TAG#v}"
+          # Strip leading 'v' and normalize zero-padded universal tags
+          # (v01.05.00) back to semver headers used by CHANGELOG.md ([1.5.0]).
+          RAW_VERSION="${TAG#v}"
+          VERSION=$(RAW_VERSION="$RAW_VERSION" node -e "
+            const raw = process.env.RAW_VERSION || '';
+            const match = raw.match(/^(\\d+)\\.(\\d+)\\.(\\d+)(-.+)?$/);
+            if (!match) {
+              console.log(raw);
+              process.exit(0);
+            }
+            console.log(Number(match[1]) + '.' + Number(match[2]) + '.' + Number(match[3]) + (match[4] || ''));
+          ")
           # awk extracts the section between [VERSION] and the next ## header.
           NOTES=$(awk -v ver="$VERSION" '
             $0 ~ "^## \\[" ver "\\]" { found=1; next }

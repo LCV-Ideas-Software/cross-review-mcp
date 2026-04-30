@@ -4,7 +4,7 @@
 
 # cross-review-v1
 
-> MCP server orchestrating cross-review between Claude Code, ChatGPT Codex, and Gemini CLI.
+> MCP server orchestrating CLI-only cross-review between Claude Code, ChatGPT Codex, Gemini CLI, and an embedded DeepSeek CLI.
 
 [![status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#status)
 [![npm](https://img.shields.io/npm/v/@lcv-ideas-software/cross-review-v1.svg)](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1)
@@ -14,12 +14,13 @@
 
 **Install.** `npm install -g @lcv-ideas-software/cross-review-v1` (npmjs.com) or `npm install -g @lcv-ideas-software/cross-review-v1 --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.4.1** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.5.0** runtime paired with **spec v4.14**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
+| **`v1.5.0`** | v4.14 (§6.26 NEW — embedded DeepSeek CLI + quadrilateral peer set) | **DeepSeek joins as a fourth peer while v1 remains CLI-only.** The server still spawns peers as subprocesses and sends prompts through stdin; DeepSeek is invoked through `cross-review-v1`'s own embedded CLI (`cross-review-v1-deepseek-cli`) instead of any Gemini-derived third-party CLI. The embedded CLI calls DeepSeek's OpenAI-compatible API with `deepseek-v4-pro`, `thinking=enabled`, `reasoning_effort=max`, supports stdio MCP servers through `--mcp-config` / `--allowed-mcp-server-names`, and deliberately contains no references to other provider profile directories. `VALID_AGENTS` remains `claude|codex|gemini` for caller resolution; `VALID_PEERS` is now `claude|codex|gemini|deepseek`, so `ask_peers` runs quadrilateral consensus when one of the three caller agents opens a session. |
 | **`v1.4.1`** | v4.14 | **Public rename to cross-review-v1.** Package, bin, repository, Sponsors/Page URL, `server_info` links, active documentation, and publishing workflows now use `cross-review-v1`. No protocol behavior changed. |
 | **`v1.4.0`** | v4.14 (§6.25 NEW — classifier hardening + Codex sandbox config + DeepSeek deferral) | **Classifier hardening + Codex Windows-sandbox workaround + `server_info` ownership; DeepSeek deferred to v1.5.0.** R1 of the v1.4.0 pre-commit cross-review (session `bf4ffea3`) revealed three problems: (i) `detectSpawnRateLimit`'s `429` matcher was a bare-substring check that tripped on grep line numbers (`299:`, `429:`, `1429`), misclassifying the upstream Codex CLI Windows sandbox bug (PowerShell `ConstrainedLanguage` — see `reference_codex_cli_sandbox_constrained_language.md`) as `rate_limit_induced_response`; (ii) the Codex peer is operationally unusable on Windows under the default `-a never -s read-only` because of that same upstream sandbox bug, with no opt-in workaround; (iii) integrating DeepSeek via `deepseek-cli` would have introduced a `cmd.exe` newline-truncation + command-injection vector because the CLI takes the prompt only as positional argv. **(A) `detectSpawnRateLimit` is now contextual:** `RATE_LIMIT_LEXEMES` is internally `RATE_LIMIT_PATTERNS` (regex-anchored); the `429` lexeme requires HTTP / status / error / parens / JSON context; phrase tokens (`Too Many Requests`, `rate limit`, `usage limit`, `quota exceeded`, `insufficient_quota`, `RESOURCE_EXHAUSTED`, `Retry-After`) match on word boundaries with phrase constraints. Backward-compat export shape preserved. **(B) `classifyStderr` new `codex_windows_sandbox` class** in `STDERR_CLASS_PATTERNS`, regex matching `InvalidOperation: Cannot set property. Property setting is supported only on core types`, `ConstrainedLanguage`, `PowerShell AST parser`, `blocked by sandbox (windows)`. Precedence ABOVE `rate_limit` so the v4.14 R1 misclassification cannot recur. The `rate_limit` regex was also tightened to mirror (A)'s contextual `429` shape. **(C) Codex sandbox/approval policy is configurable** via `CROSS_REVIEW_CODEX_SANDBOX={read-only\|workspace-write\|danger-full-access}` (default `read-only`), `CROSS_REVIEW_CODEX_APPROVAL={never\|on-request\|on-failure\|untrusted}` (default `never`), and `CROSS_REVIEW_CODEX_BYPASS={1\|true}` (emits `--dangerously-bypass-approvals-and-sandbox` and drops `-a`/`-s`). Invalid values throw at spawn time. Resolved policy logged once at startup via `logCodexSandboxPolicy()` (silent on default; one-line stderr notice on divergence). **(E) `server_info`** now returns `publisher: "LCV Ideas & Software"` + `sponsors_url: "http://cross-review-v1.lcv.app.br"` (mirrored under `links.sponsors`). **DeepSeek deferral:** integrating DeepSeek via `deepseek-cli` was empirically reproduced as unsafe on Windows (`shell: true` lets `cmd.exe` truncate argv at the first `\n` even inside double quotes — silent prompt truncation + command injection on subsequent lines). The `node.exe + shell:false` paliative was rejected (prompt still in argv / process list with command-line caps). DeepSeek is therefore deferred to v1.5.0 with an explicit secure-transport requirement (direct SDK/API or a CLI that accepts stdin/file). **(D) Regression smoke:** 4 new drive functions covering provider-shaped 429 positive cases, line-number/timestamp/path negative cases, Codex-sandbox-class precedence, env-var override combos, and `server_info` field anti-drift. |
 | `v1.3.0` | v4.14 (§6.24 NEW — heartbeat in meta.in_flight + stderr classification + evidence attach tool) | **Closes the deferred half of Codex's handoff (Findings 4, 5, 8 from the Maestro v0.3.10 cross-review session 28343cdb).** Three additive features. **Minor bump** (vs v1.2.x patch series) because Finding 8 introduces a new MCP tool `session_attach_evidence` — that exceeds the "patch additive within frozen surface" contract per CONTRIBUTING.md. (1) **Heartbeat in `meta.in_flight`** (Finding 4): `markRoundInFlight` / `updateRoundHeartbeat` / `clearRoundInFlight` / `withRoundHeartbeat` helpers in session-store. ask_peer + ask_peers handlers wrap their spawn calls with `store.withRoundHeartbeat` so meta.in_flight is set before peer invocation, refreshed every `HEARTBEAT_INTERVAL_MS` (default 15s, configurable via `CROSS_REVIEW_HEARTBEAT_INTERVAL_MS` env var), and cleared on resolve OR reject. Audit consumers reading meta.json can distinguish in-progress vs hung-after-caller-crashed. (2) **`classifyStderr` + noise classes** (Finding 5): new helper classifies stderr text into one of 8 noise classes — `auth_expired`, `command_not_found`, `tool_unavailable`, `rate_limit`, `cloudflare_challenge`, `plugin_warning`, `analytics_warning`, `terminal_advisory`, plus `unknown` fallback. First-match-wins on primary class but ALL matched patterns appear in `signals[]`. `saveFailedAttempt` automatically adds `stderr_classification` to the audit entry when the tail matches a known class. Non-destructive: raw stderr_tail is preserved. (3) **`session_attach_evidence` MCP tool** (Finding 8): new tool writes evidence artifacts (Playwright traces, screenshots, metric dumps, diff bundles) under `~/.cross-review/<session-id>/evidence/<timestamp>-<sanitized-label>` and updates `meta.evidence[]` with manifest entries (filename, path, size, content_type, attached_at, label). Caller-supplied label is sanitized server-side; size cap 1 MiB per file. 3 new smoke functions, 19 invariants total → smoke 241 GREEN (was 222). |
@@ -61,17 +62,18 @@ The version history at a glance:
 
 ## What it does
 
-`cross-review-v1` is an **MCP stdio server** that orchestrates **structured review sessions** between three top-tier AI peers:
+`cross-review-v1` is an **MCP stdio server** that orchestrates **structured review sessions** between four top-tier AI peers:
 
 - **Claude Code** (Anthropic Claude Pro/Max subscription, model `claude-opus-4-7`)
 - **ChatGPT Codex** (ChatGPT Pro subscription, model `gpt-5.5` + `reasoning_effort=xhigh`)
 - **Gemini CLI** (Google One AI Ultra subscription, model `gemini-3.1-pro-preview` via oauth-personal)
+- **DeepSeek** (embedded `cross-review-v1-deepseek-cli`, model `deepseek-v4-pro` with thinking enabled)
 
-Any one of the three serves as the **caller**; the other two (or one, for bilateral sessions) serve as **peers**. The server spawns peers under contained CLI invocations, collects their structured responses, and reports convergence via a unanimity predicate:
+Claude, Codex, or Gemini can serve as the **caller**; DeepSeek is a peer-only participant in v1.5.0. The server spawns peers under contained CLI invocations, collects their structured responses, and reports convergence via a unanimity predicate:
 
 > **converged iff caller_status === 'READY' AND every responded peer has peer_status === 'READY'**
 
-This is the canonical defense against single-model hallucinations: if one peer confabulates, the other two catch it. The protocol codifies the defense rather than rely on emergent behavior.
+This is the canonical defense against single-model hallucinations: if one peer confabulates, the others catch it. The protocol codifies the defense rather than rely on emergent behavior.
 
 ---
 
@@ -80,7 +82,7 @@ This is the canonical defense against single-model hallucinations: if one peer c
 The server supports two session shapes:
 
 - **Bilateral** (`ask_peer`): legacy `claude<->codex` only. Gemini callers must use `ask_peers`.
-- **Trilateral / N-ary** (`ask_peers`): all complements spawn in parallel via `Promise.allSettled`. Per-peer identity is explicit (R12 invariant: never infer agent from array index). Failed spawns enter `meta.failed_attempts[]` (redacted per R14) and are counted in `round.quorum.rejected`. Under strict-quorum semantics (spec §6.12 + v1.2.3 §6.18.1) rejected peers count AGAINST convergence: `round.quorum.rejected === 0` is required in addition to all responded peers READY.
+- **Trilateral / quadrilateral / N-ary** (`ask_peers`): all complements spawn in parallel via `Promise.allSettled`. In v1.5.0, a Claude/Codex/Gemini caller gets three peers: the other two caller-capable agents plus DeepSeek. Per-peer identity is explicit (R12 invariant: never infer agent from array index). Failed spawns enter `meta.failed_attempts[]` (redacted per R14) and are counted in `round.quorum.rejected`. Under strict-quorum semantics (spec §6.12 + v1.2.3 §6.18.1) rejected peers count AGAINST convergence: `round.quorum.rejected === 0` is required in addition to all responded peers READY.
 
 Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No "loose mode" toggle. Round state is snapshotted at append time into `round.convergence_snapshot` with `spec_version: 'v4.9'` — audit immutability under future predicate evolution.
 
@@ -88,7 +90,7 @@ Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No
 
 ## Peers and transport
 
-All three peers are spawned via their **CLI** (not SDK). This is a deliberate billing-coverage choice: each CLI is covered by a subscription the operator already pays for. Migrating to the official SDKs (`@anthropic-ai/sdk`, `openai`, `@google/genai`) would switch billing to per-token API metering, which is vetoed.
+All peers are spawned via a **CLI process**. Claude, Codex, and Gemini use their vendor CLIs. DeepSeek uses the project-owned embedded `cross-review-v1-deepseek-cli`; the v1 server still treats it as a subprocess peer with stdin/stdout, preserving the CLI-only orchestration contract.
 
 **Transport descriptor** returned by `spawnPeer` / `probeAgent`:
 
@@ -98,6 +100,7 @@ All three peers are spawned via their **CLI** (not SDK). This is a deliberate bi
 | claude | `cli-subscription`  | `claude-pro-backend`              | No stderr banner in CLI 2.1.119 (empirically surveyed 2026-04-24, spec v4.11). Falls back to `model_check_skipped` path. |
 | gemini | `oauth-personal`    | `v1internal` (cloudcode-pa)       | No authoritative `modelVersion` header — §6.11 skip applies. Ultra tier unlocks 3.x preview models. |
 | gemini | `api-key`           | `generativelanguage-v1beta`       | Defensive-coded but not reachable under the current billing veto. |
+| deepseek | `api-key`         | `deepseek-openai-compatible`      | Embedded CLI calls DeepSeek Chat Completions with `deepseek-v4-pro`, thinking enabled, prompt via stdin, and optional stdio MCP tools. |
 
 **Item A (spec v4.9 §6.11).** For non-api-key transports the model's text self-report is unreliable across all three providers; `parsePeerOutputs` gates `classifyModelMatch` on `authoritativeModelAttestationAvailable(descriptor)` (equivalent to `auth === 'api-key'`). When false, the check is SKIPPED with an audit record (`model_check_skipped`) instead of flagging false-positive `silent_model_downgrade`.
 
@@ -110,11 +113,12 @@ All three peers are spawned via their **CLI** (not SDK). This is a deliberate bi
 ### Prerequisites
 
 - **Node.js 18+**
-- The three peer CLIs installed, authenticated, and on PATH:
+- The three vendor peer CLIs installed, authenticated, and on PATH:
   - `claude` — Claude Code CLI (`npm install -g @anthropic-ai/claude-code` or equivalent)
   - `codex` — Codex CLI (requires ChatGPT Pro subscription)
   - `gemini` — Gemini CLI (requires Google account; Ultra tier recommended for 3.x preview access)
-- Active subscriptions covering each CLI (see [Peers and transport](#peers-and-transport)).
+- Active subscriptions covering each vendor CLI (see [Peers and transport](#peers-and-transport)).
+- `DEEPSEEK_API_KEY` in the environment. No external DeepSeek CLI is required; `cross-review-v1-deepseek-cli` is shipped by this package.
 
 ### Clone and install
 
@@ -131,7 +135,7 @@ The only runtime dependency is `@modelcontextprotocol/sdk`.
 Before using the server or after any edit, confirm both gates pass:
 
 ```bash
-npm test             # 188 smoke steps (unit + end-to-end stdio JSON-RPC; count grows with each release — check the last line of output)
+npm test             # smoke steps (unit + end-to-end stdio JSON-RPC; count grows with each release — check the last line of output)
 npm run check-models # model-drift audit against docs/top-models.json
 ```
 
@@ -143,6 +147,8 @@ Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema 
 
 Each peer registers the MCP server using its host's standard MCP config. **Do NOT set a `CROSS_REVIEW_CALLER` env var** — caller identity is resolved dynamically per session (spec v4.14 §6.20, simplified in v1.2.12) via the calling host's MCP `clientInfo.name` (declared during the `initialize` handshake) with substring match against `claude` / `codex` / `gemini`. The env-var fallback that previously existed was removed in v1.2.12 because it produced "lying logs" — the server affirmed `caller=X` while the actual session was driven by agent Y. If a stale config still sets `CROSS_REVIEW_CALLER`, the server emits a one-shot deprecation notice on stderr at startup and ignores the variable; the server boots and runs normally.
 
+For local workstations, prefer **workspace-scoped MCP config** when the host supports it (`.vscode/mcp.json`, `.gemini/settings.json`, `.mcp.json`, `.codex/config.toml`). Keep user-level MCP config empty unless the host has no project/workspace separation.
+
 ### Claude Code
 
 ```bash
@@ -153,12 +159,12 @@ Verify: `claude mcp get cross-review` should show `Status: Connected`. The Claud
 
 ### ChatGPT Codex
 
-Add to `~/.codex/config.toml`:
+Add to the project `.codex/config.toml` when possible:
 
 ```toml
 [mcp_servers.cross-review]
-command = "node"
-args = ["/absolute/path/to/cross-review-v1/src/server.js"]
+command = "/absolute/path/to/cross-review-v1.cmd"
+args = []
 tool_timeout_sec = 1800
 ```
 
@@ -166,14 +172,14 @@ Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdi
 
 ### Gemini CLI
 
-Add to `~/.gemini/settings.json` under `mcpServers`:
+Add to the project `.gemini/settings.json` under `mcpServers`:
 
 ```json
 {
   "mcpServers": {
     "cross-review-v1": {
-      "command": "node",
-      "args": ["/absolute/path/to/cross-review-v1/src/server.js"]
+      "command": "/absolute/path/to/cross-review-v1.cmd",
+      "args": []
     }
   }
 }
@@ -184,6 +190,20 @@ Verify: invoke `gemini` and confirm `cross-review-v1` appears in the MCP list. T
 ### Mixed-host setups
 
 If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one of `claude` / `codex` / `gemini` (e.g., a custom wrapper or test harness), pass an explicit `caller` argument on every `session_init` call instead of trying to inject identity via env config. The `args.caller` parameter takes precedence over `clientInfo.name` resolution.
+
+### Embedded DeepSeek CLI MCP config
+
+`cross-review-v1-deepseek-cli` ships with `reviewer-configs/deepseek-cli.mcp.json`. The server invokes DeepSeek with a restrictive MCP allowlist by default:
+
+- `memory`
+- `ultrathink`
+- `code-reasoning`
+
+The file may contain a larger stdio-only MCP catalog for manual DeepSeek CLI runs. Use `--allowed-mcp-server-names <name>` repeatedly, or `DEEPSEEK_ALLOWED_MCP_SERVERS=name1,name2`, to expose only the servers needed for that invocation. The default allowlist is the safe reasoning trio above; use `--allow-all-mcp-servers` only for manual diagnostic runs where recursion and tool exposure are intentional. The embedded CLI supports environment placeholders in the common forms `${env:NAME}`, `${NAME}`, and `$NAME`, and it intentionally does not read or write Gemini profile/config directories.
+
+The embedded catalog deliberately excludes `cross-review-v1` and `cross-review-v2`, even in the manual `--allow-all-mcp-servers` path. DeepSeek child processes also receive a filtered environment containing only OS launch essentials plus `DEEPSEEK_*` settings; unrelated provider keys are not forwarded.
+
+DeepSeek tool calls are bounded by `DEEPSEEK_MAX_TOOL_TURNS` (default `8`) or `--max-tool-turns <n>` for manual CLI runs. If the model still asks for tools after the cap, the CLI fails the round loudly with a max-tool-turns error instead of looping forever or silently truncating the review.
 
 ### Reload clients
 

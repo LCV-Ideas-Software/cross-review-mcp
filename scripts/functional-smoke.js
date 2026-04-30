@@ -1305,6 +1305,8 @@ async function runAll() {
 	all.push(...s27.results);
 	const s28 = await driveGeminiArgsShape();
 	all.push(...s28.results);
+	const s28b = await driveDeepSeekCliShapeUnit();
+	all.push(...s28b.results);
 	const s29 = await driveSpawnPeersIdentityShape();
 	all.push(...s29.results);
 	const s30 = await driveProbeStubShape();
@@ -2712,27 +2714,36 @@ async function driveV414CallerResolutionUnit() {
 	// complement of VALID_AGENTS correctly for every valid caller.
 	const peersClaude = server.peersForCaller("claude");
 	assert(
-		peersClaude.length === 2 &&
+		peersClaude.length === 3 &&
 			peersClaude.includes("codex") &&
-			peersClaude.includes("gemini"),
-		"§6.20 v1.2.12: peersForCaller('claude') is [codex, gemini]",
+			peersClaude.includes("gemini") &&
+			peersClaude.includes("deepseek"),
+		"§6.20 v1.5.0: peersForCaller('claude') is [codex, gemini, deepseek]",
 	);
 	const peersCodex = server.peersForCaller("codex");
 	assert(
-		peersCodex.length === 2 &&
+		peersCodex.length === 3 &&
 			peersCodex.includes("claude") &&
-			peersCodex.includes("gemini"),
-		"§6.20 v1.2.12: peersForCaller('codex') is [claude, gemini]",
+			peersCodex.includes("gemini") &&
+			peersCodex.includes("deepseek"),
+		"§6.20 v1.5.0: peersForCaller('codex') is [claude, gemini, deepseek]",
 	);
 	const peersGemini = server.peersForCaller("gemini");
 	assert(
-		peersGemini.length === 2 &&
+		peersGemini.length === 3 &&
 			peersGemini.includes("claude") &&
-			peersGemini.includes("codex"),
-		"§6.20 v1.2.12: peersForCaller('gemini') is [claude, codex]",
+			peersGemini.includes("codex") &&
+			peersGemini.includes("deepseek"),
+		"§6.20 v1.5.0: peersForCaller('gemini') is [claude, codex, deepseek]",
+	);
+	assert(
+		Array.isArray(server.VALID_PEERS) &&
+			server.VALID_PEERS.includes("deepseek") &&
+			!server.VALID_AGENTS.includes("deepseek"),
+		"§6.20 v1.5.0: DeepSeek is peer-only (not caller)",
 	);
 	results.push({
-		step: "v4.14 §6.20 v1.2.12: peersForCaller helper invariant for all 3 callers",
+		step: "v4.14 §6.20 v1.5.0: peersForCaller helper invariant for 3 callers + DeepSeek peer-only",
 		ok: true,
 	});
 
@@ -4542,7 +4553,8 @@ async function driveV6ConvergenceSnapshotUnit() {
 
 // W8: ask_peers N-ary flow end-to-end via MCP. Smoke uses the agent-
 // agnostic CROSS_REVIEW_PEER_STUB=STRUCTURED:READY so every spawned
-// peer (codex + gemini under caller=claude) resolves with a stub READY.
+// peer (codex + gemini + deepseek under caller=claude) resolves with a
+// stub READY.
 // Verifies the round carries peers[] with explicit identity and the
 // unanimity convergence path.
 async function driveAskPeersNAry() {
@@ -4589,37 +4601,38 @@ async function driveAskPeersNAry() {
 			name: "ask_peers",
 			arguments: {
 				session_id: sessionId,
-				prompt: "trilateral stub probe",
+				prompt: "quadrilateral stub probe",
 				caller_status: "READY",
 			},
 		});
 		const askPayload = JSON.parse(askResp.result.content[0].text);
 		assert(Array.isArray(askPayload.peers), "ask_peers: peers array returned");
 		assert(
-			askPayload.peers.length === 2,
-			"ask_peers: 2 peers responded (codex+gemini)",
+			askPayload.peers.length === 3,
+			"ask_peers: 3 peers responded (codex+gemini+deepseek)",
 		);
 		const agents = askPayload.peers.map((p) => p.agent).sort();
 		assert(
-			JSON.stringify(agents) === JSON.stringify(["codex", "gemini"]),
-			`peers are codex,gemini (got ${agents.join(",")})`,
+			JSON.stringify(agents) ===
+				JSON.stringify(["codex", "deepseek", "gemini"]),
+			`peers are codex,deepseek,gemini (got ${agents.join(",")})`,
 		);
 		for (const p of askPayload.peers) {
 			assert(p.status === "fulfilled", `peer ${p.agent} status=fulfilled`);
 			assert(p.peer_status === "READY", `peer ${p.agent} peer_status=READY`);
 		}
 		assert(
-			askPayload.quorum.requested === 2 &&
-				askPayload.quorum.responded === 2 &&
+			askPayload.quorum.requested === 3 &&
+				askPayload.quorum.responded === 3 &&
 				askPayload.quorum.rejected === 0,
-			"quorum: 2/2/0",
+			"quorum: 3/3/0",
 		);
 		assert(
 			askPayload.protocol_violation === false,
 			"no protocol violation on stub READY",
 		);
 		results.push({
-			step: "ask_peers: N-ary round with 2 stub peers, unanimity READY, quorum 2/2/0",
+			step: "ask_peers: N-ary round with 3 stub peers, unanimity READY, quorum 3/3/0",
 			ok: true,
 		});
 
@@ -5228,6 +5241,204 @@ async function driveGeminiArgsShape() {
 	return { results };
 }
 
+// v1.5.0: embedded DeepSeek CLI shape. The prompt MUST be delivered via
+// stdin by spawnPeer; buildDeepSeekArgs may contain only static flags.
+async function driveDeepSeekCliShapeUnit() {
+	const results = [];
+	const {
+		buildDeepSeekArgs,
+		DEEPSEEK_MODEL,
+		DEEPSEEK_REASONING_EFFORT,
+		DEEPSEEK_CLI_PATH,
+		DEEPSEEK_MCP_JSON,
+		DEEPSEEK_ALLOWED_MCP_SERVERS,
+		buildDeepSeekEnv,
+	} = require("../src/lib/peer-spawn.js");
+	const args = buildDeepSeekArgs();
+
+	assert(
+		args[0] === DEEPSEEK_CLI_PATH,
+		"buildDeepSeekArgs starts with embedded CLI path",
+	);
+	assert(args.includes("-m"), "buildDeepSeekArgs has -m flag");
+	assert(
+		args[args.indexOf("-m") + 1] === DEEPSEEK_MODEL,
+		`-m value is DEEPSEEK_MODEL (${DEEPSEEK_MODEL})`,
+	);
+	assert(args.includes("--thinking"), "has --thinking");
+	assert(
+		args[args.indexOf("--thinking") + 1] === "enabled",
+		"--thinking=enabled",
+	);
+	assert(args.includes("--reasoning-effort"), "has --reasoning-effort");
+	assert(
+		args[args.indexOf("--reasoning-effort") + 1] ===
+			DEEPSEEK_REASONING_EFFORT,
+		`--reasoning-effort=${DEEPSEEK_REASONING_EFFORT}`,
+	);
+	assert(args.includes("--mcp-config"), "has --mcp-config");
+	const allowCount = args.filter(
+		(a) => a === "--allowed-mcp-server-names",
+	).length;
+	assert(
+		allowCount === DEEPSEEK_ALLOWED_MCP_SERVERS.length,
+		`DeepSeek allowed MCP count=${DEEPSEEK_ALLOWED_MCP_SERVERS.length}`,
+	);
+	assert(
+		!args.includes("deepseek-chat") && !args.includes("deepseek-reasoner"),
+		"deprecated DeepSeek model aliases are not used",
+	);
+	assert(
+		!args.includes("STATUS: READY") && !args.includes("\n"),
+		"DeepSeek args do not carry prompt content",
+	);
+	assert(
+		!args.includes("--prompt") &&
+			!args.includes("-p") &&
+			!args.includes("DEEPSEEK_API_KEY"),
+		"DeepSeek args do not carry prompt flags or API-key material",
+	);
+	const cliSrc = fs.readFileSync(DEEPSEEK_CLI_PATH, "utf8");
+	assert(
+		!cliSrc.includes("GEMINI_CLI_HOME") &&
+			!cliSrc.includes(".gemini") &&
+			!cliSrc.includes("settings.json"),
+		"embedded DeepSeek CLI has no Gemini config references",
+	);
+	assert(
+		cliSrc.includes("StdioClientTransport") &&
+			cliSrc.includes("client.callTool"),
+		"embedded DeepSeek CLI contains MCP stdio client + tool call loop",
+	);
+	const configJson = JSON.parse(fs.readFileSync(DEEPSEEK_MCP_JSON, "utf8"));
+	const configServerNames = Object.keys(configJson.mcpServers || {});
+	assert(
+		!configServerNames.includes("cross-review-v1") &&
+			!configServerNames.includes("cross-review-v2"),
+		"embedded DeepSeek MCP catalog excludes cross-review servers to prevent recursive review loops",
+	);
+	const savedDeepSeekKey = process.env.DEEPSEEK_API_KEY;
+	const savedOpenAIKey = process.env.OPENAI_API_KEY;
+	try {
+		process.env.DEEPSEEK_API_KEY = "deepseek-smoke-key";
+		process.env.OPENAI_API_KEY = "openai-smoke-key";
+		const deepseekEnv = buildDeepSeekEnv();
+		assert(
+			deepseekEnv.DEEPSEEK_API_KEY === "deepseek-smoke-key",
+			"DeepSeek child env includes the required DeepSeek key",
+		);
+		assert(
+			!Object.prototype.hasOwnProperty.call(deepseekEnv, "OPENAI_API_KEY"),
+			"DeepSeek child env does not inherit unrelated provider keys",
+		);
+		assert(
+			Boolean(deepseekEnv.PATH || deepseekEnv.Path),
+			"DeepSeek child env preserves PATH/Path for stdio MCP launchers",
+		);
+	} finally {
+		if (savedDeepSeekKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+		else process.env.DEEPSEEK_API_KEY = savedDeepSeekKey;
+		if (savedOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+		else process.env.OPENAI_API_KEY = savedOpenAIKey;
+	}
+	results.push({
+		step: "v1.5.0: embedded DeepSeek CLI uses stdin prompt, deepseek-v4-pro thinking, MCP stdio tools, no Gemini config references, no cross-review recursion, and a filtered child env",
+		ok: true,
+	});
+
+	const deepseekCli = require("../src/deepseek-cli.js");
+	const savedDeepSeekAllowed = process.env.DEEPSEEK_ALLOWED_MCP_SERVERS;
+	try {
+		delete process.env.DEEPSEEK_ALLOWED_MCP_SERVERS;
+		const parsedDefault = deepseekCli.parseArgs([]);
+		assert(
+			JSON.stringify(parsedDefault.allowedMcpServerNames) ===
+				JSON.stringify(deepseekCli.DEFAULT_ALLOWED_MCP_SERVERS),
+			"embedded DeepSeek CLI defaults to safe MCP allowlist",
+		);
+		const parsedAll = deepseekCli.parseArgs(["--allow-all-mcp-servers"]);
+		assert(
+			parsedAll.allowAllMcpServers === true &&
+				parsedAll.allowedMcpServerNames.length === 0,
+			"--allow-all-mcp-servers clears the restrictive allowlist",
+		);
+		const markerName = "CROSS_REVIEW_V1_PLACEHOLDER_SMOKE";
+		process.env[markerName] = "placeholder-ok";
+		assert(
+			deepseekCli.expandEnvPlaceholders(
+				`a:\${env:${markerName}} b:\${${markerName}} c:$${markerName}`,
+			) === "a:placeholder-ok b:placeholder-ok c:placeholder-ok",
+			"embedded DeepSeek CLI expands env placeholders from VS Code/Gemini/Claude styles",
+		);
+		delete process.env[markerName];
+		results.push({
+			step: "v1.5.0: embedded DeepSeek CLI defaults to safe MCP allowlist and expands common env placeholder styles",
+			ok: true,
+		});
+	} finally {
+		if (savedDeepSeekAllowed === undefined) {
+			delete process.env.DEEPSEEK_ALLOWED_MCP_SERVERS;
+		} else {
+			process.env.DEEPSEEK_ALLOWED_MCP_SERVERS = savedDeepSeekAllowed;
+		}
+	}
+	const fixturePath = path.resolve(__dirname, "fixtures", "mcp-echo-server.js");
+	const tmpConfig = path.join(
+		os.tmpdir(),
+		`cross-review-v1-deepseek-mcp-${process.pid}.json`,
+	);
+	fs.writeFileSync(
+		tmpConfig,
+		JSON.stringify({
+			mcpServers: {
+				echo: {
+					command: process.execPath,
+					args: [fixturePath],
+				},
+			},
+		}),
+	);
+	let mcp = null;
+	try {
+		mcp = await deepseekCli.loadMcpTools({
+			mcpConfig: tmpConfig,
+			allowedMcpServerNames: ["echo"],
+		});
+		assert(
+			Array.isArray(mcp.tools) && mcp.tools.length === 1,
+			"embedded DeepSeek CLI loads one stdio MCP tool from fixture config",
+		);
+		const functionName = mcp.tools[0].function.name;
+		const mapping = mcp.toolMap.get(functionName);
+		assert(mapping?.toolName === "echo", "fixture MCP tool mapped to echo");
+		const result = await mapping.client.callTool({
+			name: mapping.toolName,
+			arguments: { text: "mcp-ok" },
+		});
+		assert(
+			deepseekCli.toolResultToText(result) === "mcp-ok",
+			"fixture MCP tool call returns expected content",
+		);
+		results.push({
+			step: "v1.5.0: embedded DeepSeek CLI loads and calls a stdio MCP fixture tool",
+			ok: true,
+		});
+	} finally {
+		if (mcp?.clients) {
+			for (const client of mcp.clients) {
+				try {
+					await client.close();
+				} catch {}
+			}
+		}
+		try {
+			fs.unlinkSync(tmpConfig);
+		} catch {}
+	}
+
+	return { results };
+}
+
 // W4: spawnPeers explicit-identity contract (R12: never infer agent
 // from array index). Uses CROSS_REVIEW_PEER_STUB to avoid real CLI.
 async function driveSpawnPeersIdentityShape() {
@@ -5238,17 +5449,18 @@ async function driveSpawnPeersIdentityShape() {
 	const prevStub = process.env.CROSS_REVIEW_PEER_STUB;
 	process.env.CROSS_REVIEW_PEER_STUB = "STRUCTURED:READY";
 	try {
-		const out = await spawnPeers(["codex", "claude", "gemini"], "probe");
+		const out = await spawnPeers(["codex", "claude", "gemini", "deepseek"], "probe");
 		assert(
-			Array.isArray(out) && out.length === 3,
-			"spawnPeers returns array of 3",
+			Array.isArray(out) && out.length === 4,
+			"spawnPeers returns array of 4",
 		);
 		const agents = out.map((o) => o.agent);
 		assert(
 			agents.includes("codex") &&
 				agents.includes("claude") &&
-				agents.includes("gemini"),
-			"all three agents present by identity",
+				agents.includes("gemini") &&
+				agents.includes("deepseek"),
+			"all four agents present by identity",
 		);
 		for (const entry of out) {
 			assert(
@@ -5265,7 +5477,7 @@ async function driveSpawnPeersIdentityShape() {
 			);
 		}
 		results.push({
-			step: "spawnPeers: 3 agents, Promise.all resolution, explicit agent identity per entry (R12)",
+			step: "spawnPeers: 4 agents, Promise.all resolution, explicit agent identity per entry (R12 + v1.5.0 DeepSeek)",
 			ok: true,
 		});
 	} finally {
@@ -5305,14 +5517,14 @@ async function driveProbeStubShape() {
 
 	const prev = process.env.CROSS_REVIEW_PROBE_STUB;
 	process.env.CROSS_REVIEW_PROBE_STUB =
-		"codex:top,claude:top,gemini:fallback:gemini-2.5-flash";
+		"codex:top,claude:top,gemini:fallback:gemini-2.5-flash,deepseek:ok:deepseek-v4-pro";
 	try {
-		const snap = await probeChain(["codex", "claude", "gemini"], {
+		const snap = await probeChain(["codex", "claude", "gemini", "deepseek"], {
 			budgetMs: 5000,
 		});
 		assert(
-			Array.isArray(snap) && snap.length === 3,
-			"probeChain returns array of 3",
+			Array.isArray(snap) && snap.length === 4,
+			"probeChain returns array of 4",
 		);
 		const byAgent = Object.fromEntries(snap.map((s) => [s.agent, s]));
 		assert(byAgent.codex.tier === "top", "codex tier=top");
@@ -5321,6 +5533,11 @@ async function driveProbeStubShape() {
 		assert(
 			byAgent.gemini.model_reported === "gemini-2.5-flash",
 			"gemini reported fallback model",
+		);
+		assert(byAgent.deepseek.tier === "ok", "deepseek tier=ok");
+		assert(
+			byAgent.deepseek.model_reported === "deepseek-v4-pro",
+			"deepseek reported pinned model",
 		);
 		for (const entry of snap) {
 			for (const field of [
@@ -5342,7 +5559,7 @@ async function driveProbeStubShape() {
 			}
 		}
 		results.push({
-			step: "probeChain: stub mode returns 3 snapshots with full capability_snapshot field set (F2 Q6)",
+			step: "probeChain: stub mode returns 4 snapshots with full capability_snapshot field set (F2 Q6 + v1.5.0 DeepSeek)",
 			ok: true,
 		});
 	} finally {
@@ -5384,6 +5601,8 @@ async function drivePeerSpawnRealPathModel() {
 		modelForPeer,
 		CODEX_MODEL,
 		CLAUDE_MODEL,
+		GEMINI_MODEL,
+		DEEPSEEK_MODEL,
 	} = require("../src/lib/peer-spawn.js");
 
 	assert(
@@ -5398,8 +5617,16 @@ async function drivePeerSpawnRealPathModel() {
 		modelForPeer("claude") === CLAUDE_MODEL,
 		`modelForPeer('claude') === CLAUDE_MODEL (${CLAUDE_MODEL})`,
 	);
+	assert(
+		modelForPeer("gemini") === GEMINI_MODEL,
+		`modelForPeer('gemini') === GEMINI_MODEL (${GEMINI_MODEL})`,
+	);
+	assert(
+		modelForPeer("deepseek") === DEEPSEEK_MODEL,
+		`modelForPeer('deepseek') === DEEPSEEK_MODEL (${DEEPSEEK_MODEL})`,
+	);
 	results.push({
-		step: `modelForPeer maps codex->${CODEX_MODEL}, claude->${CLAUDE_MODEL}`,
+		step: `modelForPeer maps codex->${CODEX_MODEL}, claude->${CLAUDE_MODEL}, gemini->${GEMINI_MODEL}, deepseek->${DEEPSEEK_MODEL}`,
 		ok: true,
 	});
 
@@ -5888,6 +6115,8 @@ async function driveV1216ArgvBasenameMatchUnit() {
 		// Gemini peer (see buildGeminiArgs).
 		'gemini.exe -m gemini-3.1-pro-preview -p " " --approval-mode plan',
 		"gemini -m gemini-3.1-pro-preview --prompt --approval-mode plan",
+		// DeepSeek peer (see buildDeepSeekArgs).
+		'node.exe "C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js" -m deepseek-v4-pro --thinking enabled --reasoning-effort max --mcp-config reviewer-configs\\reviewer-minimal.mcp.json',
 	];
 	for (const cmd of realPeerSpawns) {
 		assert(
@@ -6120,6 +6349,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 		'cmd.exe /d /s /c "gemini -m gemini-3.1-pro-preview -p"',
 		// Claude via cmd.exe.
 		"cmd.exe /c claude -p --output-format text",
+		// DeepSeek embedded CLI via cmd.exe wrapper.
+		'cmd.exe /d /s /c "node.exe C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js --reasoning-effort max"',
 		// Cmd alias (no .exe in some shells).
 		"cmd /c codex.cmd exec",
 	];
@@ -6130,7 +6361,7 @@ async function driveV1217NpmShimRecognitionUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand matches cmd.exe wrappers for codex/gemini/claude with .cmd/.exe/bare resolution",
+		step: "v1.2.17 §6.22.1 + v1.5.0: isPeerCliCommand matches cmd.exe wrappers for codex/gemini/claude and embedded deepseek",
 		ok: true,
 	});
 
@@ -6144,6 +6375,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 		'node.exe "C:\\path\\to\\@anthropic-ai\\claude-cli\\bin\\claude.cjs" -p',
 		// POSIX node-shim.
 		"node /usr/lib/node_modules/@openai/codex-cli/bin/codex.mjs exec",
+		// DeepSeek embedded CLI worker.
+		'node.exe "C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js" --reasoning-effort max',
 	];
 	for (const cmd of nodeExeWorkers) {
 		assert(
@@ -6152,7 +6385,7 @@ async function driveV1217NpmShimRecognitionUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.17 §6.22.1 v1.2.17 amendment: isPeerCliCommand matches node.exe workers invoking peer .js/.cjs/.mjs entrypoints",
+		step: "v1.2.17 §6.22.1 + v1.5.0: isPeerCliCommand matches node.exe workers invoking peer .js/.cjs/.mjs entrypoints and embedded deepseek",
 		ok: true,
 	});
 
@@ -6350,6 +6583,15 @@ async function driveV1218ConvergenceScopeUnit() {
 			"trilateral",
 		"v1.2.18 Finding 6: 2 peers responded + no exclusions → trilateral",
 	);
+	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek"],
+			[],
+			[],
+		) === "quadrilateral",
+		"v1.5.0 Finding 6 extension: 3 peers responded + no exclusions → quadrilateral",
+	);
 	// Degraded bilateral: 1 peer responded, 1 excluded by probe.
 	assert(
 		store.deriveConvergenceScope(false, ["codex"], ["gemini"], []) ===
@@ -6374,7 +6616,7 @@ async function driveV1218ConvergenceScopeUnit() {
 		"v1.2.18 Finding 6: zero peers responded → degraded_none",
 	);
 	results.push({
-		step: "v1.2.18 Finding 6: deriveConvergenceScope returns correct regime label for trilateral / bilateral / degraded_bilateral / degraded_none",
+		step: "v1.2.18 Finding 6 + v1.5.0: deriveConvergenceScope returns correct regime label for quadrilateral / trilateral / bilateral / degraded_bilateral / degraded_none",
 		ok: true,
 	});
 
@@ -6397,6 +6639,24 @@ async function driveV1218ConvergenceScopeUnit() {
 		naryShot.convergence_scope === "trilateral",
 		`v1.2.18 Finding 6: N-ary snapshot with 2 peers READY must report convergence_scope=trilateral (got '${naryShot.convergence_scope}')`,
 	);
+	const quadRound = {
+		caller: "claude",
+		caller_status: "READY",
+		peers: [
+			{ agent: "codex", peer_status: "READY" },
+			{ agent: "gemini", peer_status: "READY" },
+			{ agent: "deepseek", peer_status: "READY" },
+		],
+		quorum: { requested: 3, responded: 3, rejected: 0 },
+	};
+	const quadShot = store.computeConvergenceSnapshot(0, quadRound, {
+		excluded_probe: [],
+		excluded_runtime: [],
+	});
+	assert(
+		quadShot.convergence_scope === "quadrilateral",
+		`v1.5.0 Finding 6 extension: N-ary snapshot with 3 peers READY must report convergence_scope=quadrilateral (got '${quadShot.convergence_scope}')`,
+	);
 
 	const legacyRound = {
 		caller: "codex",
@@ -6410,7 +6670,7 @@ async function driveV1218ConvergenceScopeUnit() {
 		`v1.2.18 Finding 6: legacy bilateral snapshot must report convergence_scope=bilateral (got '${legacyShot.convergence_scope}')`,
 	);
 	results.push({
-		step: "v1.2.18 Finding 6: computeConvergenceSnapshot surfaces convergence_scope on both N-ary and legacy paths",
+		step: "v1.2.18 Finding 6 + v1.5.0: computeConvergenceSnapshot surfaces convergence_scope on quadrilateral, trilateral, and legacy paths",
 		ok: true,
 	});
 

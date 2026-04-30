@@ -25,6 +25,15 @@
             "last_verified": "2026-04-24",
             "ref_url": "https://ai.google.dev/gemini-api/docs/models",
             "notes_en": "Gemini CLI 0.39.1 oauth-personal path under Google One AI Ultra subscription. Verified 2026-04-24: Ultra tier unlocks 3.x previews via v1internal code-assist endpoint. Empirical confirmation: `-m gemini-3.1-pro-preview` and `-m gemini-3-pro-preview` produce coherent responses; invalid IDs return clean 404 (server validates). No separate API billing -- covered by Ultra subscription. Known limitation: oauth-personal responses do not expose authoritative modelVersion header, so runtime silent-downgrade defense false-positive-flags based on unreliable text self-report. Cleaner audit trail would require SDK path (separate billing). Protocol_violation flag is noisy on Gemini rounds; convergence still works (based on peer_status only)."
+        },
+        "deepseek": {
+            "id": "deepseek-v4-pro",
+            "reasoning_effort": "max",
+            "fallback_chain": ["deepseek-v4-pro"],
+            "cli_version": "embedded-cross-review-v1",
+            "last_verified": "2026-04-30",
+            "ref_url": "https://api-docs.deepseek.com/",
+            "notes_en": "v1.5.0 adds DeepSeek through cross-review-v1's own embedded CLI, not through Gemini-derived `@sluisr/deepseek-cli`. The embedded CLI reads prompt content from stdin, calls DeepSeek's OpenAI-compatible Chat API, requests thinking mode, and supports stdio MCP servers from reviewer-configs/deepseek-cli.mcp.json with a safe default allowlist and no cross-review servers in the embedded catalog. Legacy DeepSeek model names `deepseek-chat` and `deepseek-reasoner` are intentionally not used because DeepSeek documents their deprecation on 2026-07-24."
         }
     }
 }

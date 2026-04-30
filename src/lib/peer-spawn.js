@@ -65,6 +65,11 @@
 //             only, not protocol_violation). Resolution for a cleaner
 //             audit trail requires SDK path (separate billing) or a
 //             Gemini-specific bypass in the model-check (v0.6.0-alpha).
+//   - DeepSeek: model `deepseek-v4-pro` via cross-review-v1's own embedded
+//               DeepSeek CLI. The CLI is part of this package, reads prompts
+//               from stdin, calls DeepSeek's OpenAI-compatible API with
+//               thinking enabled, and deliberately contains no Gemini CLI code
+//               or ~/.gemini/settings.json access.
 // Model change requires explicit spec/config bump/edit; no silent fallback.
 // `spawnPeer` returns `peer_model` for persistence in
 // meta.json.rounds[i].peer_model, meeting the normative auditability
@@ -78,6 +83,7 @@ const os = require("node:os");
 const CONFIGS_DIR = path.resolve(__dirname, "..", "..", "reviewer-configs");
 const EXCLUSIONS_PATH = path.join(CONFIGS_DIR, "peer-exclusions.json");
 const REVIEWER_MCP_JSON = path.join(CONFIGS_DIR, "reviewer-minimal.mcp.json");
+const DEEPSEEK_MCP_JSON = path.join(CONFIGS_DIR, "deepseek-cli.mcp.json");
 
 // Normative IDs for v0.5.0-alpha (spec v4 section 6.9.2, extended by v4.7
 // triangular + v4.8 resilience).
@@ -85,6 +91,9 @@ const CODEX_MODEL = "gpt-5.5";
 const CODEX_REASONING_EFFORT = "xhigh";
 const CLAUDE_MODEL = "claude-opus-4-7";
 const GEMINI_MODEL = "gemini-3.1-pro-preview";
+const DEEPSEEK_MODEL = "deepseek-v4-pro";
+const DEEPSEEK_REASONING_EFFORT = "max";
+const DEEPSEEK_CLI_PATH = path.resolve(__dirname, "..", "deepseek-cli.js");
 
 // Gemini peer containment: allowlist of MCP servers the peer may use while
 // analyzing. Deliberately excludes cross-review-v1 to prevent recursion
@@ -92,6 +101,53 @@ const GEMINI_MODEL = "gemini-3.1-pro-preview";
 // peer can honor the tri-tool mandate (spec v4 section 6.2 per
 // feedback_tri_tool_cross_review).
 const GEMINI_ALLOWED_MCP_SERVERS = ["memory", "ultrathink", "code-reasoning"];
+const DEEPSEEK_ALLOWED_MCP_SERVERS = [
+	"memory",
+	"ultrathink",
+	"code-reasoning",
+];
+
+function copyEnvIfPresent(target, name) {
+	if (process.env[name] !== undefined) target[name] = process.env[name];
+}
+
+function buildDeepSeekEnv() {
+	const env = {};
+	for (const name of [
+		"PATH",
+		"Path",
+		"PATHEXT",
+		"SystemRoot",
+		"SYSTEMROOT",
+		"WINDIR",
+		"windir",
+		"ComSpec",
+		"COMSPEC",
+		"TEMP",
+		"TMP",
+		"USERPROFILE",
+		"HOME",
+		"APPDATA",
+		"LOCALAPPDATA",
+	]) {
+		copyEnvIfPresent(env, name);
+	}
+	for (const name of [
+		"DEEPSEEK_API_KEY",
+		"DEEPSEEK_BASE_URL",
+		"DEEPSEEK_MODEL",
+		"DEEPSEEK_MAX_TOKENS",
+		"DEEPSEEK_REASONING_EFFORT",
+		"DEEPSEEK_THINKING",
+		"DEEPSEEK_TIMEOUT_MS",
+		"DEEPSEEK_MAX_TOOL_TURNS",
+		"DEEPSEEK_MCP_CONFIG",
+		"DEEPSEEK_ALLOWED_MCP_SERVERS",
+	]) {
+		copyEnvIfPresent(env, name);
+	}
+	return env;
+}
 
 // ---------------------------------------------------------------------------
 // v0.6.0-alpha / spec v4.9 — transport_descriptor + rate-limit detection
@@ -187,6 +243,13 @@ function buildTransportDescriptor(agent) {
 			auth,
 			endpoint_class:
 				auth === "api-key" ? "generativelanguage-v1beta" : "v1internal",
+		};
+	}
+	if (agent === "deepseek") {
+		return {
+			agent: "deepseek",
+			auth: "api-key",
+			endpoint_class: "deepseek-openai-compatible",
 		};
 	}
 	return { agent: String(agent), auth: "unknown", endpoint_class: "unknown" };
@@ -571,10 +634,32 @@ function buildGeminiArgs() {
 	];
 }
 
+function buildDeepSeekArgs() {
+	const allowArgs = DEEPSEEK_ALLOWED_MCP_SERVERS.flatMap((name) => [
+		"--allowed-mcp-server-names",
+		name,
+	]);
+	return [
+		DEEPSEEK_CLI_PATH,
+		"-m",
+		DEEPSEEK_MODEL,
+		"--thinking",
+		"enabled",
+		"--reasoning-effort",
+		DEEPSEEK_REASONING_EFFORT,
+		"--output-format",
+		"text",
+		"--mcp-config",
+		DEEPSEEK_MCP_JSON,
+		...allowArgs,
+	];
+}
+
 function modelForPeer(peerAgent) {
 	if (peerAgent === "codex") return CODEX_MODEL;
 	if (peerAgent === "claude") return CLAUDE_MODEL;
 	if (peerAgent === "gemini") return GEMINI_MODEL;
+	if (peerAgent === "deepseek") return DEEPSEEK_MODEL;
 	throw new Error(`modelForPeer: unknown peer agent '${peerAgent}'`);
 }
 
@@ -801,6 +886,9 @@ function probeAgent(agent, options = {}) {
 			} else if (agent === "gemini") {
 				cmd = "gemini";
 				args = buildGeminiArgs();
+			} else if (agent === "deepseek") {
+				cmd = process.execPath;
+				args = buildDeepSeekArgs();
 			} else {
 				return finish({
 					agent,
@@ -818,11 +906,15 @@ function probeAgent(agent, options = {}) {
 				});
 			}
 			const cmdLine = buildCommandLine(cmd, args);
-			proc = spawn(cmdLine, {
+			const spawnOptions = {
 				stdio: ["pipe", "pipe", "pipe"],
 				shell: true,
 				windowsHide: true,
-			});
+			};
+			if (agent === "deepseek") {
+				spawnOptions.env = buildDeepSeekEnv();
+			}
+			proc = spawn(cmdLine, spawnOptions);
 		} catch (err) {
 			return finish({
 				agent,
@@ -1535,6 +1627,9 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 	} else if (peerAgent === "gemini") {
 		cmd = "gemini";
 		args = buildGeminiArgs();
+	} else if (peerAgent === "deepseek") {
+		cmd = process.execPath;
+		args = buildDeepSeekArgs();
 	} else {
 		return Promise.reject(
 			new Error(`spawnPeer: unknown peer agent '${peerAgent}'`),
@@ -1543,10 +1638,15 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 	const cmdLine = buildCommandLine(cmd, args);
 
 	return new Promise((resolve, reject) => {
-		const proc = spawn(cmdLine, {
+		const spawnOptions = {
 			stdio: ["pipe", "pipe", "pipe"],
 			shell: true,
-		});
+			windowsHide: true,
+		};
+		if (peerAgent === "deepseek") {
+			spawnOptions.env = buildDeepSeekEnv();
+		}
+		const proc = spawn(cmdLine, spawnOptions);
 		let stdout = "";
 		let stderr = "";
 		let stdoutBytes = 0;
@@ -2003,6 +2103,14 @@ function isPeerCliCommand(cmdLine) {
 		) {
 			return true;
 		}
+		if (
+			/[\\/]cross-review-v1[\\/]src[\\/]deepseek-cli\.js(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)--reasoning-effort(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
 		return false;
 	}
 	// v1.2.17 npm-shim recognition: node.exe worker invoking a peer CLI's
@@ -2032,6 +2140,14 @@ function isPeerCliCommand(cmdLine) {
 				rest,
 			) &&
 			/(?:^|\s)(-p|--print)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/[\s"'][^\s"']*[\\/]cross-review-v1[\\/]src[\\/]deepseek-cli\.js(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)--reasoning-effort(?:[\s"']|$)/.test(rest)
 		) {
 			return true;
 		}
@@ -2110,6 +2226,8 @@ function findOrphans(procs, ourPid) {
 			/\b(-p|--print)\b/i.test(p.command)
 		)
 			agent = "claude";
+		else if (/[\\/]cross-review-v1[\\/]src[\\/]deepseek-cli\.js/i.test(p.command))
+			agent = "deepseek";
 		orphans.push({ ...p, agent });
 	}
 	return orphans;
@@ -2125,6 +2243,7 @@ module.exports = {
 	buildCodexArgs,
 	buildClaudeArgs,
 	buildGeminiArgs,
+	buildDeepSeekArgs,
 	// v1.4.0 §6.25: Codex sandbox/approval policy is configurable.
 	resolveCodexSandboxPolicy,
 	logCodexSandboxPolicy,
@@ -2152,7 +2271,13 @@ module.exports = {
 	CODEX_REASONING_EFFORT,
 	CLAUDE_MODEL,
 	GEMINI_MODEL,
+	DEEPSEEK_MODEL,
+	DEEPSEEK_REASONING_EFFORT,
+	DEEPSEEK_CLI_PATH,
+	DEEPSEEK_MCP_JSON,
 	GEMINI_ALLOWED_MCP_SERVERS,
+	DEEPSEEK_ALLOWED_MCP_SERVERS,
+	buildDeepSeekEnv,
 	// v0.6.0-alpha / spec v4.9 additions.
 	detectGeminiAuth,
 	geminiAuthFromSignals,

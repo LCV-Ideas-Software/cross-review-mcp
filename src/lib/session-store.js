@@ -768,13 +768,14 @@ const CONVERGENCE_SPEC_VERSION = "v4.9";
 const SESSION_SPEC_VERSION = "v4.14";
 
 // v1.2.18 / Finding 6 (handoff 2026-04-28): derive `convergence_scope`
-// from snapshot data so the caller can distinguish trilateral unanimity
-// from a bilateral round where one peer was excluded (probe failure or
-// runtime rejection). The information was already present in
+// from snapshot data so the caller can distinguish full N-ary unanimity
+// from a degraded round where one or more peers were excluded (probe failure
+// or runtime rejection). The information was already present in
 // excluded_probe / excluded_runtime / responded_peers but required the
 // caller to compute the regime themselves; this field surfaces it
 // explicitly. Values:
-//   - "trilateral": all expected peers responded and round was triangular.
+//   - "quadrilateral": 3 peers responded (v1.5.0 DeepSeek fourth-peer topology).
+//   - "trilateral": 2 peers responded.
 //   - "bilateral": legacy ask_peer round (designed bilateral) OR ask_peers
 //     where the session always intended one peer (caller had only one
 //     non-self in VALID_AGENTS, theoretical edge case).
@@ -794,6 +795,7 @@ function deriveConvergenceScope(
 		(Array.isArray(excludedRuntime) ? excludedRuntime.length : 0);
 	if (responded === 0) return "degraded_none";
 	if (legacyBilateral) return "bilateral";
+	if (responded >= 3) return "quadrilateral";
 	if (responded >= 2) return "trilateral";
 	// responded === 1 in N-ary path:
 	if (excluded > 0) return "degraded_bilateral";

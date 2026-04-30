@@ -1,11 +1,12 @@
 {
   "name": "@lcv-ideas-software/cross-review-v1",
-  "version": "1.4.1",
-  "description": "MCP server orchestrating trilateral cross-review between Claude Code, ChatGPT Codex, and Gemini CLI",
+  "version": "1.5.0",
+  "description": "MCP server orchestrating CLI-only cross-review between Claude Code, ChatGPT Codex, Gemini CLI, and embedded DeepSeek CLI",
   "type": "commonjs",
   "main": "src/server.js",
   "bin": {
-    "cross-review-v1": "src/server.js"
+    "cross-review-v1": "src/server.js",
+    "cross-review-v1-deepseek-cli": "src/deepseek-cli.js"
   },
   "files": [
     "src/",
@@ -51,7 +52,9 @@
     "codex",
     "gpt",
     "gemini",
+    "deepseek",
     "ai-agents",
+    "quadrilateral",
     "trilateral",
     "peer-review",
     "convergence"

@@ -10,6 +10,7 @@
 // Schema v2 (v0.5.0-alpha) changes over v1:
 //   - schema_version MUST equal 2 (v1 rejected).
 //   - `gemini` entry is now MANDATORY alongside `codex` and `claude`.
+//   - v1.5.0 adds `deepseek` as the fourth peer and validates it too.
 //   - Every entry MUST declare `fallback_chain` (array, non-empty,
 //     element[0] === id). The chain is the ordered set of model IDs
 //     the runtime may fall back to when the top pin is unavailable
@@ -55,7 +56,7 @@ const PEER_SPAWN_PATH = path.join(REPO_ROOT, "src", "lib", "peer-spawn.js");
 const TOP_MODELS_PATH = path.join(REPO_ROOT, "docs", "top-models.json");
 
 const REQUIRED_SCHEMA_VERSION = 2;
-const REQUIRED_AGENTS = ["codex", "claude", "gemini"];
+const REQUIRED_AGENTS = ["codex", "claude", "gemini", "deepseek"];
 
 // v1.2.7 / external-audit round-5 lint cleanup: quote-agnostic so biome
 // formatter migrations between single/double quotes don't break the audit.
@@ -64,6 +65,10 @@ const RE_CODEX_EFFORT =
 	/const\s+CODEX_REASONING_EFFORT\s*=\s*['"]([^'"]+)['"]\s*;/;
 const RE_CLAUDE_MODEL = /const\s+CLAUDE_MODEL\s*=\s*['"]([^'"]+)['"]\s*;/;
 const RE_GEMINI_MODEL = /const\s+GEMINI_MODEL\s*=\s*['"]([^'"]+)['"]\s*;/;
+const RE_DEEPSEEK_MODEL =
+	/const\s+DEEPSEEK_MODEL\s*=\s*['"]([^'"]+)['"]\s*;/;
+const RE_DEEPSEEK_EFFORT =
+	/const\s+DEEPSEEK_REASONING_EFFORT\s*=\s*['"]([^'"]+)['"]\s*;/;
 
 function fail(exitCode, msg) {
 	process.stderr.write(`${msg}\n`);
@@ -159,7 +164,7 @@ function main() {
 			fail(
 				3,
 				`STRUCTURAL ERROR: entries.${agent} is missing from top-models.json. ` +
-					"Schema v2 requires all three agents (codex, claude, gemini).",
+					"Schema v2 requires all four agents (codex, claude, gemini, deepseek).",
 			);
 		}
 	}
@@ -169,6 +174,12 @@ function main() {
 		codex_effort: mustMatch(peerSrc, RE_CODEX_EFFORT, "CODEX_REASONING_EFFORT"),
 		claude_id: mustMatch(peerSrc, RE_CLAUDE_MODEL, "CLAUDE_MODEL"),
 		gemini_id: mustMatch(peerSrc, RE_GEMINI_MODEL, "GEMINI_MODEL"),
+		deepseek_id: mustMatch(peerSrc, RE_DEEPSEEK_MODEL, "DEEPSEEK_MODEL"),
+		deepseek_effort: mustMatch(
+			peerSrc,
+			RE_DEEPSEEK_EFFORT,
+			"DEEPSEEK_REASONING_EFFORT",
+		),
 	};
 
 	const errors = [];
@@ -177,6 +188,7 @@ function main() {
 	const codexEntry = entries.codex;
 	const claudeEntry = entries.claude;
 	const geminiEntry = entries.gemini;
+	const deepseekEntry = entries.deepseek;
 
 	if (codexEntry.id !== pinned.codex_id) {
 		errors.push(
@@ -196,6 +208,16 @@ function main() {
 	if (geminiEntry.id !== pinned.gemini_id) {
 		errors.push(
 			`GEMINI_MODEL drift: peer-spawn.js='${pinned.gemini_id}' vs top-models.json='${geminiEntry.id}'`,
+		);
+	}
+	if (deepseekEntry.id !== pinned.deepseek_id) {
+		errors.push(
+			`DEEPSEEK_MODEL drift: peer-spawn.js='${pinned.deepseek_id}' vs top-models.json='${deepseekEntry.id}'`,
+		);
+	}
+	if (deepseekEntry.reasoning_effort !== pinned.deepseek_effort) {
+		errors.push(
+			`DEEPSEEK_REASONING_EFFORT drift: peer-spawn.js='${pinned.deepseek_effort}' vs top-models.json='${deepseekEntry.reasoning_effort}'`,
 		);
 	}
 
@@ -227,12 +249,15 @@ function main() {
 	process.stdout.write("cross-review-v1: model drift audit (schema v2)\n");
 	process.stdout.write(
 		`  peer-spawn.js pinned: codex='${pinned.codex_id}' effort='${pinned.codex_effort}' ` +
-			`claude='${pinned.claude_id}' gemini='${pinned.gemini_id}'\n`,
+			`claude='${pinned.claude_id}' gemini='${pinned.gemini_id}' ` +
+			`deepseek='${pinned.deepseek_id}' effort='${pinned.deepseek_effort}'\n`,
 	);
 	process.stdout.write(
 		`  top-models.json entries: codex.id='${codexEntry.id}' ` +
 			`codex.reasoning_effort='${codexEntry.reasoning_effort}' ` +
-			`claude.id='${claudeEntry.id}' gemini.id='${geminiEntry.id}'\n`,
+			`claude.id='${claudeEntry.id}' gemini.id='${geminiEntry.id}' ` +
+			`deepseek.id='${deepseekEntry.id}' ` +
+			`deepseek.reasoning_effort='${deepseekEntry.reasoning_effort}'\n`,
 	);
 	process.stdout.write(`  staleness_threshold_days=${threshold}\n`);
 

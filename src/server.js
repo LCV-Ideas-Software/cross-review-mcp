@@ -4,8 +4,8 @@
  * cross-review-v1 / server.js
  *
  * MCP server (stdio) exposing the cross-review orchestration surface.
- * Identity is determined by CROSS_REVIEW_CALLER (claude | codex |
- * gemini); ask_peer (legacy bilateral, claude<->codex only) and
+ * Caller identity is resolved dynamically (claude | codex | gemini);
+ * ask_peer (legacy bilateral, claude<->codex only) and
  * ask_peers (N-ary, all complements) spawn the peers under the
  * definitive contained-spawn configuration.
  *
@@ -61,7 +61,7 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.4.1";
+const VERSION = "1.5.0";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
@@ -89,6 +89,7 @@ function detectResponseRateLimit(stdout) {
 	};
 }
 const VALID_AGENTS = ["claude", "codex", "gemini"];
+const VALID_PEERS = ["claude", "codex", "gemini", "deepseek"];
 const LEGACY_BILATERAL_PEER = Object.freeze({
 	claude: "codex",
 	codex: "claude",
@@ -175,7 +176,7 @@ function resolveCallerForSession(argsCaller, clientInfo) {
 }
 
 function peersForCaller(caller) {
-	return VALID_AGENTS.filter((a) => a !== caller);
+	return VALID_PEERS.filter((a) => a !== caller);
 }
 
 function legacyPeerForCaller(caller) {
@@ -508,7 +509,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "session_init",
-			description: `Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. Also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.11 section 6.9.3.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The \`task\` field is peer exchange — peer agents read it from meta.json. Peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this \`task\` field, and \`prompt\` in subsequent ask_peer/ask_peers calls) to en-US before submission. Runtime emits a non-blocking advisory \`task_language_warning\` when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject.\n\nCALLER RESOLUTION (spec v4.14 §6.20, simplified in v1.2.12). The session's caller is resolved dynamically per call with this precedence:\n  1. \`caller\` arg (explicit override) — wins if valid (must be one of ${VALID_AGENTS.join("|")}).\n  2. clientInfo.name from MCP initialize — substring-mapped to agent ('claude'→claude, 'gemini'→gemini, 'codex'→codex).\nIf neither resolves, session_init throws with a per-call error (not a startup crash). The resolved caller is recorded in \`meta.caller\` and \`meta.caller_resolution = { source, client_info_name }\` for audit. Peers are computed dynamically as VALID_AGENTS minus the resolved caller. Pass \`caller\` explicitly when an agent shares an MCP server instance with another (mixed-host setups) or when clientInfo.name doesn't map cleanly. Note: the legacy CROSS_REVIEW_CALLER env-var fallback was removed in v1.2.12 — operator-configured identity defeats the dynamic-caller principle. Stale env-var configs trigger a one-shot startup deprecation notice and are otherwise ignored.`,
+			description: `Create a new cross-review session directory under ~/.cross-review/<uuid>/. Returns the session_id. Also runs a parallel capability probe (probeChain) against all peers (target 20-25s, hard ceiling 30s) and persists the result as meta.capability_snapshot -- spec v4.11 section 6.9.3.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The \`task\` field is peer exchange — peer agents read it from meta.json. Peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this \`task\` field, and \`prompt\` in subsequent ask_peer/ask_peers calls) to en-US before submission. Runtime emits a non-blocking advisory \`task_language_warning\` when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject.\n\nCALLER RESOLUTION (spec v4.14 §6.20, simplified in v1.2.12). The session's caller is resolved dynamically per call with this precedence:\n  1. \`caller\` arg (explicit override) — wins if valid (must be one of ${VALID_AGENTS.join("|")}).\n  2. clientInfo.name from MCP initialize — substring-mapped to agent ('claude'→claude, 'gemini'→gemini, 'codex'→codex).\nIf neither resolves, session_init throws with a per-call error (not a startup crash). The resolved caller is recorded in \`meta.caller\` and \`meta.caller_resolution = { source, client_info_name }\` for audit. Peers are computed dynamically from VALID_PEERS (claude|codex|gemini|deepseek) minus the resolved caller. DeepSeek is a peer only, not a caller, in v1.5.0. Pass \`caller\` explicitly when an agent shares an MCP server instance with another (mixed-host setups) or when clientInfo.name doesn't map cleanly. Note: the legacy CROSS_REVIEW_CALLER env-var fallback was removed in v1.2.12 — operator-configured identity defeats the dynamic-caller principle. Stale env-var configs trigger a one-shot startup deprecation notice and are otherwise ignored.`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -654,7 +655,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 		},
 		{
 			name: "ask_peer",
-			description: `Send a prompt to the single bilateral peer (claude<->codex legacy pairing; gemini callers MUST use ask_peers) and return its response with parsed STATUS. Caller MUST declare its own caller_status (READY means "I have no further changes or objections this round"; NOT_READY means "I applied changes and want peer to re-review, or I disagree with peer's previous response"). caller_status is restricted to READY|NOT_READY -- if the caller is missing evidence, emit NOT_READY and attach a CALLER_REQUEST block for peer. Peer status may be READY|NOT_READY|NEEDS_EVIDENCE. Convergence requires both READY in the same round. Peer runs under contained spawn with destructive MCPs/apps disabled; peer is invoked with the top-level model explicitly set (spec v4 section 6.9.2: codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview; no silent fallback).
+			description: `Send a prompt to the single bilateral peer (claude<->codex legacy pairing; gemini callers MUST use ask_peers) and return its response with parsed STATUS. Caller MUST declare its own caller_status (READY means "I have no further changes or objections this round"; NOT_READY means "I applied changes and want peer to re-review, or I disagree with peer's previous response"). caller_status is restricted to READY|NOT_READY -- if the caller is missing evidence, emit NOT_READY and attach a CALLER_REQUEST block for peer. Peer status may be READY|NOT_READY|NEEDS_EVIDENCE. Convergence requires both READY in the same round. Peer runs under contained spawn with destructive MCPs/apps disabled; peer is invoked with the top-level model explicitly set (spec v4 section 6.9.2: codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview, deepseek=deepseek-v4-pro; no silent fallback).
 
 Legacy bilateral surface: ask_peer is claude<->codex only (R23). Gemini callers MUST use ask_peers instead.
 
@@ -662,7 +663,7 @@ Peer response contract:
   - <cross_review_peer_model>{"model_id":"<canonical id>"}</cross_review_peer_model>
   - <cross_review_status>{"status":"READY", ...}</cross_review_status>
 
-The peer-model block MUST appear immediately before the status block; the status block MUST be the last non-empty token. A mismatch between the declared model_id and the pinned CODEX_MODEL/CLAUDE_MODEL/GEMINI_MODEL constant fails the round as protocol_violation with failure_class='silent_model_downgrade'. This check is conditionally skipped per spec v4.11 §6.11 transport-class bypass for cli-subscription / oauth-personal endpoints; api-key endpoints retain the strict check. The defense is not retried.
+The peer-model block MUST appear immediately before the status block; the status block MUST be the last non-empty token. A mismatch between the declared model_id and the pinned CODEX_MODEL/CLAUDE_MODEL/GEMINI_MODEL/DEEPSEEK_MODEL constant fails the round as protocol_violation with failure_class='silent_model_downgrade'. This check is conditionally skipped per spec v4.11 §6.11 transport-class bypass for cli-subscription / oauth-personal endpoints; api-key endpoints retain the strict check. The defense is not retried.
 
 The v3 legacy line-form (STATUS: READY | STATUS: NOT_READY | STATUS: NEEDS_EVIDENCE) remains supported for status but does NOT substitute for the peer-model block.
 
@@ -700,7 +701,7 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 		},
 		{
 			name: "ask_peers",
-			description: `N-ary peer spawn (spec v4.11): send the same prompt to all complements of the session's caller (resolved per-session via spec v4.14 §6.20: args.caller > clientInfo.name) in parallel and return the aggregated per-peer responses. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (redaction applied) and are counted in round.quorum.rejected. Under strict-quorum semantics (spec v4.14 §6.12) rejected peers count AGAINST convergence: the predicate requires caller READY AND every responded peer READY AND round.quorum.rejected === 0. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. This is the canonical tool for triangular sessions.\n\nFAILURE-CLASS RECOVERY CONTRACT (spec v4.12 §6.16): each rejected peer carries a 'failure_class' and 'recovery_hint'. The caller MUST honor the hint:\n- 'prompt_flagged_by_moderation' (recovery_hint='reformulate_and_retry'): the peer's provider rejected the prompt as potentially violating its usage policy (commonly OpenAI Codex on reasoning models). The 'reformulation_advice' field gives concrete guidance — avoid charged words ('adversarial', 'jailbreak', 'exploit', 'attack', 'bypass'), replace model-introspection prose with neutral technical descriptions, prefer 'response anomaly' over 'silent_downgrade', 'edge case' over 'adversarial input'. The caller MUST reformulate the prompt and call ask_peers again in a NEW round (do NOT abort the session). Repeat up to 5 reformulation attempts before escalating to the operator.\n- 'rate_limit_induced_response' (recovery_hint='wait_and_retry'): observe 'retry_after_seconds' and resubmit after the cooldown window.\n- 'spawn_rejected' (no recovery_hint): unclassified peer-side error; surface to operator.\n\nThe session continues with whatever peers responded; reformulation recovers the missing peer in a follow-up round.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this 'prompt' field, plus the session_init 'task' field) to en-US before submission. Runtime emits a non-blocking advisory 'prompt_language_warning' field on the response when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject when confidence is high.`,
+			description: `N-ary peer spawn (spec v4.11): send the same prompt to all complements of the session's caller (resolved per-session via spec v4.14 §6.20: args.caller > clientInfo.name) in parallel and return the aggregated per-peer responses. In v1.5.0 the full peer set is claude, codex, gemini, and deepseek; DeepSeek is spawned through the embedded cross-review-v1 DeepSeek CLI, not through Gemini-derived tooling. Promise.allSettled preserves per-peer partial results; failed spawns enter meta.failed_attempts (redaction applied) and are counted in round.quorum.rejected. Under strict-quorum semantics (spec v4.14 §6.12) rejected peers count AGAINST convergence: the predicate requires caller READY AND every responded peer READY AND round.quorum.rejected === 0. Successful peers enter the round with their parsed status and model-check outcome. caller_status semantics identical to ask_peer. This is the canonical tool for N-ary/quadrilateral sessions.\n\nFAILURE-CLASS RECOVERY CONTRACT (spec v4.12 §6.16): each rejected peer carries a 'failure_class' and 'recovery_hint'. The caller MUST honor the hint:\n- 'prompt_flagged_by_moderation' (recovery_hint='reformulate_and_retry'): the peer's provider rejected the prompt as potentially violating its usage policy (commonly OpenAI Codex on reasoning models). The 'reformulation_advice' field gives concrete guidance — avoid charged words ('adversarial', 'jailbreak', 'exploit', 'attack', 'bypass'), replace model-introspection prose with neutral technical descriptions, prefer 'response anomaly' over 'silent_downgrade', 'edge case' over 'adversarial input'. The caller MUST reformulate the prompt and call ask_peers again in a NEW round (do NOT abort the session). Repeat up to 5 reformulation attempts before escalating to the operator.\n- 'rate_limit_induced_response' (recovery_hint='wait_and_retry'): observe 'retry_after_seconds' and resubmit after the cooldown window.\n- 'spawn_rejected' (no recovery_hint): unclassified peer-side error; surface to operator.\n\nThe session continues with whatever peers responded; reformulation recovers the missing peer in a follow-up round.\n\nPROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be en-US regardless of operator-facing chat language. The operator may converse with the caller in pt-BR or any other language, but the caller is responsible for translating peer-exchange content (this 'prompt' field, plus the session_init 'task' field) to en-US before submission. Runtime emits a non-blocking advisory 'prompt_language_warning' field on the response when non-en-US text is detected (diacritics or pt-BR lexemes); current behavior is warn-only but future versions may hard-reject when confidence is high.`,
 			inputSchema: {
 				type: "object",
 				properties: {
@@ -2034,6 +2035,7 @@ if (!TEST_IMPORT) {
 module.exports = {
 	VERSION,
 	VALID_AGENTS,
+	VALID_PEERS,
 	attachPromptTailDirective,
 	parsePeerOutputs,
 	// v1.1.0 / spec v4.13 §6.19 exports for smoke / audit.
