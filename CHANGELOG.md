@@ -17,6 +17,20 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.6.6] — 2026-05-01
+
+### Corrigido
+
+- Corrigido o diagnóstico de overflow em probe: quando `stdout` excede `PROBE_STREAM_MAX_BYTES`, o `stderr_tail` persistido agora carrega o tail do stream que de fato explodiu, em vez de repetir sempre o `stderr`.
+- `listStaleSessions()` agora ignora ruído de filesystem com 36 caracteres que não seja UUIDv4 válido, evitando crash de `session_sweep` antes do bloco `try/catch`.
+- Os caminhos `proc.on("error")` de probe e peer agora destacam listeners de `stdout`/`stderr`, alinhando a limpeza com os caminhos de timeout e overflow.
+
+### Validação
+
+- `npm test` — inclui regressões para os dois bugs apontados na auditoria v1.6.5 e para a simetria de cleanup em erro de spawn.
+
+---
+
 ## [1.6.5] — 2026-04-30
 
 ### Corrigido

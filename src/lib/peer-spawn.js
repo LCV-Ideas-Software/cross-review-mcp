@@ -1046,7 +1046,7 @@ function probeAgent(agent, options = {}) {
 				failure_class: "probe_stream_overflow",
 				cli_version: null,
 				timestamp: new Date().toISOString(),
-				stderr_tail: (stream === "stderr" ? stderr : stderr).slice(-400),
+				stderr_tail: (stream === "stderr" ? stderr : stdout).slice(-400),
 				transport_descriptor: buildTransportDescriptor(agent),
 				model_check_skipped: null,
 				cli_attested_model_raw: null,
@@ -1064,6 +1064,7 @@ function probeAgent(agent, options = {}) {
 			if (stderrBytes > PROBE_STREAM_MAX_BYTES) probeOverflow("stderr");
 		});
 		proc.on("error", (err) => {
+			detachProbeListeners();
 			clearTimeout(timer);
 			finish({
 				agent,
@@ -1784,6 +1785,7 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 		proc.on("error", (err) => {
 			finished = true;
 			clearTimeout(timer);
+			detachStreamListeners();
 			const wrapped = new Error(`spawn ${cmd} failed: ${err.message}`);
 			wrapped.duration_ms = Date.now() - started;
 			wrapped.stdout_tail = stdout.slice(-400);

@@ -1459,6 +1459,8 @@ async function runAll() {
 	all.push(...s90.results);
 	const s91 = await driveV165DeepSeekCliAttestationUnit();
 	all.push(...s91.results);
+	const s92 = await driveV166AuditCorrectnessUnit();
+	all.push(...s92.results);
 	return all;
 }
 
@@ -5629,6 +5631,74 @@ async function driveV165DeepSeekCliAttestationUnit() {
 		step: "v1.6.5: embedded DeepSeek CLI model attestation overrides unreliable text self-report",
 		ok: true,
 	});
+	return { results };
+}
+
+async function driveV166AuditCorrectnessUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	process.env.CROSS_REVIEW_TEST_IMPORT = "1";
+	delete require.cache[require.resolve("../src/lib/peer-spawn.js")];
+	delete require.cache[require.resolve("../src/lib/session-store.js")];
+	const peerSpawnSrc = fs.readFileSync(
+		path.resolve(__dirname, "..", "src", "lib", "peer-spawn.js"),
+		"utf8",
+	);
+	assert(
+		!peerSpawnSrc.includes('stream === "stderr" ? stderr : stderr'),
+		"v1.6.6: probe stdout overflow diagnostic must not discard stdout tail",
+	);
+	assert(
+		peerSpawnSrc.includes('stream === "stderr" ? stderr : stdout'),
+		"v1.6.6: probe stdout overflow diagnostic carries stdout tail",
+	);
+	assert(
+		/proc\.on\("error",\s*\(err\) => \{[\s\S]{0,120}?detachProbeListeners\(\)/.test(
+			peerSpawnSrc,
+		),
+		"v1.6.6: probe spawn-error path detaches stream listeners before finish",
+	);
+	assert(
+		/proc\.on\("error",\s*\(err\) => \{[\s\S]{0,160}?detachStreamListeners\(\)/.test(
+			peerSpawnSrc,
+		),
+		"v1.6.6: peer spawn-error path detaches stream listeners before reject",
+	);
+	results.push({
+		step: "v1.6.6: probe overflow diagnostics and spawn-error detach paths are wired",
+		ok: true,
+	});
+
+	const store = require("../src/lib/session-store.js");
+	const invalidId = "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx";
+	const invalidDir = path.join(store.STATE_DIR, invalidId);
+	fs.mkdirSync(invalidDir, { recursive: true });
+	try {
+		let threw = false;
+		let rows = null;
+		try {
+			rows = store.listStaleSessions({ staleDays: 0, now: Date.now() });
+		} catch {
+			threw = true;
+		}
+		assert(
+			threw === false,
+			"v1.6.6: listStaleSessions must skip invalid 36-char directory names without throwing",
+		);
+		assert(
+			Array.isArray(rows) &&
+				rows.every((row) => row.session_id !== invalidId),
+			"v1.6.6: invalid session-like directories are ignored by stale sweep",
+		);
+	} finally {
+		fs.rmSync(invalidDir, { recursive: true, force: true });
+	}
+	results.push({
+		step: "v1.6.6: stale sweep ignores invalid UUID-length filesystem noise",
+		ok: true,
+	});
+
 	return { results };
 }
 

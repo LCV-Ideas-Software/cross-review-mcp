@@ -1494,8 +1494,8 @@ function listStaleSessions({
 		return out;
 	}
 	for (const id of entries) {
-		// session UUIDs are 36 chars (8-4-4-4-12 + 4 dashes); skip anything else.
-		if (typeof id !== "string" || id.length !== 36) continue;
+		// Session directories must be strict UUIDv4; skip any filesystem noise.
+		if (typeof id !== "string" || !UUID_RE.test(id)) continue;
 		const metaPath = path.join(sessionDir(id), "meta.json");
 		let meta;
 		try {
