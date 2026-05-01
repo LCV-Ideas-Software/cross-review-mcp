@@ -8,10 +8,14 @@ The full normative protocol is at [`docs/workflow-spec.md`](./docs/workflow-spec
 
 ## Before you start
 
-1. **Read the spec** — at minimum `§2` (STATUS protocol), `§6.3` (N-ary convergence), `§6.9` (mandatory tri-tool), `§6.11`–`§6.14` (the v4.9 / v4.10 / v4.11 normative additions), and `§7` (quick-reference).
+1. **Read the spec** — at minimum `§2` (STATUS protocol), `§6.3` (N-ary convergence), `§6.9` (mandatory tri-tool), `§6.11`–`§6.14` (the v4.9 / v4.10 / v4.11 normative additions), `§6.21` (single-user trusted host model), and `§7` (quick-reference).
 2. **Read `AGENTS.md`** — it defines the contract for AI agents operating inside this repo.
 3. **Install the three peer CLIs** and confirm `npm test && npm run check-models` both GREEN on a fresh clone.
 4. **Open an issue first** for anything larger than a bug fix. Issues are cheap; let's align before you write code.
+
+### Threat model (single-user trusted host)
+
+The runtime assumes one operator on one host with `~/.cross-review/` (or `$CROSS_REVIEW_STATE_DIR`) writable only by that operator. **Two host instances pointed at the same state directory are not supported** — the per-session lock has a TTL/PID-liveness fallback that closes the common cases but leaves a TOCTOU window under heavy contention. If you need multi-host operation, point each instance at a distinct `CROSS_REVIEW_STATE_DIR`. PRs that add features predicated on multi-host concurrency MUST also harden the lock layer (e.g., introduce real `flock`/`LockFileEx`) and ship under Class 3 with a ratifying cross-review session. See `SECURITY.md` for the broader threat model statement.
 
 ---
 

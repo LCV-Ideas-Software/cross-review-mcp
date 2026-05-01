@@ -13,7 +13,50 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 ## [Unreleased]
 
 ### Adicionado
-- (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period.)
+- (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period. **Deferidos da auditoria v1.6.7 para release dedicada por exigirem refactor amplo:** P2.5 decomposição dos handlers `ask_peer`/`ask_peers` em sub-funções testáveis (~355 linhas hoje), P2.7 schema validation centralizada via zod/ajv na borda MCP (adiciona dep), P3.9 split do `functional-smoke.js` em arquivos por área §6.X.)
+
+---
+
+## [1.6.7] — 2026-05-02
+
+**Audit-closure hardening pass.** Endereça achados ALTOS/CRÍTICOS da auditoria interna v1.6.6 sem mexer no comportamento observável dos peers nem na superfície pública v1.x. Mudanças aditivas (novo env var, novos exports, novos campos de scope), defensivas (caps de schema + payload + tmp cleanup) ou cosméticas (comentários, helper centralizado).
+
+### Adicionado
+
+- **Caps de schema MCP** (`P1.1`): `tools/list` agora declara `maxLength`/`maxItems`/`pattern` em todos os campos string/array que antes eram livres — `task` (8 KiB), `prompt` (512 KiB), `question` (16 KiB), `context` (64 KiB), `reason` (200 chars), `label` (80 chars + ASCII alphanumeric pattern), `content` (1 MiB), `content_type` (200 chars), `artifacts` (100 itens × 1 KiB), `stale_days` (0..3650), `session_id` (UUIDv4 pattern). Sessões existentes ficam intocadas; payloads válidos não são afetados, apenas extremos abusivos.
+- **`CROSS_REVIEW_STATE_DIR`** (`P3.11`): `STATE_DIR` agora é override-able via env var. Default permanece `~/.cross-review`. Resolve via `path.resolve` no module load (mesma cadência que `LOCK_TTL_MS`/`PENDING_THRESHOLD_MS`). Permite deploys em CI/containers/multi-user hosts sem mexer no código.
+- **`store.sweepOrphanTmpFilesOnBoot()`** (`P1.2`): novo sweep companheiro que remove arquivos `*.tmp.<pid>.<ts>.<rand>` órfãos quando o PID criador está morto OU o timestamp tem >1h. Wired em `server.js` boot junto com `sweepStaleLocksOnBoot`. Best-effort, fire-and-forget.
+- **`store.clearStaleInFlightOnBoot()`** (`P1.3`): novo sweep companheiro que limpa `meta.in_flight` quando o lock holder PID está morto OU `last_heartbeat` excede `2 × HEARTBEAT_INTERVAL_MS`. Pre-v1.6.7 um host crash entre `withRoundHeartbeat` setup e clear deixava `in_flight` permanente, confundindo `session_read`. Wired em boot path.
+- **`degraded_quadrilateral` / `degraded_trilateral`** em `convergence_scope` (`P2.6`): `deriveConvergenceScope` aceita argumento opcional `rejectedCount`. Quando há **qualquer** sinal de degradação (`excluded > 0` OU `rejected > 0`), o scope agora reflete a degradação no nível correto (`degraded_trilateral` para 2 peers responderam mas 1 foi rejected/excluded; `degraded_quadrilateral` para 3 peers responderam com 1 rejected/excluded). Pre-v1.6.7 esses casos eram mascarados como `trilateral`/`quadrilateral` "normal". Versão revisada após R1 do cross-review-v2 (codex+gemini NOT_READY): a tentativa inicial introduziu prefixo `silent_degraded_*` que (a) era arquiteturalmente impossível de disparar com `Promise.allSettled` (todo peer cai em responded ou rejected) e (b) quebraria consumers schema-validating o enum. Versão final preserva o vocabulário existente `degraded_*` e amplia sua cobertura para incluir `rejected`.
+- **`store.normalizeOutcomeReason(value)`** (`P4.13`): export público da normalização que antes vivia como arrow local em `session_finalize`. Mesma semântica: `null`/empty/whitespace → `null`. Substitui o uso local em server.js para evitar drift se a regra evoluir.
+
+### Corrigido
+
+- **`atomicWriteFile` retry** (`P1.2`): pre-v1.6.7 um `EPERM`/`EACCES`/`EBUSY` em `renameSync` (Windows AV scan, indexador, leitor concorrente) deixava o `.tmp.*` órfão e propagava o erro. Agora retry com backoff (10/20/40/80/160ms × 5 tentativas) e cleanup explícito do tmp em falha terminal. Nome do tmp ganha sufixo `crypto.randomBytes(2).toString("hex")` para evitar colisão se dois processos no mesmo PID tentam o mesmo target no mesmo ms (improvável, mas custo zero).
+- **Cap de payload em parsers** (`P1.4`): `tryStructuredTail` (status-parser) rejeita payloads >64 KiB **antes** de `JSON.parse`; `parseDeclaredModel` (model-parser) rejeita >8 KiB. Ambas as caps são byte-level (`Buffer.byteLength` UTF-8) para defeat multi-byte inflation. Bloqueia OOM via peer hostil/buggy emitindo `<cross_review_status>` gigante.
+- **`parseArgv0AndRest` shlex-style** (`P3.12`): substituído o parser ingênuo (`indexOf('"', 1)` pegava a primeira aspa) por máquina de estados que honra aspas escapadas (`\"`) e detecta argv[0] com whitespace/quotes embutidos. Defesa em profundidade já segurava (via `findOrphans` + `ancestorPidSet`), mas a primeira linha de defesa agora é robusta a edge cases que falsificavam o matcher v1.2.16.
+- **Comentário meta-irônico** (`P3.10`): `checkConvergence` removeu o trecho "(codex round-5 caught this comment was still saying the pre-v1.2.3 thing)" que confundia auditores futuros. Mantida a referência factual à closure §6.18.1 v1.2.3.
+
+### Documentação
+
+- **Threat model multi-host** (`P2.8`): `SECURITY.md` ganhou seção "Threat Model" explicitando que duas instâncias do host MCP apontando para o mesmo `~/.cross-review/` **não são suportadas**, e direcionando a `CROSS_REVIEW_STATE_DIR` quando paralelismo de host for necessário. `CONTRIBUTING.md` ganhou bullet equivalente em "Before you start".
+
+### N/A (auditor errou)
+
+- `P4.14` classifyStderr single-pass: a função em `session-store.js:723` já é single-pass — itera `STDERR_CLASS_PATTERNS` uma vez, captura `signals[]` e seta `primaryClass` na primeira match. O agente que auditou se enganou na leitura. Refactor não aplicado para evitar regressão sem benefício.
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
+
+### Auditoria origem
+
+- Parecer técnico interno emitido após leitura integral de 16 010 LOC + spec/CHANGELOG/README/.github (sessão de auditoria 2026-05-02 com agentes Explore paralelos + verificação manual). 4 achados CRÍTICOS, 8 ALTOS, ~25 MÉDIOS catalogados. Esta release fecha 12 de 15 prioridades; 3 deferred listadas em `[Unreleased]` por requererem refactor amplo (handler split, zod, smoke split).
+
+### Pre-commit cross-review
+
+- Cross-review-v2 quadrilateral session `858bd39b-2410-47c6-ae3a-2cab7f2129af` converged READY após 3 rounds (caller=claude, peers=codex+gemini+deepseek). R1 NOT_READY de codex (P2.6 inconsistência interna do `silent_degraded_*`) e gemini (`EVIDENCE_LABEL_PATTERN` excluía espaço, tilde expansion ausente, validação de enum convergence_scope). R2 NEEDS_EVIDENCE de codex + NOT_READY de gemini/deepseek pediram smoke concreto + grep de call sites. R3 trilateral READY com Codex inferred + Gemini/DeepSeek verified após adição de `driveV167StateDirOverrideUnit` (5 invariants), `driveV167EvidenceLabelPatternUnit` (1 invariant), 3 novas assertions em `driveV218Finding6Unit` (rejectedCount degradation), 2 assertions em snapshot integration (degraded_trilateral/degraded_quadrilateral), e fix do biome `noPrototypeBuiltins` em `functional-smoke.js:5438` (per `feedback_fix_preexisting_errors.md`). Smoke 262 → 270 GREEN; check-models OK. `outcome_reason: "unanimous_ready quadrilateral after 3 rounds"`.
 
 ---
 

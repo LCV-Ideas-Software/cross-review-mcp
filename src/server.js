@@ -61,13 +61,13 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.6.6";
+const VERSION = "1.6.7";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
 // CHANGELOG.md `## [VERSION] — DATE` heading matches this constant, so a
 // bump that forgets to update either side fails the gate.
-const RELEASE_DATE = "2026-05-01";
+const RELEASE_DATE = "2026-05-02";
 
 // v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
 // Requires ALL THREE of (1) status block absent, (2) body < 200 chars,
@@ -301,6 +301,36 @@ function detectPromptLanguageDrift(text) {
 }
 
 const REVIEW_FOCUS_MAX_CHARS = 2000;
+
+// v1.6.7 / audit closure (P1.1, P2.7 partial): MCP input-schema caps.
+// Spec §6.21 "single-user trusted host" doesn't justify unbounded inputs:
+// MCP `StdioServerTransport` does not impose a per-message cap (F5 deferred
+// in [Unreleased]), so a misbehaving caller — or a future multi-host
+// deployment that drifts off the trusted-host model — can OOM the server
+// with one large `prompt`/`task`/`content`. The caps below are deliberately
+// generous: they let normal use through (a 200-line prompt is ~10 KiB) while
+// rejecting obvious abuse before parser/spawn/persistence touch the bytes.
+// Anti-drift: smoke driveV167SchemaCapsUnit asserts each cap is wired in
+// the published `tools/list` schema.
+const PROMPT_MAX_CHARS = 524_288; // 512 KiB — allow large diffs / artefacts.
+const TASK_MAX_CHARS = 8_192; // task is a short summary; 8 KiB is generous.
+const QUESTION_MAX_CHARS = 16_384; // escalate_to_operator question.
+const ESCALATION_CONTEXT_MAX_CHARS = 65_536; // 64 KiB ample but bounded.
+const OUTCOME_REASON_MAX_CHARS = 200; // free-form short string.
+const EVIDENCE_LABEL_MAX_CHARS = 80; // matches store.sanitizeEvidenceLabel.
+// v1.6.7 cross-review-v2 R1 (gemini): allow ASCII space inside labels —
+// pre-v1.6.7 store-side sanitize permitted spaces (only path separators
+// + Windows reserved chars + control chars were rejected), so labels
+// like "Security Review" were valid. Schema must not regress that.
+const EVIDENCE_LABEL_PATTERN = "^[A-Za-z0-9 ._-]+$";
+const EVIDENCE_CONTENT_MAX_CHARS = 1_048_576; // 1 MiB; store enforces UTF-8.
+const EVIDENCE_CONTENT_TYPE_MAX_CHARS = 200;
+const ARTIFACT_PATH_MAX_CHARS = 1_000;
+const ARTIFACTS_MAX_ITEMS = 100;
+const STALE_DAYS_MIN = 0;
+const STALE_DAYS_MAX = 3650; // 10 years — operator-meaningful upper bound.
+const SESSION_ID_PATTERN =
+	"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$";
 
 function normalizeReviewFocus(value) {
 	if (value == null) return null;
@@ -567,10 +597,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 					task: {
 						type: "string",
 						description: "Short description of the task under review.",
+						maxLength: TASK_MAX_CHARS,
 					},
 					artifacts: {
 						type: "array",
-						items: { type: "string" },
+						items: { type: "string", maxLength: ARTIFACT_PATH_MAX_CHARS },
+						maxItems: ARTIFACTS_MAX_ITEMS,
 						description:
 							"Optional list of artifact paths relevant to the review (read by peer at its discretion).",
 					},
@@ -596,7 +628,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 				"Return the full session metadata (meta.json) including all rounds recorded so far, capability_snapshot, and any failed_attempts (spec v4.11 section 6.9.3.6 audit trail, secrets redacted).",
 			inputSchema: {
 				type: "object",
-				properties: { session_id: { type: "string" } },
+				properties: {
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
+				},
 				required: ["session_id"],
 			},
 		},
@@ -606,7 +640,9 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 				"Return whether convergence holds in the last round. Bilateral (ask_peer round): converged iff BOTH caller_status and peer_status are READY. N-ary (ask_peers round): converged iff caller_status is READY AND every responded peer declared READY AND `round.quorum.rejected === 0` (strict quorum; spec v4.14 §6.12). Peers excluded at probe time live in capability_snapshot and are NOT in the round's peer list (the probe excluded them before dispatch, so they are not 'missing' in the §6.12 sense). Peers that failed at spawn time during the round are in `meta.failed_attempts` and counted in `round.quorum.rejected`; under strict-quorum semantics they DO count against convergence (v1.2.3 closure of an external-audit finding that the snapshot computation pre-v1.2.3 ignored rejected, allowing 2-of-3 unanimity to misreport as converged when 1 peer was spawn-rejected). peer_status values: READY | NOT_READY | NEEDS_EVIDENCE.",
 			inputSchema: {
 				type: "object",
-				properties: { session_id: { type: "string" } },
+				properties: {
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
+				},
 				required: ["session_id"],
 			},
 		},
@@ -617,13 +653,14 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 			inputSchema: {
 				type: "object",
 				properties: {
-					session_id: { type: "string" },
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
 					outcome: {
 						type: "string",
 						enum: ["converged", "aborted", "max-rounds"],
 					},
 					reason: {
 						type: "string",
+						maxLength: OUTCOME_REASON_MAX_CHARS,
 						description:
 							'Optional structured reason for the outcome. Free-form short string; conventions: "stale", "peer_scope_creep", "moderation_flag_unresolved", "operator_abort". Omit when no specific reason.',
 					},
@@ -640,6 +677,8 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 				properties: {
 					stale_days: {
 						type: "number",
+						minimum: STALE_DAYS_MIN,
+						maximum: STALE_DAYS_MAX,
 						description:
 							"Minimum age in days from last activity before a session becomes a candidate. Default 7. The 24h hard floor below this argument is non-overridable: stale_days=0 still excludes sessions younger than 24h.",
 					},
@@ -655,6 +694,7 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 					},
 					reason: {
 						type: "string",
+						maxLength: OUTCOME_REASON_MAX_CHARS,
 						description:
 							'outcome_reason value to record on finalized sessions. Default "stale". Free-form short string; conventions documented in spec §6.18.',
 					},
@@ -668,19 +708,23 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 			inputSchema: {
 				type: "object",
 				properties: {
-					session_id: { type: "string" },
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
 					label: {
 						type: "string",
+						maxLength: EVIDENCE_LABEL_MAX_CHARS,
+						pattern: EVIDENCE_LABEL_PATTERN,
 						description:
-							"Caller-supplied filename hint. Sanitized server-side: path separators, control chars, and reserved Windows chars are stripped; max 80 chars. The actual stored filename is `<timestamp>-<sanitized-label>` so attaches are collision-free.",
+							"Caller-supplied filename hint. ASCII alphanumeric + . _ - only (path separators, control chars, reserved Windows chars rejected at the schema layer); max 80 chars. The actual stored filename is `<timestamp>-<sanitized-label>` so attaches are collision-free. Server-side `sanitizeEvidenceLabel` is the second line of defense.",
 					},
 					content: {
 						type: "string",
+						maxLength: EVIDENCE_CONTENT_MAX_CHARS,
 						description:
-							"Evidence content as a UTF-8 string. For binary artifacts (PNG, etc.), base64-encode and document the encoding via content_type. Size cap: 1 MiB per attach.",
+							"Evidence content as a UTF-8 string. For binary artifacts (PNG, etc.), base64-encode and document the encoding via content_type. Size cap: 1 MiB per attach (enforced at schema layer + store layer).",
 					},
 					content_type: {
 						type: "string",
+						maxLength: EVIDENCE_CONTENT_TYPE_MAX_CHARS,
 						description:
 							"Optional MIME type or descriptive content type ('image/png;base64', 'application/json', 'text/plain', 'application/diff', etc.). Persisted on the manifest entry for downstream consumers.",
 					},
@@ -695,14 +739,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 			inputSchema: {
 				type: "object",
 				properties: {
-					session_id: { type: "string" },
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
 					question: {
 						type: "string",
+						maxLength: QUESTION_MAX_CHARS,
 						description:
 							"Concrete question the operator needs to answer to unblock the session.",
 					},
 					context: {
 						type: "string",
+						maxLength: ESCALATION_CONTEXT_MAX_CHARS,
 						description:
 							"Optional context: what was searched, what was ruled out, why the peer exchange could not resolve it.",
 					},
@@ -735,9 +781,10 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 			inputSchema: {
 				type: "object",
 				properties: {
-					session_id: { type: "string" },
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
 					prompt: {
 						type: "string",
+						maxLength: PROMPT_MAX_CHARS,
 						description:
 							"Full prompt for the peer. The server automatically appends the tail directive so the peer emits both the peer-model and status blocks in the correct order.",
 					},
@@ -768,9 +815,10 @@ PROMPT LANGUAGE (spec v4.14 §6.10). The 'prompt' field is peer exchange MUST be
 			inputSchema: {
 				type: "object",
 				properties: {
-					session_id: { type: "string" },
+					session_id: { type: "string", pattern: SESSION_ID_PATTERN },
 					prompt: {
 						type: "string",
+						maxLength: PROMPT_MAX_CHARS,
 						description:
 							"Full prompt for all peers. Same tail-directive injection as ask_peer.",
 					},
@@ -1003,13 +1051,13 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 						//
 						// Crucially: the no-op path does NOT call
 						// store.finalize, so meta.finalized_at is NOT rewritten.
-						const normReason = (r) => {
-							if (r == null) return null;
-							const s = String(r).trim();
-							return s.length === 0 ? null : s;
-						};
-						const incomingReason = normReason(args.reason);
-						const existingReason = normReason(meta.outcome_reason);
+						// v1.6.7 / audit closure (P4.13): normalization moved to
+						// store.normalizeOutcomeReason so the same shape applies
+						// across all callers (finalize, sweepStaleSessions, etc.).
+						const incomingReason = store.normalizeOutcomeReason(args.reason);
+						const existingReason = store.normalizeOutcomeReason(
+							meta.outcome_reason,
+						);
 						const sameOutcome = meta.outcome === args.outcome;
 						const sameReason = existingReason === incomingReason;
 						if (sameOutcome && sameReason) {
@@ -2104,6 +2152,36 @@ async function main() {
 			} catch (err) {
 				process.stderr.write(
 					`[cross-review-v1] startup lock sweep error: ${err?.message || err}\n`,
+				);
+			}
+		});
+		// v1.6.7 / audit closure (P1.2 + P1.3): companion sweeps to the lock
+		// sweep above — clean orphan .tmp.* files and stale meta.in_flight.
+		// Both inspect the same set of session dirs already touched by the
+		// lock sweep; ordering is not significant because each sweep targets
+		// a distinct artifact (lock, tmp, in_flight). Best-effort, fire-and-
+		// forget. Test/CI opt-out via CROSS_REVIEW_SKIP_BOOT_SWEEPS=1.
+		setImmediate(() => {
+			try {
+				const tmpSweep = store.sweepOrphanTmpFilesOnBoot();
+				if (tmpSweep.scanned > 0) {
+					log("startup: tmp file sweep complete", tmpSweep);
+				}
+			} catch (err) {
+				process.stderr.write(
+					`[cross-review-v1] startup tmp sweep error: ${err?.message || err}\n`,
+				);
+			}
+		});
+		setImmediate(() => {
+			try {
+				const inFlightSweep = store.clearStaleInFlightOnBoot();
+				if (inFlightSweep.scanned > 0) {
+					log("startup: in_flight sweep complete", inFlightSweep);
+				}
+			} catch (err) {
+				process.stderr.write(
+					`[cross-review-v1] startup in_flight sweep error: ${err?.message || err}\n`,
 				);
 			}
 		});

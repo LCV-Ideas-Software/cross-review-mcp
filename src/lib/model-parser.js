@@ -42,6 +42,11 @@ const STATUS_CLOSE_TAG = "</cross_review_status>";
 const MODEL_OPEN_TAG = "<cross_review_peer_model>";
 const MODEL_CLOSE_TAG = "</cross_review_peer_model>";
 const MAX_MODEL_ID_CHARS = 120;
+// v1.6.7 / audit closure (P1.4 sibling): cap the peer-model payload bytes
+// before JSON.parse. Same rationale as the status-parser companion cap —
+// the legitimate payload is `{"model_id":"<short id>"}`, well under 200
+// bytes; 8 KiB is room to spare while rejecting pathological input.
+const MAX_PAYLOAD_BYTES = 8 * 1024;
 
 function rightTrim(s) {
 	return s.trimEnd();
@@ -106,6 +111,13 @@ function parseDeclaredModel(text) {
 	const payload = prefix.slice(openAt + MODEL_OPEN_TAG.length, closeAt).trim();
 	if (!payload) {
 		return empty(["peer-model block payload is empty"]);
+	}
+
+	// v1.6.7 / audit closure (P1.4 sibling): reject oversized payload before
+	// JSON.parse so a hostile peer cannot OOM the orchestrator with a giant
+	// peer-model block. Byte-level cap to defeat multi-byte UTF-8 inflation.
+	if (Buffer.byteLength(payload, "utf8") > MAX_PAYLOAD_BYTES) {
+		return empty(["peer-model block payload exceeds MAX_PAYLOAD_BYTES"]);
 	}
 
 	let parsed;

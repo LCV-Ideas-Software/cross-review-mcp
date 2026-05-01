@@ -1461,6 +1461,10 @@ async function runAll() {
 	all.push(...s91.results);
 	const s92 = await driveV166AuditCorrectnessUnit();
 	all.push(...s92.results);
+	const s93 = await driveV167StateDirOverrideUnit();
+	all.push(...s93.results);
+	const s94 = await driveV167EvidenceLabelPatternUnit();
+	all.push(...s94.results);
 	return all;
 }
 
@@ -5431,7 +5435,7 @@ async function driveDeepSeekCliShapeUnit() {
 			"DeepSeek child env includes the required DeepSeek key",
 		);
 		assert(
-			!Object.prototype.hasOwnProperty.call(deepseekEnv, "OPENAI_API_KEY"),
+			!Object.hasOwn(deepseekEnv, "OPENAI_API_KEY"),
 			"DeepSeek child env does not inherit unrelated provider keys",
 		);
 		assert(
@@ -6883,6 +6887,101 @@ async function driveV1218ConvergenceScopeUnit() {
 		ok: true,
 	});
 
+	// v1.6.7 / audit closure (P2.6) — rejectedCount degradation cases.
+	// Spawn-rejected peers were previously masked as full-cohort scope;
+	// the v1.6.7 revision (after cross-review-v2 R1) widens degraded_*
+	// to cover them.
+	assert(
+		store.deriveConvergenceScope(false, ["codex", "gemini"], [], [], 1) ===
+			"degraded_trilateral",
+		"v1.6.7 P2.6: 2 peers responded + 1 rejected → degraded_trilateral",
+	);
+	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek"],
+			[],
+			[],
+			1,
+		) === "degraded_quadrilateral",
+		"v1.6.7 P2.6: 3 peers responded + 1 rejected → degraded_quadrilateral",
+	);
+	assert(
+		store.deriveConvergenceScope(false, ["codex"], [], [], 1) ===
+			"degraded_bilateral",
+		"v1.6.7 P2.6: 1 peer responded + 1 rejected → degraded_bilateral",
+	);
+	// rejectedCount=0 with no exclusions must NOT degrade (no regression).
+	assert(
+		store.deriveConvergenceScope(false, ["codex", "gemini"], [], [], 0) ===
+			"trilateral",
+		"v1.6.7 P2.6: rejectedCount=0 + no exclusions preserves trilateral",
+	);
+	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek"],
+			[],
+			[],
+			0,
+		) === "quadrilateral",
+		"v1.6.7 P2.6: rejectedCount=0 + no exclusions preserves quadrilateral",
+	);
+	// Legacy callers without the new arg still see pre-v1.6.7 behavior.
+	assert(
+		store.deriveConvergenceScope(false, ["codex", "gemini"], [], []) ===
+			"trilateral",
+		"v1.6.7 P2.6: legacy callers (no rejectedCount arg) preserve trilateral",
+	);
+	results.push({
+		step: "v1.6.7 P2.6: deriveConvergenceScope widens degraded_* to cover spawn-rejected peers (degraded_trilateral / degraded_quadrilateral / degraded_bilateral) without regressing the non-degraded cases",
+		ok: true,
+	});
+
+	// v1.6.7 / audit closure (P2.6) — computeConvergenceSnapshot wires
+	// rejectedCount through to deriveConvergenceScope on the N-ary path.
+	const trilDegradedRound = {
+		caller: "claude",
+		caller_status: "READY",
+		peers: [
+			{ agent: "codex", peer_status: "READY" },
+			{ agent: "gemini", peer_status: "READY" },
+		],
+		quorum: { requested: 3, responded: 2, rejected: 1 },
+	};
+	const trilDegradedShot = store.computeConvergenceSnapshot(
+		0,
+		trilDegradedRound,
+		{},
+	);
+	assert(
+		trilDegradedShot.convergence_scope === "degraded_trilateral",
+		`v1.6.7 P2.6: snapshot with 2 peers READY + rejected=1 must report convergence_scope=degraded_trilateral (got '${trilDegradedShot.convergence_scope}')`,
+	);
+	const quadDegradedRound = {
+		caller: "claude",
+		caller_status: "READY",
+		peers: [
+			{ agent: "codex", peer_status: "READY" },
+			{ agent: "gemini", peer_status: "READY" },
+			{ agent: "deepseek", peer_status: "READY" },
+		],
+		quorum: { requested: 4, responded: 3, rejected: 1 },
+	};
+	const quadDegradedShot = store.computeConvergenceSnapshot(
+		0,
+		quadDegradedRound,
+		{},
+	);
+	assert(
+		quadDegradedShot.convergence_scope === "degraded_quadrilateral",
+		`v1.6.7 P2.6: snapshot with 3 peers READY + rejected=1 must report convergence_scope=degraded_quadrilateral (got '${quadDegradedShot.convergence_scope}')`,
+	);
+	results.push({
+		step: "v1.6.7 P2.6: computeConvergenceSnapshot threads rejectedCount into deriveConvergenceScope (degraded_trilateral / degraded_quadrilateral)",
+		ok: true,
+	});
+
 	// Snapshot integration: computeConvergenceSnapshot must include
 	// convergence_scope in its output.
 	const naryRound = {
@@ -8028,6 +8127,155 @@ async function driveV140ServerInfoPublisherSponsorsUnit() {
 	);
 	results.push({
 		step: "v1.4.0: server_info publisher + sponsors_url + links.sponsors wired",
+		ok: true,
+	});
+	return { results };
+}
+
+// v1.6.7 / audit closure (P3.11) — CROSS_REVIEW_STATE_DIR override + tilde
+// expansion. Reloads session-store with the env var in place; restores
+// prior state at the end.
+async function driveV167StateDirOverrideUnit() {
+	const results = [];
+	const path = require("node:path");
+	const os = require("node:os");
+	const originalOverride = process.env.CROSS_REVIEW_STATE_DIR;
+
+	const reload = () => {
+		delete require.cache[require.resolve("../src/lib/session-store.js")];
+		return require("../src/lib/session-store.js");
+	};
+
+	try {
+		// Default behavior: env var unset → defaults to ~/.cross-review.
+		delete process.env.CROSS_REVIEW_STATE_DIR;
+		const defaultStore = reload();
+		assert(
+			defaultStore.STATE_DIR === path.join(os.homedir(), ".cross-review"),
+			`v1.6.7 P3.11: default STATE_DIR resolves to homedir/.cross-review (got '${defaultStore.STATE_DIR}')`,
+		);
+		results.push({
+			step: "v1.6.7 P3.11: default STATE_DIR resolves to ~/.cross-review when env unset",
+			ok: true,
+		});
+
+		// Absolute override.
+		const absOverride = path.join(os.tmpdir(), "cross-review-test-abs");
+		process.env.CROSS_REVIEW_STATE_DIR = absOverride;
+		const absStore = reload();
+		assert(
+			absStore.STATE_DIR === path.resolve(absOverride),
+			`v1.6.7 P3.11: absolute CROSS_REVIEW_STATE_DIR honored (got '${absStore.STATE_DIR}', expected '${path.resolve(absOverride)}')`,
+		);
+		results.push({
+			step: "v1.6.7 P3.11: absolute CROSS_REVIEW_STATE_DIR override honored",
+			ok: true,
+		});
+
+		// Tilde expansion: lone tilde → homedir.
+		process.env.CROSS_REVIEW_STATE_DIR = "~";
+		const tildeStore = reload();
+		assert(
+			tildeStore.STATE_DIR === path.resolve(os.homedir()),
+			`v1.6.7 P3.11: lone tilde expands to os.homedir() (got '${tildeStore.STATE_DIR}')`,
+		);
+		results.push({
+			step: "v1.6.7 P3.11: lone tilde in CROSS_REVIEW_STATE_DIR expands to homedir",
+			ok: true,
+		});
+
+		// Tilde + forward-slash.
+		process.env.CROSS_REVIEW_STATE_DIR = "~/.cross-review-tilde";
+		const tildeSlashStore = reload();
+		assert(
+			tildeSlashStore.STATE_DIR ===
+				path.resolve(path.join(os.homedir(), ".cross-review-tilde")),
+			`v1.6.7 P3.11: '~/<sub>' expanded under homedir (got '${tildeSlashStore.STATE_DIR}')`,
+		);
+		results.push({
+			step: "v1.6.7 P3.11: '~/<sub>' expanded under homedir",
+			ok: true,
+		});
+
+		// Tilde + backslash (Windows).
+		process.env.CROSS_REVIEW_STATE_DIR = "~\\.cross-review-bs";
+		const tildeBsStore = reload();
+		assert(
+			tildeBsStore.STATE_DIR ===
+				path.resolve(path.join(os.homedir(), ".cross-review-bs")),
+			`v1.6.7 P3.11: '~\\\\<sub>' expanded under homedir (got '${tildeBsStore.STATE_DIR}')`,
+		);
+		results.push({
+			step: "v1.6.7 P3.11: '~\\\\<sub>' (Windows separator) expanded under homedir",
+			ok: true,
+		});
+	} finally {
+		if (originalOverride === undefined) {
+			delete process.env.CROSS_REVIEW_STATE_DIR;
+		} else {
+			process.env.CROSS_REVIEW_STATE_DIR = originalOverride;
+		}
+		delete require.cache[require.resolve("../src/lib/session-store.js")];
+	}
+	return { results };
+}
+
+// v1.6.7 / audit closure (P1.1, cross-review-v2 R1 fix) — EVIDENCE_LABEL_PATTERN
+// must allow ASCII space so labels like "Security Review" remain valid;
+// path separators / control chars / Windows reserved chars must remain rejected.
+async function driveV167EvidenceLabelPatternUnit() {
+	const results = [];
+	const fs = require("node:fs");
+	const path = require("node:path");
+	const src = fs.readFileSync(
+		path.resolve(__dirname, "..", "src/server.js"),
+		"utf8",
+	);
+	const m = src.match(
+		/const\s+EVIDENCE_LABEL_PATTERN\s*=\s*"([^"\\]+)"\s*;/,
+	);
+	assert(m, "v1.6.7 P1.1: EVIDENCE_LABEL_PATTERN constant must be present");
+	const pattern = m[1];
+	const re = new RegExp(pattern);
+
+	const positive = [
+		"abc",
+		"abc123",
+		"a.b",
+		"a_b",
+		"a-b",
+		"Security Review",
+		"playwright-trace.zip",
+		"v1.6.7 audit",
+	];
+	for (const label of positive) {
+		assert(
+			re.test(label),
+			`v1.6.7 P1.1 + cross-review-v2 R1: pattern accepts '${label}'`,
+		);
+	}
+
+	const negative = [
+		"a/b",
+		"a\\b",
+		"a:b",
+		"a*b",
+		'a"b',
+		"a<b",
+		"a>b",
+		"a|b",
+		"a\tb",
+		"",
+	];
+	for (const label of negative) {
+		assert(
+			!re.test(label),
+			`v1.6.7 P1.1 + cross-review-v2 R1: pattern rejects '${JSON.stringify(label)}'`,
+		);
+	}
+
+	results.push({
+		step: "v1.6.7 P1.1 + cross-review-v2 R1: EVIDENCE_LABEL_PATTERN allows ASCII space and rejects path separators / control chars",
 		ok: true,
 	});
 	return { results };

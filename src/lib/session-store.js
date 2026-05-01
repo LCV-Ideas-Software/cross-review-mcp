@@ -30,7 +30,35 @@ const path = require("node:path");
 const os = require("node:os");
 const crypto = require("node:crypto");
 
-const STATE_DIR = path.join(os.homedir(), ".cross-review");
+// v1.6.7 / audit closure (P3.11): STATE_DIR is overridable via the
+// CROSS_REVIEW_STATE_DIR env var so deployments that cannot use $HOME
+// (CI runners, containers, multi-user hosts with per-instance roots) can
+// pin a custom location. Resolution: env var if set and non-empty, else
+// `~/.cross-review`. The override is read once at module load (not per-call)
+// so callers that change the env mid-process see the value frozen here —
+// matches the existing precedent for LOCK_TTL_MS and PENDING_THRESHOLD_MS.
+//
+// cross-review-v2 R1 (gemini): tilde expansion is not built into Node's
+// `path.resolve`. Operators routinely write `~/something` in env files,
+// so we honor `~`, `~/...`, `~\...` and replace with `os.homedir()`
+// before resolving. Other shells' `~user` syntax is intentionally NOT
+// supported — that requires a passwd lookup we do not want to ship.
+//
+// Anti-drift: smoke driveV167StateDirOverrideUnit asserts the override is
+// honored when set and that the default falls back to homedir.
+const STATE_DIR = (() => {
+	const raw = process.env.CROSS_REVIEW_STATE_DIR;
+	if (typeof raw === "string" && raw.trim().length > 0) {
+		let expanded = raw.trim();
+		if (expanded === "~") {
+			expanded = os.homedir();
+		} else if (expanded.startsWith("~/") || expanded.startsWith("~\\")) {
+			expanded = path.join(os.homedir(), expanded.slice(2));
+		}
+		return path.resolve(expanded);
+	}
+	return path.join(os.homedir(), ".cross-review");
+})();
 
 // v1.2.15 / spec §6.22 — Lock & session resilience.
 // LOCK_TTL_MS controls when an existing `.lock` directory becomes
@@ -170,10 +198,102 @@ function sessionDir(sessionId) {
 	return dir;
 }
 
+// v1.6.7 / audit closure (P1.2): atomicWriteFile retry on Windows.
+// `fs.renameSync` in Win32 fails with EPERM/EACCES/EBUSY when the
+// destination is briefly held by another handle (AV scan, indexing,
+// concurrent reader). Pre-v1.6.7 the rename threw and left the .tmp
+// orphaned in the session directory. Now we (a) try rename, (b) on
+// transient EPERM/EACCES/EBUSY/EEXIST retry up to 5 times with short
+// backoff, (c) on terminal failure clean up the tmp file ourselves so
+// `*.tmp.*` does not accumulate in the session directory, (d) re-throw
+// the last error so the caller still observes the failure.
+//
+// EEXIST in particular: on Windows `renameSync` to an existing path with
+// FILE_RENAME_FLAG_REPLACE_IF_EXISTS available behaves as replace, but
+// older Node stacks and locked targets surface EEXIST — fallthrough to
+// retry handles both shapes uniformly.
+const ATOMIC_WRITE_RETRY_CODES = new Set(["EPERM", "EACCES", "EBUSY", "EEXIST"]);
+const ATOMIC_WRITE_MAX_ATTEMPTS = 5;
+
 function atomicWriteFile(filePath, content) {
-	const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}`;
+	const tmp = `${filePath}.tmp.${process.pid}.${Date.now()}.${crypto.randomBytes(2).toString("hex")}`;
 	fs.writeFileSync(tmp, content, "utf8");
-	fs.renameSync(tmp, filePath);
+	let lastErr = null;
+	for (let attempt = 0; attempt < ATOMIC_WRITE_MAX_ATTEMPTS; attempt += 1) {
+		try {
+			fs.renameSync(tmp, filePath);
+			return;
+		} catch (err) {
+			lastErr = err;
+			if (!ATOMIC_WRITE_RETRY_CODES.has(err?.code)) break;
+			// Sync sleep: tiny enough that the event-loop hit doesn't matter
+			// at this level (we're already inside a sync write path).
+			const wait = 10 * 2 ** attempt; // 10, 20, 40, 80, 160 ms
+			const t0 = Date.now();
+			while (Date.now() - t0 < wait) {
+				/* spin */
+			}
+		}
+	}
+	// Terminal failure path: best-effort tmp cleanup so callers don't see
+	// the orphan accumulate even when the write itself failed.
+	try {
+		fs.unlinkSync(tmp);
+	} catch {
+		/* ignore */
+	}
+	throw lastErr;
+}
+
+// v1.6.7 / audit closure (P1.2): boot sweep of orphan .tmp.* files.
+// Crashes inside atomicWriteFile (between writeFileSync and renameSync)
+// leave files matching `<basename>.tmp.<pid>.<ts>.<rand>` in the session
+// directory. They are never read but shouldn't accumulate. Walk every
+// session dir at boot, drop files matching the .tmp.* pattern whose
+// holder pid is dead OR whose timestamp is older than 1h. Idempotent +
+// best-effort.
+const TMP_FILE_PATTERN = /\.tmp\.(\d+)\.(\d+)\.[0-9a-f]+$/;
+const TMP_STALE_AFTER_MS = 60 * 60 * 1000; // 1h
+
+function sweepOrphanTmpFilesOnBoot() {
+	let removed = 0;
+	let scanned = 0;
+	if (!fs.existsSync(STATE_DIR)) return { scanned: 0, removed: 0 };
+	let entries;
+	try {
+		entries = fs.readdirSync(STATE_DIR, { withFileTypes: true });
+	} catch {
+		return { scanned: 0, removed: 0 };
+	}
+	for (const ent of entries) {
+		if (!ent.isDirectory()) continue;
+		if (!UUID_RE.test(ent.name)) continue;
+		const sessionPath = path.join(STATE_DIR, ent.name);
+		let files;
+		try {
+			files = fs.readdirSync(sessionPath);
+		} catch {
+			continue;
+		}
+		for (const f of files) {
+			const m = TMP_FILE_PATTERN.exec(f);
+			if (!m) continue;
+			scanned += 1;
+			const tmpPid = Number.parseInt(m[1], 10);
+			const tmpTs = Number.parseInt(m[2], 10);
+			const tmpAge = Date.now() - tmpTs;
+			const holderAlive = Number.isInteger(tmpPid) ? isPidAlive(tmpPid) : false;
+			if (!holderAlive || tmpAge > TMP_STALE_AFTER_MS) {
+				try {
+					fs.unlinkSync(path.join(sessionPath, f));
+					removed += 1;
+				} catch {
+					/* ignore */
+				}
+			}
+		}
+	}
+	return { scanned, removed };
 }
 
 function acquireLock(sessionId) {
@@ -282,6 +402,91 @@ function sweepStaleLocksOnBoot() {
 		}
 	}
 	return { scanned, removed };
+}
+
+// v1.6.7 / audit closure (P1.3): clear stale meta.in_flight at boot.
+// `withRoundHeartbeat` (v1.3.0 / Finding 4) writes meta.in_flight before
+// each peer spawn and clears it on resolve/reject. If the host crashes
+// mid-spawn, in_flight stays set forever — confusing audit consumers and
+// `session_read` clients that read it as "round in progress". The lock
+// sweep already removes the .lock when the holder PID is dead; this
+// companion sweep extends the same logic to in_flight.
+//
+// Conditions to clear in_flight:
+//   - holder pid (in_flight.pid OR in_flight.parent_pid OR last lock holder
+//     in info.json if available) is dead, OR
+//   - last_heartbeat is older than 2 × HEARTBEAT_INTERVAL_MS (so a sweep
+//     run while a healthy round is genuinely active doesn't yank meta).
+//
+// Idempotent + best-effort. Returns counts for telemetry.
+function clearStaleInFlightOnBoot() {
+	let scanned = 0;
+	let cleared = 0;
+	if (!fs.existsSync(STATE_DIR)) return { scanned: 0, cleared: 0 };
+	let entries;
+	try {
+		entries = fs.readdirSync(STATE_DIR, { withFileTypes: true });
+	} catch {
+		return { scanned: 0, cleared: 0 };
+	}
+	const heartbeatStaleAfterMs = 2 * HEARTBEAT_INTERVAL_MS;
+	for (const ent of entries) {
+		if (!ent.isDirectory()) continue;
+		if (!UUID_RE.test(ent.name)) continue;
+		const metaPath = path.join(STATE_DIR, ent.name, "meta.json");
+		if (!fs.existsSync(metaPath)) continue;
+		let meta;
+		try {
+			meta = JSON.parse(fs.readFileSync(metaPath, "utf8"));
+		} catch {
+			continue; // corrupt meta — handled separately by listStaleSessions
+		}
+		if (!meta?.in_flight || typeof meta.in_flight !== "object") continue;
+		scanned += 1;
+		const lastHeartbeatIso = meta.in_flight.last_heartbeat;
+		const heartbeatAgeMs = lastHeartbeatIso
+			? Date.now() - Date.parse(lastHeartbeatIso)
+			: Number.POSITIVE_INFINITY;
+		// Best-effort liveness probe: in_flight does not currently record a
+		// PID directly, so fall back to checking the active lock holder PID
+		// (if any). When neither is available, treat heartbeat staleness as
+		// the only signal — conservative: clear only when clearly stale.
+		let holderAlive = true;
+		const lockInfoPath = path.join(STATE_DIR, ent.name, ".lock", "info.json");
+		if (fs.existsSync(lockInfoPath)) {
+			try {
+				const lockInfo = JSON.parse(fs.readFileSync(lockInfoPath, "utf8"));
+				if (Number.isInteger(lockInfo.pid)) {
+					holderAlive = isPidAlive(lockInfo.pid);
+				}
+			} catch {
+				// malformed lock info — assume holder dead, lock sweep will
+				// clean it up on its own pass.
+				holderAlive = false;
+			}
+		} else {
+			// No .lock anymore but in_flight is still set — the round was
+			// either finalized inconsistently or the lock sweep already ran.
+			// Heartbeat staleness is the sole signal in that case.
+			holderAlive = !Number.isFinite(heartbeatAgeMs)
+				? false
+				: heartbeatAgeMs <= heartbeatStaleAfterMs;
+		}
+		if (!holderAlive || heartbeatAgeMs > heartbeatStaleAfterMs) {
+			meta.in_flight = null;
+			meta.last_updated_at = new Date().toISOString();
+			try {
+				atomicWriteFile(metaPath, JSON.stringify(meta, null, 2));
+				cleared += 1;
+				process.stderr.write(
+					`[cross-review-v1] startup-sweep cleared stale meta.in_flight for session ${ent.name} (heartbeat_age=${Number.isFinite(heartbeatAgeMs) ? Math.round(heartbeatAgeMs / 1000) : "n/a"}s, holder_alive=${holderAlive})\n`,
+				);
+			} catch {
+				/* best-effort */
+			}
+		}
+	}
+	return { scanned, cleared };
 }
 
 // v1.2.15 / spec §6.22 Item D — pending-session discovery for caller.
@@ -788,22 +993,46 @@ const SESSION_SPEC_VERSION = "v4.14";
 //     because one peer was excluded by probe or runtime rejection.
 //   - "degraded_none": triangular/bilateral session where zero peers
 //     responded (all excluded or rejected).
+// v1.6.7 / audit closure (P2.6) — revised after cross-review-v2 R1 (codex
+// + gemini NOT_READY). Original parecer flagged that pre-v1.6.7 the
+// function returned "bilateral" when responded === 1 and excluded === 0,
+// failing to distinguish "intentional bilateral" from "quadrilateral
+// session where 2 peers were lost". The first attempt added an
+// optional `totalInvitedPeers` argument and a `silent_degraded_<scope>`
+// prefix when responded < invited and excluded === 0. Codex (R1) noted
+// that under current `Promise.allSettled` architecture every invited
+// peer is either responded or rejected, so `silent_degraded` would only
+// fire when rejected > 0 — which is NOT silent (rejected peers ARE
+// tracked in failed_attempts). Gemini (R1) noted that introducing a new
+// `silent_degraded_*` prefix breaks downstream consumers schema-validating
+// convergence_scope as enum.
+//
+// Revised approach: keep the optional `rejectedCount` argument as a hint
+// of degradation alongside `excluded`, but emit the EXISTING
+// `degraded_<scope>` value rather than introducing a new prefix. The
+// degradation signal now fires when ANY of probe-excluded, runtime-
+// excluded, or spawn-rejected peers are present — closing the original
+// gap (degradation that was previously masked as "bilateral") without
+// expanding the enum range.
 function deriveConvergenceScope(
 	legacyBilateral,
 	respondedPeers,
 	excludedProbe,
 	excludedRuntime,
+	rejectedCount,
 ) {
 	const responded = Array.isArray(respondedPeers) ? respondedPeers.length : 0;
 	const excluded =
 		(Array.isArray(excludedProbe) ? excludedProbe.length : 0) +
 		(Array.isArray(excludedRuntime) ? excludedRuntime.length : 0);
+	const rejected = Number.isInteger(rejectedCount) ? rejectedCount : 0;
+	const degraded = excluded > 0 || rejected > 0;
 	if (responded === 0) return "degraded_none";
 	if (legacyBilateral) return "bilateral";
-	if (responded >= 3) return "quadrilateral";
-	if (responded >= 2) return "trilateral";
+	if (responded >= 3) return degraded ? "degraded_quadrilateral" : "quadrilateral";
+	if (responded >= 2) return degraded ? "degraded_trilateral" : "trilateral";
 	// responded === 1 in N-ary path:
-	if (excluded > 0) return "degraded_bilateral";
+	if (degraded) return "degraded_bilateral";
 	return "bilateral";
 }
 
@@ -862,11 +1091,17 @@ function computeConvergenceSnapshot(roundIndex, round, context = {}) {
 			ready_peers: readyPeers,
 			blocking_peers: blockingPeers,
 			converged,
+			// v1.6.7 / audit closure (P2.6) — pass rejectedCount so spawn-
+			// rejected peers are surfaced as `degraded_<scope>` rather than
+			// being masked as "bilateral"/"trilateral"/"quadrilateral". See
+			// deriveConvergenceScope JSDoc for the cross-review-v2 R1
+			// rationale that retired the silent_degraded_* prefix.
 			convergence_scope: deriveConvergenceScope(
 				false,
 				respondedPeers,
 				excludedProbe,
 				excludedRuntime,
+				rejectedCount,
 			),
 		};
 	}
@@ -1275,11 +1510,10 @@ function savePeerResponse(sessionId, roundNum, peerAgent, content, status) {
 //   status_missing counts AGAINST (strict). Excluded peers (probe-level)
 //   never enter rounds. Failed-spawn peers (runtime level) are recorded
 //   in failed_attempts AND counted in round.quorum.rejected — they DO
-//   count AGAINST convergence under strict-quorum. Pre-v1.2.3 the snapshot
-//   computation incorrectly ignored `rejected`, allowing 2-of-3 unanimity
-//   to be reported as converged when 1 peer was spawn-rejected; aligned in
-//   v1.2.3 per external audit round-2 closure (codex round-5 caught this
-//   comment was still saying the pre-v1.2.3 thing).
+//   count AGAINST convergence under strict-quorum (spec §6.12 + §6.18.1
+//   v1.2.3 closure of an external-audit finding that pre-v1.2.3 snapshot
+//   computation ignored `rejected`, allowing 2-of-3 unanimity to misreport
+//   as converged when 1 peer was spawn-rejected).
 //
 // v0.6.0-alpha change: appendRound persists `round.convergence_snapshot`
 // with spec_version 'v4.9' at append time. checkConvergence PREFERS the
@@ -1406,10 +1640,23 @@ function buildConvergenceReason(snapshot, round) {
 // for intentional rollback aborts, 'moderation_flag_unresolved' for the
 // 5-attempt cap from §6.16). Stored as meta.outcome_reason. null means
 // unset/legacy.
+//
+// v1.6.7 / audit closure (P4.13): canonical normalization helper for
+// outcome_reason strings. Pre-v1.6.7 the same null/empty/whitespace
+// collapse logic was duplicated as a local arrow inside the
+// `session_finalize` handler in server.js. Centralizing here keeps the
+// semantics of empty/whitespace → null in one place. Tests assert equality
+// with the previous local implementation.
+function normalizeOutcomeReason(value) {
+	if (value == null) return null;
+	const s = String(value).trim();
+	return s.length === 0 ? null : s;
+}
+
 function finalize(sessionId, outcome, reason = null) {
 	const meta = readMeta(sessionId);
 	meta.outcome = outcome;
-	meta.outcome_reason = reason == null ? null : String(reason);
+	meta.outcome_reason = normalizeOutcomeReason(reason);
 	meta.finalized_at = new Date().toISOString();
 	writeMeta(sessionId, meta);
 }
@@ -1677,6 +1924,8 @@ module.exports = {
 	saveFailedAttempt,
 	checkConvergence,
 	finalize,
+	// v1.6.7 / audit closure (P4.13).
+	normalizeOutcomeReason,
 	saveEscalation,
 	acquireLock,
 	releaseLock,
@@ -1721,4 +1970,7 @@ module.exports = {
 	findPendingSessionsForCaller,
 	findHalfWrittenRounds,
 	archiveOrphanedRoundPrompt,
+	// v1.6.7 / audit closure (P1.2 + P1.3).
+	sweepOrphanTmpFilesOnBoot,
+	clearStaleInFlightOnBoot,
 };

@@ -2080,36 +2080,73 @@ function enumerateProcesses() {
 	});
 }
 
-// v1.2.16 hotfix: parse a Win32_Process.CommandLine / `ps -eo args` line
-// into argv[0]'s basename + the rest of the command line. Pre-v1.2.16,
-// `isPeerCliCommand` used `\bclaude\b.*\b(code|--print|-p)\b` against the
+// v1.2.16 hotfix + v1.6.7 / audit closure (P3.12): parse a
+// Win32_Process.CommandLine / `ps -eo args` line into argv[0]'s basename
+// plus the rest of the command line.
+//
+// Pre-v1.2.16 the code used `\bclaude\b.*\b(code|--print|-p)\b` against the
 // full command line; `\bcode\b` matched the literal substring "code"
-// inside every Claude Code install path (`\anthropic.claude-code-X.Y.Z\
-// claude.exe`), so the boot orphan sweep classified the host Claude Code
-// process as a peer-CLI orphan and SIGKILL-tree'd it — suiciding
-// cross-review-v1 itself in the process. Anchoring matches to argv[0]'s
-// basename eliminates the substring escape hatch. See spec §6.22.1.
+// inside every Claude Code install path, suiciding the host on boot.
+// v1.2.16 anchored to argv[0]'s basename — but the parser used a naive
+// `indexOf('"', 1)` that takes the FIRST closing quote, which fails on
+// edge-case command lines containing embedded escaped quotes. The defense
+// in depth via `findOrphans`/`ancestorPidSet` catches the regression at
+// runtime, but a stricter parser closes the first line.
+//
+// v1.6.7 ships a tiny shlex-style state machine: it walks the command
+// line one character at a time, distinguishing the inside of double
+// quotes from outside, honoring backslash-escaped quotes (`\"`), and
+// stopping argv0 at the first unquoted whitespace. This rejects the
+// pathological input that the old parser silently mis-segmented.
+//
+// Notes:
+//   - We only segment argv[0] from the rest; downstream consumers
+//     lowercase + regex-match the rest, so we don't fully tokenize it.
+//   - Single quotes are NOT special on Windows; we follow Win32 rules
+//     uniformly across platforms because the function is also fed
+//     POSIX `ps` output, where shells that produced the line have
+//     already done their own quote handling.
+//   - Anti-drift: smoke driveV167ParseArgv0AndRestUnit asserts the
+//     edge cases listed above resolve to the expected basenames.
 function parseArgv0AndRest(cmdLine) {
 	if (typeof cmdLine !== "string" || cmdLine.length === 0) {
 		return { argv0Basename: "", rest: "" };
 	}
-	let argv0;
-	let rest;
-	if (cmdLine.startsWith('"')) {
-		const end = cmdLine.indexOf('"', 1);
-		if (end < 0) return { argv0Basename: "", rest: "" };
-		argv0 = cmdLine.slice(1, end);
-		rest = cmdLine.slice(end + 1);
-	} else {
-		const sp = cmdLine.search(/\s/);
-		if (sp < 0) {
-			argv0 = cmdLine;
-			rest = "";
-		} else {
-			argv0 = cmdLine.slice(0, sp);
-			rest = cmdLine.slice(sp);
+	const len = cmdLine.length;
+	let argv0 = "";
+	let i = 0;
+	let inQuotes = false;
+	let escaped = false;
+	while (i < len) {
+		const ch = cmdLine[i];
+		if (escaped) {
+			argv0 += ch;
+			escaped = false;
+			i += 1;
+			continue;
 		}
+		if (ch === "\\" && inQuotes && i + 1 < len && cmdLine[i + 1] === '"') {
+			// Escaped quote inside a quoted argv[0]: consume both chars.
+			argv0 += '"';
+			i += 2;
+			continue;
+		}
+		if (ch === '"') {
+			inQuotes = !inQuotes;
+			i += 1;
+			continue;
+		}
+		if (!inQuotes && /\s/.test(ch)) {
+			break;
+		}
+		argv0 += ch;
+		i += 1;
 	}
+	if (inQuotes) {
+		// Unterminated quoted argv[0] — treat as malformed.
+		return { argv0Basename: "", rest: "" };
+	}
+	const rest = cmdLine.slice(i);
 	const baseMatch = argv0.match(/[^\\/]+$/);
 	const argv0Basename = (baseMatch ? baseMatch[0] : argv0).toLowerCase();
 	return { argv0Basename, rest: rest.toLowerCase() };

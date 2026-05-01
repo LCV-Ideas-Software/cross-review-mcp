@@ -51,6 +51,18 @@
 // field). The first rule violated in the order above decides the warning
 // kind.
 
+// v1.6.7 / audit closure (P1.4): cap the structured-block payload size
+// before JSON.parse. A malicious or buggy peer can emit a giant
+// <cross_review_status>...</cross_review_status> payload (deeply nested
+// object, megabytes of whitespace) that JSON.parse processes eagerly,
+// blowing memory. The status block is contractually small — it carries
+// only status + a handful of optional fields, each capped at MAX_ITEM_CHARS
+// (500). 64 KiB is two orders of magnitude above the legitimate envelope
+// and lets pathological inputs be rejected as malformed before the parser
+// allocates the AST. Anti-drift: smoke driveV167StatusPayloadCapUnit
+// asserts that an oversized payload returns the empty parse shape.
+const MAX_PAYLOAD_BYTES = 64 * 1024;
+
 const VALID_STATUSES = new Set(["READY", "NOT_READY", "NEEDS_EVIDENCE"]);
 const VALID_UNCERTAINTY = new Set(["low", "medium", "high"]);
 // v0.7.0-alpha / spec v4.10 (Item D): anti-hallucination fields.
@@ -233,6 +245,13 @@ function tryStructuredTail(rtrimmed) {
 	if (openAt < 0) return null;
 	const payload = rtrimmed.slice(openAt + OPEN_TAG.length, closeAt).trim();
 	if (!payload) return null;
+	// v1.6.7 / audit closure (P1.4): reject oversized payload BEFORE
+	// JSON.parse so a hostile peer can't OOM the orchestrator with a
+	// gigantic structured block. Byte-level cap (Buffer.byteLength) so
+	// multi-byte UTF-8 doesn't slip past a char-length check.
+	if (Buffer.byteLength(payload, "utf8") > MAX_PAYLOAD_BYTES) {
+		return null;
+	}
 	let parsed;
 	try {
 		parsed = JSON.parse(payload);
