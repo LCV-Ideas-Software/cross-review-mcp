@@ -17,6 +17,28 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.6.8] — 2026-05-03
+
+**Operational hygiene patch after live-session audit.** Fecha achados práticos encontrados em `~/.cross-review` e nas configurações ativas, sem alterar o protocolo v4.14 nem a superfície MCP pública.
+
+### Corrigido
+
+- **Smokes sem vazamento de sessão**: os drivers sintéticos de concurrence injection, heartbeat lifecycle, stderr classification e evidence attach agora removem suas sessões em `finally` usando `store.sessionDir(sessionId)`. Isso impede novas acumulações de sessões abertas como `v1.2.18 smoke: concurrence injection` / `v1.3.0 smoke:*` no store operacional.
+- **`server_info` sponsors URL canônico**: `sponsors_url` e `links.sponsors` agora apontam para `https://cross-review-v1.lcv.dev`, alinhando runtime, README, spec e anti-drift smoke. O smoke anterior ainda travava o domínio legado.
+- **Classificação de falhas observadas em sessões reais**: `classifyStderr` cobre agora `mcp_connection_closed`, `node_assertion`, `dependency_unavailable` e `process_cleanup_noise`; `saveFailedAttempt` também persiste `stdout_classification` quando `stderr_tail` está vazio e `stdout_tail` contém um sinal reconhecido.
+- **Paridade Gemini Code Assist / DeepSeek**: a configuração workspace de Gemini Code Assist para `cross-review-v1` passa a propagar `DEEPSEEK_API_KEY`, alinhando-a aos demais ambientes MCP ativos.
+
+### Documentação
+
+- **`AGENTS.md` refresh**: pointer de agentes atualizado para runtime `v1.6.8`, smoke `271` steps, caminho local `cross-review-v1` e remote `LCV-Ideas-Software/cross-review-v1`.
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
+
+---
+
 ## [1.6.7] — 2026-05-02
 
 **Audit-closure hardening pass.** Endereça achados ALTOS/CRÍTICOS da auditoria interna v1.6.6 sem mexer no comportamento observável dos peers nem na superfície pública v1.x. Mudanças aditivas (novo env var, novos exports, novos campos de scope), defensivas (caps de schema + payload + tmp cleanup) ou cosméticas (comentários, helper centralizado).
@@ -240,7 +262,7 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
   - pacote npm: `@lcv-ideas-software/cross-review-v1`;
   - binário global: `cross-review-v1`;
   - repositório: `https://github.com/LCV-Ideas-Software/cross-review-v1`;
-  - Sponsors/Page: `https://cross-review-v1.lcv.app.br`;
+  - Sponsors/Page: `https://cross-review-v1.lcv.dev`;
   - `server_info.name`, links públicos, documentação ativa e workflows de publish/dist-tag atualizados.
 - Sem mudança comportamental no protocolo v1.x: a release apenas estabiliza a identidade pública para diferenciar a linha CLI (`v1`) da linha API/SDK (`v2`).
 
@@ -262,7 +284,7 @@ v1.4.0 ships the surgical fixes for (1) and (2), adds the `server_info` ownershi
 
 ### Adicionado
 
-- **`server_info` publisher / sponsors fields** — the handler now returns `publisher: "LCV Ideas & Software"` plus `sponsors_url: "http://cross-review-v1.lcv.app.br"` (mirrored under `links.sponsors`) so operators see ownership and the sponsorship landing in the same payload they already use for runtime identification. No schema break — additive only.
+- **`server_info` publisher / sponsors fields** — the handler now returns `publisher: "LCV Ideas & Software"` plus `sponsors_url: "https://cross-review-v1.lcv.dev"` (mirrored under `links.sponsors`) so operators see ownership and the sponsorship landing in the same payload they already use for runtime identification. No schema break — additive only.
 - **(C) Codex sandbox/approval policy is configurable via env vars** in `src/lib/peer-spawn.js`'s `buildCodexArgs`. Defaults preserved (`-a never -s read-only`); operators can opt in via:
   - `CROSS_REVIEW_CODEX_SANDBOX = read-only | workspace-write | danger-full-access` (default `read-only`)
   - `CROSS_REVIEW_CODEX_APPROVAL = never | on-request | on-failure | untrusted` (default `never`)

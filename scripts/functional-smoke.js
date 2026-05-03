@@ -534,6 +534,17 @@ function cleanupSession(sid) {
 		fs.rmSync(sessPath, { recursive: true, force: true });
 }
 
+function cleanupStoreSession(store, sid) {
+	if (!sid) return;
+	if (!store || typeof store.sessionDir !== "function") {
+		cleanupSession(sid);
+		return;
+	}
+	const sessPath = store.sessionDir(sid);
+	if (fs.existsSync(sessPath))
+		fs.rmSync(sessPath, { recursive: true, force: true });
+}
+
 // Test NEEDS_EVIDENCE (legacy line form): status parsed, does not converge, reason string mentions evidence.
 async function driveNeedsEvidenceLegacy() {
 	const results = [];
@@ -7141,9 +7152,11 @@ async function driveV1218ConcurrenceArtifactInjectionUnit() {
 		"v1.2.18 Finding 1+2: formatPriorArtifactForPrompt must be exported",
 	);
 
+	let sessionId = null;
+	try {
 	// Build a synthetic session via initSession + appendRound + savePeerResponse
 	// and verify the helper finds the most recent READY artifact.
-	const sessionId = store.initSession({
+	sessionId = store.initSession({
 		caller: "codex",
 		peers: ["claude", "gemini"],
 		task: "v1.2.18 smoke: concurrence injection",
@@ -7283,6 +7296,9 @@ async function driveV1218ConcurrenceArtifactInjectionUnit() {
 	});
 
 	return { results };
+	} finally {
+		cleanupStoreSession(store, sessionId);
+	}
 }
 
 // v1.3.0 / Finding 4 — heartbeat lifecycle in meta.in_flight.
@@ -7304,7 +7320,9 @@ async function driveV130HeartbeatLifecycleUnit() {
 		"v1.3.0 Finding 4: HEARTBEAT_INTERVAL_MS must be a positive integer",
 	);
 
-	const sessionId = store.initSession({
+	let sessionId = null;
+	try {
+	sessionId = store.initSession({
 		caller: "claude",
 		peers: ["codex", "gemini"],
 		task: "v1.3.0 smoke: heartbeat lifecycle",
@@ -7426,6 +7444,9 @@ async function driveV130HeartbeatLifecycleUnit() {
 	});
 
 	return { results };
+	} finally {
+		cleanupStoreSession(store, sessionId);
+	}
 }
 
 // v1.3.0 / Finding 5 — stderr classification.
@@ -7458,6 +7479,14 @@ async function driveV130StderrClassificationUnit() {
 			text: "Error executing tool run_shell_command: Tool not found",
 		},
 		{
+			class: "mcp_connection_closed",
+			text: "mcp: memory unavailable: MCP error -32000: Connection closed",
+		},
+		{
+			class: "node_assertion",
+			text: "AssertionError [ERR_ASSERTION]: expected values to be strictly equal",
+		},
+		{
 			class: "rate_limit",
 			text: "status: 429, statusText: 'Too Many Requests', retry-after: 60",
 		},
@@ -7472,6 +7501,14 @@ async function driveV130StderrClassificationUnit() {
 		{
 			class: "analytics_warning",
 			text: "Telemetry opted out via GEMINI_TELEMETRY_DISABLED=1",
+		},
+		{
+			class: "dependency_unavailable",
+			text: "Ripgrep is not available. Falling back to GrepTool.",
+		},
+		{
+			class: "process_cleanup_noise",
+			text: 'ERRO: o processo "12345" nao foi encontrado.',
 		},
 		{
 			class: "terminal_advisory",
@@ -7490,7 +7527,7 @@ async function driveV130StderrClassificationUnit() {
 		);
 	}
 	results.push({
-		step: "v1.3.0 Finding 5: classifyStderr matches each of 8 known noise classes (auth/command/tool/rate_limit/cloudflare/plugin/analytics/terminal)",
+		step: "v1.3.0 Finding 5: classifyStderr matches known noise classes (auth/command/tool/MCP/node/rate_limit/cloudflare/plugin/analytics/dependency/process/terminal)",
 		ok: true,
 	});
 
@@ -7528,7 +7565,9 @@ async function driveV130StderrClassificationUnit() {
 		ok: true,
 	});
 
-	const sessionId = store.initSession({
+	let sessionId = null;
+	try {
+	sessionId = store.initSession({
 		caller: "claude",
 		peers: ["codex", "gemini"],
 		task: "v1.3.0 smoke: stderr classification on failed_attempt",
@@ -7551,7 +7590,27 @@ async function driveV130StderrClassificationUnit() {
 		ok: true,
 	});
 
+	store.saveFailedAttempt(sessionId, "gemini", "spawn_rejected", {
+		stdout_tail: "Ripgrep is not available. Falling back to GrepTool.",
+		failure_class: "spawn_rejected",
+		round: 1,
+		exit_code: 1,
+	});
+	const stdoutFailed = store.readMeta(sessionId).failed_attempts.at(-1);
+	assert(
+		stdoutFailed.stdout_classification &&
+			stdoutFailed.stdout_classification.class === "dependency_unavailable",
+		"v1.3.0 Finding 5: saveFailedAttempt must add stdout_classification when stderr is empty but stdout_tail matches a noise class",
+	);
+	results.push({
+		step: "v1.3.0 Finding 5: saveFailedAttempt falls back to stdout_classification when stderr_tail is empty",
+		ok: true,
+	});
+
 	return { results };
+	} finally {
+		cleanupStoreSession(store, sessionId);
+	}
 }
 
 // v1.3.0 / Finding 8 — session_attach_evidence tool + evidence/ dir.
@@ -7574,7 +7633,9 @@ async function driveV130EvidenceAttachUnit() {
 		"v1.3.0 Finding 8: EVIDENCE_MAX_BYTES must be a positive integer",
 	);
 
-	const sessionId = store.initSession({
+	let sessionId = null;
+	try {
+	sessionId = store.initSession({
 		caller: "claude",
 		peers: ["codex", "gemini"],
 		task: "v1.3.0 smoke: evidence attach",
@@ -7709,6 +7770,9 @@ async function driveV130EvidenceAttachUnit() {
 	});
 
 	return { results };
+	} finally {
+		cleanupStoreSession(store, sessionId);
+	}
 }
 
 // v1.4.0 §6.25 — Item (A): rate-limit lexemes are regex-anchored to
@@ -8118,11 +8182,11 @@ async function driveV140ServerInfoPublisherSponsorsUnit() {
 		"v1.4.0: server_info MUST include publisher: 'LCV Ideas & Software'",
 	);
 	assert(
-		/sponsors_url:\s*\n?\s*"http:\/\/cross-review-v1\.lcv\.app\.br"/.test(src),
-		"v1.4.0: server_info MUST include sponsors_url: 'http://cross-review-v1.lcv.app.br'",
+		/sponsors_url:\s*\n?\s*"https:\/\/cross-review-v1\.lcv\.dev"/.test(src),
+		"v1.4.0: server_info MUST include sponsors_url: 'https://cross-review-v1.lcv.dev'",
 	);
 	assert(
-		/sponsors:\s*\n?\s*"http:\/\/cross-review-v1\.lcv\.app\.br"/.test(src),
+		/sponsors:\s*\n?\s*"https:\/\/cross-review-v1\.lcv\.dev"/.test(src),
 		"v1.4.0: server_info.links MUST include the sponsors mirror",
 	);
 	results.push({

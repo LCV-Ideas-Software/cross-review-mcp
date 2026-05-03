@@ -680,6 +680,10 @@ const STDERR_CLASS_PATTERNS = [
 		class: "tool_unavailable",
 		re: /\b(?:tool\s*"[^"]*"\s*not\s*found|tool\s*not\s*available|run_shell_command|invoke_agent\s*not\s*found|cannot\s*find\s*tool)\b/i,
 	},
+	{
+		class: "mcp_connection_closed",
+		re: /\b(?:MCP\s+error\s+-?\d+:\s*Connection\s+closed|MCP\s+connection\s+closed|connection\s+closed.*\bMCP\b)\b/i,
+	},
 	// v1.4.0 §6.25 (codex follow-up, session bf4ffea3): Codex CLI 0.125.0 on
 	// Windows runs PowerShell in ConstrainedLanguage mode under its sandbox.
 	// The CLI's own Rust command-safety layer (powershell_parser.ps1) does
@@ -704,6 +708,10 @@ const STDERR_CLASS_PATTERNS = [
 		class: "codex_windows_sandbox",
 		re: /(?:InvalidOperation:\s*Cannot\s*(?:set\s*property|invoke\s*method)\.\s*(?:Property\s*setting|Method\s*invocation)\s*is\s*supported\s*only\s*on\s*core\s*types|ConstrainedLanguage|powershell\s*ast\s*parser|rejected:\s*blocked\s*by\s*(?:sandbox|policy)|blocked\s*by\s*(?:sandbox|policy)\s*\(?\s*windows|Execution\s*of\s*scripts\s*is\s*disabled|about_Execution_Policies)/i,
 	},
+	{
+		class: "node_assertion",
+		re: /\b(?:ERR_ASSERTION|AssertionError\s*\[ERR_ASSERTION\]|node:internal\/assert)\b/i,
+	},
 	// v1.4.0 §6.25: rate_limit regex is now contextual. Pre-v1.4.0 the
 	// `\b429\b` substring matched grep line numbers (`429:`, `1429:`),
 	// timestamps, and paths — feeding the rate_limit_induced_response
@@ -726,6 +734,14 @@ const STDERR_CLASS_PATTERNS = [
 	{
 		class: "analytics_warning",
 		re: /\b(?:analytics?\s*(?:disabled|opt(?:-?in|-?out)|telemetry)|telemetry\s*opt(?:-?in|-?out|ed)|usage\s*statistics)\b/i,
+	},
+	{
+		class: "dependency_unavailable",
+		re: /\b(?:ripgrep\s+is\s+not\s+available|rg(?:\.exe)?\s+(?:not\s+found|is\s+not\s+available)|falling\s+back\s+to\s+GrepTool)\b/i,
+	},
+	{
+		class: "process_cleanup_noise",
+		re: /(?:ERRO:\s*o\s*processo\s*"[^"]+"\s*n(?:\u00e3|a)o\s*foi\s*encontrado|ERROR:\s*The\s+process\s+"[^"]+"\s+not\s+found|taskkill.*(?:not\s+found|n(?:\u00e3|a)o\s+foi\s+encontrado))/i,
 	},
 	{
 		class: "terminal_advisory",
@@ -1263,6 +1279,15 @@ function saveFailedAttempt(sessionId, agent, reason, extras = {}) {
 			classification.signals.length > 0
 		) {
 			entry.stderr_classification = classification;
+		}
+	}
+	if (!entry.stderr_classification && entry.stdout_tail) {
+		const classification = classifyStderr(entry.stdout_tail);
+		if (
+			classification.class !== "unknown" ||
+			classification.signals.length > 0
+		) {
+			entry.stdout_classification = classification;
 		}
 	}
 	meta.failed_attempts.push(entry);

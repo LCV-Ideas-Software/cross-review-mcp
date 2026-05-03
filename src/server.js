@@ -61,13 +61,13 @@ const {
 	MODEL_CLOSE_TAG,
 } = require("./lib/model-parser.js");
 
-const VERSION = "1.6.7";
+const VERSION = "1.6.8";
 
 // v1.2.4: release date for `server_info`. Updated alongside VERSION on each
 // ship. Anti-drift smoke (driveV414ServerInfoUnit) asserts that the
 // CHANGELOG.md `## [VERSION] — DATE` heading matches this constant, so a
 // bump that forgets to update either side fails the gate.
-const RELEASE_DATE = "2026-05-02";
+const RELEASE_DATE = "2026-05-03";
 
 // v0.6.0-alpha / spec v4.9: response-level rate-limit detection.
 // Requires ALL THREE of (1) status block absent, (2) body < 200 chars,
@@ -896,7 +896,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 									// page in the same payload operators already
 									// hit for runtime identification.
 									publisher: "LCV Ideas & Software",
-									sponsors_url: "http://cross-review-v1.lcv.app.br",
+									sponsors_url: "https://cross-review-v1.lcv.dev",
 									tools: [
 										"server_info",
 										"session_init",
@@ -915,7 +915,7 @@ server.setRequestHandler(CallToolRequestSchema, async (req) => {
 										spec: "https://github.com/LCV-Ideas-Software/cross-review-v1/blob/main/docs/workflow-spec.md",
 										changelog:
 											"https://github.com/LCV-Ideas-Software/cross-review-v1/blob/main/CHANGELOG.md",
-										sponsors: "http://cross-review-v1.lcv.app.br",
+										sponsors: "https://cross-review-v1.lcv.dev",
 									},
 								},
 								null,

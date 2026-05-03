@@ -3506,7 +3506,7 @@ functions:
 
 **(E) `server_info` ownership fields.** The handler returns
 `publisher: "LCV Ideas & Software"` and
-`sponsors_url: "http://cross-review-v1.lcv.app.br"` (mirrored under
+`sponsors_url: "https://cross-review-v1.lcv.dev"` (mirrored under
 `links.sponsors`) so operators can confirm package ownership and
 sponsorship landing in the same call they use for runtime
 identification.
