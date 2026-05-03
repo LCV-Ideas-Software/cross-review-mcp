@@ -800,6 +800,56 @@ function normalizePeers(meta) {
 	return meta;
 }
 
+const TRIBUNAL_PROCESS_MODEL = "tribunal_collegiate_v1";
+
+function normalizeAgentId(value) {
+	return String(value || "").trim().toLowerCase();
+}
+
+function uniqueAgentList(values) {
+	const seen = new Set();
+	const out = [];
+	for (const value of Array.isArray(values) ? values : []) {
+		const agent = normalizeAgentId(value);
+		if (!agent || seen.has(agent)) continue;
+		seen.add(agent);
+		out.push(agent);
+	}
+	return out;
+}
+
+function runRelatorLottery({ sessionId, caller, peers, selectedAt } = {}) {
+	const callerAgent = normalizeAgentId(caller);
+	const candidates = uniqueAgentList(peers);
+	const eligible = candidates.filter((agent) => agent !== callerAgent);
+	const at =
+		typeof selectedAt === "string" && selectedAt.length > 0
+			? selectedAt
+			: new Date().toISOString();
+	if (eligible.length === 0) {
+		throw new Error(
+			`runRelatorLottery: at least one non-caller peer is required for caller '${callerAgent || "(missing)"}'`,
+		);
+	}
+	const selectedIndex = crypto.randomInt(eligible.length);
+	const selected = eligible[selectedIndex];
+	return {
+		leadPeer: selected,
+		relatorLottery: {
+			mode: "crypto_random_int",
+			process_model: TRIBUNAL_PROCESS_MODEL,
+			session_id: sessionId ?? null,
+			caller: callerAgent || null,
+			candidates,
+			eligible_candidates: eligible,
+			selected,
+			selected_index: selectedIndex,
+			selected_at: at,
+			excludes_caller: true,
+		},
+	};
+}
+
 function initSession({
 	task,
 	artifacts,
@@ -812,26 +862,65 @@ function initSession({
 }) {
 	ensureStateDir();
 	const id = crypto.randomUUID();
-	fs.mkdirSync(sessionDir(id), { recursive: true });
+	const startedAt = new Date().toISOString();
 
 	let peersArray;
 	if (Array.isArray(peers) && peers.length > 0) {
-		peersArray = peers.map(String);
+		peersArray = uniqueAgentList(peers);
 	} else if (typeof peerAgent === "string" && peerAgent.length > 0) {
-		peersArray = [peerAgent];
+		peersArray = uniqueAgentList([peerAgent]);
 	} else {
 		peersArray = [];
 	}
+	const caller = normalizeAgentId(callerAgent);
+	peersArray = peersArray.filter((agent) => agent !== caller);
+	if (peersArray.length === 0) {
+		throw new Error(
+			`initSession: relator lottery requires at least one non-caller peer (caller='${caller || "(missing)"}')`,
+		);
+	}
+	const { leadPeer, relatorLottery } = runRelatorLottery({
+		sessionId: id,
+		caller,
+		peers: peersArray,
+		selectedAt: startedAt,
+	});
+	if (leadPeer && leadPeer === caller) {
+		throw new Error(
+			`initSession: invalid relator lottery selected caller '${caller}' as lead_peer`,
+		);
+	}
 
+	fs.mkdirSync(sessionDir(id), { recursive: true });
 	const meta = {
 		session_id: id,
 		spec_version: SESSION_SPEC_VERSION,
+		process_model: TRIBUNAL_PROCESS_MODEL,
 		task: String(task || ""),
 		...(reviewFocus ? { review_focus: String(reviewFocus) } : {}),
 		artifacts: Array.isArray(artifacts) ? artifacts.map(String) : [],
-		caller: callerAgent,
+		caller,
 		peers: peersArray,
-		started_at: new Date().toISOString(),
+		lead_peer: leadPeer,
+		relator_lottery: relatorLottery,
+		petition: {
+			submitted_by: caller || null,
+			task: String(task || ""),
+			artifacts: Array.isArray(artifacts) ? artifacts.map(String) : [],
+			submitted_at: startedAt,
+		},
+		tribunal: {
+			process_model: TRIBUNAL_PROCESS_MODEL,
+			caller_role: "petitioner",
+			peer_role: "judge",
+			lead_peer_role: "judge_relator",
+			lead_peer: leadPeer,
+			panel_peers: peersArray,
+			caller_excluded_from_panel: true,
+			verdict_rule:
+				"all non-caller peers vote; caller_status READY accepts the peer verdict; caller_status NOT_READY contests it",
+		},
+		started_at: startedAt,
 		rounds: [],
 		failed_attempts: [],
 		outcome: null,
@@ -990,8 +1079,9 @@ const CONVERGENCE_SPEC_VERSION = "v4.9";
 // session ran. Independent from CONVERGENCE_SPEC_VERSION (which marks the
 // convergence-snapshot semantic) so they can evolve at different cadences.
 // Bumped per spec evolution: v4.13 adds §6.17 spec_version field, §6.18
-// session_sweep + outcome_reason, §6.19 convergence_health.
-const SESSION_SPEC_VERSION = "v4.14";
+// session_sweep + outcome_reason, §6.19 convergence_health; v4.15 adds
+// §6.27 tribunal relator lottery + peer-verdict/caller-disposition semantics.
+const SESSION_SPEC_VERSION = "v4.15";
 
 // v1.2.18 / Finding 6 (handoff 2026-04-28): derive `convergence_scope`
 // from snapshot data so the caller can distinguish full N-ary unanimity
@@ -1167,6 +1257,86 @@ function classifyBlockingLegacy(round) {
 	return "status_missing";
 }
 
+function callerDisposition(callerStatus) {
+	if (callerStatus === "READY") return "accepted";
+	if (callerStatus === "NOT_READY") return "contested";
+	return "missing";
+}
+
+function computeRoundVerdict(round, snapshot = null) {
+	const callerStatus = round?.caller_status ?? null;
+	const disposition = callerDisposition(callerStatus);
+	const leadPeer = round?.lead_peer ?? null;
+	const promulgatedAt =
+		typeof round?.completed_at === "string" && round.completed_at.length > 0
+			? round.completed_at
+			: new Date().toISOString();
+
+	if (Array.isArray(round?.peers) && !("peer_status" in round)) {
+		const votes = round.peers.map((peer) => ({
+			agent: peer.agent,
+			role: peer.agent === leadPeer ? "judge_relator" : "judge",
+			vote: peer.peer_status ?? null,
+			peer_file: peer.peer_file ?? null,
+		}));
+		const rejectedCount =
+			round.quorum && Number.isFinite(round.quorum.rejected)
+				? round.quorum.rejected
+				: 0;
+		const allPeersReady =
+			votes.length > 0 &&
+			votes.every((vote) => vote.vote === "READY") &&
+			rejectedCount === 0;
+		const needsEvidence = votes.some((vote) => vote.vote === "NEEDS_EVIDENCE");
+		const peerVerdict = allPeersReady
+			? "READY"
+			: needsEvidence
+				? "NEEDS_EVIDENCE"
+				: "NOT_READY";
+		return {
+			process_model: TRIBUNAL_PROCESS_MODEL,
+			lead_peer: leadPeer,
+			panel_peers: votes.map((vote) => vote.agent),
+			votes,
+			peer_verdict: peerVerdict,
+			panel_unanimous_ready: allPeersReady,
+			caller_disposition: disposition,
+			final_convergence:
+				disposition === "accepted" &&
+				(snapshot ? snapshot.converged === true : allPeersReady),
+			rejected_count: rejectedCount,
+			promulgated_at: promulgatedAt,
+		};
+	}
+
+	const agent = round?.peer ?? leadPeer;
+	const peerReady = round?.peer_status === "READY";
+	const vote = {
+		agent,
+		role: agent === leadPeer ? "judge_relator" : "judge",
+		vote: round?.peer_status ?? null,
+		peer_file: round?.peer_file ?? null,
+	};
+	return {
+		process_model: TRIBUNAL_PROCESS_MODEL,
+		lead_peer: leadPeer,
+		panel_peers: agent ? [agent] : [],
+		votes: agent ? [vote] : [],
+		peer_verdict: peerReady
+			? "READY"
+			: round?.peer_status === "NEEDS_EVIDENCE"
+				? "NEEDS_EVIDENCE"
+				: "NOT_READY",
+		panel_unanimous_ready: peerReady,
+		caller_disposition: disposition,
+		final_convergence:
+			disposition === "accepted" &&
+			(snapshot ? snapshot.converged === true : peerReady),
+		rejected_count: 0,
+		promulgated_at: promulgatedAt,
+	};
+}
+
 function collectSessionExclusions(meta, roundIndex, round = null) {
 	const respondedPeers =
 		round && Array.isArray(round.peers)
@@ -1189,12 +1359,33 @@ function collectSessionExclusions(meta, roundIndex, round = null) {
 function appendRound(sessionId, round) {
 	const meta = readMeta(sessionId);
 	const roundIndex = meta.rounds.length + 1;
+	if (round && typeof round === "object") {
+		if (round.lead_peer == null && typeof meta.lead_peer === "string") {
+			round.lead_peer = meta.lead_peer;
+		}
+		if (round.process_model == null) {
+			round.process_model = meta.process_model || TRIBUNAL_PROCESS_MODEL;
+		}
+		if (round.tribunal == null && meta.tribunal) {
+			round.tribunal = {
+				process_model: meta.tribunal.process_model || TRIBUNAL_PROCESS_MODEL,
+				lead_peer: round.lead_peer ?? null,
+				panel_peers: Array.isArray(round.peers)
+					? round.peers.map((peer) => peer.agent).filter(Boolean)
+					: round.peer
+						? [round.peer]
+						: [],
+				caller_disposition_rule: meta.tribunal.verdict_rule || null,
+			};
+		}
+	}
 	const context = collectSessionExclusions(meta, roundIndex, round);
 	round.convergence_snapshot = computeConvergenceSnapshot(
 		roundIndex,
 		round,
 		context,
 	);
+	round.verdict = computeRoundVerdict(round, round.convergence_snapshot);
 	meta.rounds.push(round);
 	meta.last_updated_at = new Date().toISOString();
 	writeMeta(sessionId, meta);
@@ -1588,6 +1779,7 @@ function checkConvergence(sessionId) {
 			last_round: last,
 			reason,
 			convergence_snapshot: snapshot,
+			verdict: last.verdict || computeRoundVerdict(last, snapshot),
 		};
 	}
 	return {
@@ -1598,6 +1790,7 @@ function checkConvergence(sessionId) {
 		last_round: last,
 		reason,
 		convergence_snapshot: snapshot,
+		verdict: last.verdict || computeRoundVerdict(last, snapshot),
 	};
 }
 
@@ -1956,6 +2149,9 @@ module.exports = {
 	releaseLock,
 	// Exported for tests and ad-hoc audit.
 	normalizePeers,
+	TRIBUNAL_PROCESS_MODEL,
+	runRelatorLottery,
+	computeRoundVerdict,
 	redactSensitive,
 	clipStderrTail,
 	// v1.3.0 / Finding 5 (handoff 2026-04-28).

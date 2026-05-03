@@ -1,4 +1,4 @@
-# Cross-Review MCP Workflow Specification v4.14
+# Cross-Review MCP Workflow Specification v4.15
 
 **Status**: v4.11 is a SPEC-ONLY revision of v4.10 (no code change, no
 version bump). Shipped 2026-04-24 as a small amendment to §6.11 closing
@@ -24,6 +24,32 @@ Encoding: ASCII-only with transliteration of Portuguese accents where
 they appear (see section 6.4). Peer exchange and non-user-facing
 artifacts are authored in en-US (see section 6.10), trivially
 satisfying ASCII-only without transliteration.
+
+---
+
+## 0o. Delta v4.14 -> v4.15 (executive summary)
+
+**Single normative addition: §6.27 tribunal relator lottery.**
+Operator clarified the intended cross-review model as a collegiate court:
+the caller is the petitioner, `session_init` submits the initial petition
+(`task` + artifact/evidence references), and the system MUST run an
+automatic random lottery over non-caller peers to select one
+`lead_peer` (judge-relator). The caller is never eligible for the
+lottery and never part of the judging panel.
+
+The relator receives the petition first and emits the first report. The
+remaining peers then deliberate with the petition plus relator report as
+record evidence. All non-caller peers vote. The peer-only verdict is
+persisted on each round as `round.verdict`. `caller_status=READY` means
+the caller accepts the peer verdict; when the peer verdict is unanimously
+READY under strict quorum, the session is auto-finalized as
+`outcome=converged` with `outcome_reason=caller_accepted_peer_verdict`.
+`caller_status=NOT_READY` means the caller contests the verdict and the
+session remains open for another round.
+
+Backwards compatibility: pre-v4.15 sessions may lack `lead_peer`,
+`relator_lottery`, `petition`, `tribunal`, and `round.verdict`; readers
+must tolerate absence. New sessions persist all of those fields.
 
 ---
 
@@ -3620,7 +3646,83 @@ surface.
 
 ---
 
-## 7. Summary of conventions for immediate use (UPDATED through v4.10)
+### 6.27 Tribunal relator lottery + peer verdict (NEW in v4.15 / v1.7.0)
+
+**Rite model.** cross-review-v1 models a collegiate court:
+
+- caller = petitioner. The caller opens the session with an initial
+  petition (`task`) and record/evidence references (`artifacts` and later
+  `session_attach_evidence` entries).
+- peers = judges. The caller is never a judge, never `lead_peer`, and
+  never a voting peer in its own session.
+- `lead_peer` = judge-relator. The relator is selected automatically by
+  the server at `session_init`.
+
+**Automatic relator lottery.**
+
+- `session_init` builds the peer set from `VALID_PEERS - caller`.
+- The server MUST run a crypto-random lottery over that non-caller peer
+  set. Implementation uses Node `crypto.randomInt`.
+- The selected peer is persisted in `meta.lead_peer`.
+- The audit record is persisted in `meta.relator_lottery` with
+  `mode="crypto_random_int"`, `candidates`, `eligible_candidates`,
+  `selected`, `selected_index`, `selected_at`, and
+  `excludes_caller=true`.
+- If a malformed direct-store caller provides a peer list containing the
+  caller, the store filters the caller out before persistence and before
+  the lottery.
+- If no peer remains after caller exclusion, session creation MUST fail
+  before persisting session metadata. A tribunal session cannot have
+  `lead_peer=null`.
+
+**Petition and panel metadata.** New sessions persist:
+
+- `meta.process_model = "tribunal_collegiate_v1"`.
+- `meta.petition = { submitted_by, task, artifacts, submitted_at }`.
+- `meta.tribunal = { process_model, caller_role, peer_role,
+  lead_peer_role, lead_peer, panel_peers, caller_excluded_from_panel,
+  verdict_rule }`.
+
+**Deliberation flow.**
+
+- `ask_peers` sends the petition prompt to `meta.lead_peer` first.
+- The relator's response is saved as the relator's normal peer artifact.
+- The remaining peers receive the original petition plus a
+  `Lead Peer Report (judge-relator)` block containing the relator output.
+- Remaining peers vote independently; the relator also remains a voting
+  peer through its own `peer_status`.
+- If the relator spawn fails, the remaining peers may still inspect the
+  original petition, but strict quorum records the relator failure as a
+  blocker.
+
+**Round verdict.** `appendRound` persists `round.verdict`:
+
+- `votes[]`: one entry per peer with `{ agent, role, vote, peer_file }`.
+- `peer_verdict`: `READY` only when all voting peers are READY and
+  `round.quorum.rejected === 0`; `NEEDS_EVIDENCE` when any vote is
+  NEEDS_EVIDENCE; otherwise `NOT_READY`.
+- `caller_disposition`: `accepted` when `caller_status=READY`,
+  `contested` when `caller_status=NOT_READY`, `missing` otherwise.
+- `final_convergence`: true only when the peer verdict is unanimous READY
+  under strict quorum and the caller accepted it.
+
+**Auto-finalization.** When `round.verdict.final_convergence === true`,
+the server finalizes the session immediately:
+
+- `meta.outcome = "converged"`.
+- `meta.outcome_reason = "caller_accepted_peer_verdict"`.
+- Further `ask_peer` / `ask_peers` calls are rejected by the existing
+  finalized-session guard. A caller that contests must use
+  `caller_status=NOT_READY`, which keeps the session open for another
+  round.
+
+**Backwards compatibility.** Pre-v4.15 sessions may lack tribunal fields;
+readers MUST tolerate missing `lead_peer`, `relator_lottery`, `petition`,
+`tribunal`, and `round.verdict`. New sessions always persist them.
+
+---
+
+## 7. Summary of conventions for immediate use (UPDATED through v4.15)
 
 | Convention | Caller action |
 |------------|---------------|
@@ -3637,6 +3739,7 @@ surface.
 | Overflow | Yellow 50k / Red 100k chars in the transcript (section 6.6.1); non-destructive compression (section 6.6.4) with reference to the immutables; meta.json with no API change (section 6.6.3 YAGNI) |
 | Transition window | During server upgrade, peer emits both formats until reload is confirmed |
 | Triangular topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary introduced in F2 -- alpha normative (section 2.7); unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini"); canonical ids internally (claude / codex / gemini); caller resolved dynamically per call via `args.caller > clientInfo.name` with no hardcoded default and no env-var fallback (section 2.8 / §6.20, simplified to two tiers in v1.2.12) |
+| Tribunal relator lottery | `session_init` crypto-randomly selects `lead_peer` from non-caller peers only; `ask_peers` sends petition to relator first, then panel peers deliberate with petition + relator report; peer-only verdict is persisted in `round.verdict`; caller READY accepts and auto-finalizes unanimous READY, caller NOT_READY contests and keeps the session open (§6.27) |
 | Tier + transient resilience | Pre-session capability probe per agent with per-provider `fallback_chain` walk (6.9.3.1, 6.9.3.2); graceful degrade triangular -> bilateral when exactly one peer is excluded, abort only when <2 peers viable (6.9.3.3); session-level `meta.capability_snapshot` + active-peer-only rounds (6.9.3.4; `tier: ok \| offline` canonical in v4.9, retiring `fallback`); dual runtime vs advisory role of top-models.json (6.9.3.5); mid-round transient provider failures (prompt flag / rate limit / 5xx) treated with same-model retry-once-with-backoff; server-side auto-rephrase prohibited; silent mid-round model switch remains prohibited (6.9.3.6); `transient_failure` enum in response distinguishes transient from protocol failure |
 | Transport-aware model-check | `spawnPeer` / `probeAgent` return `transport_descriptor: { agent, auth, endpoint_class }` (6.11); `parsePeerOutputs` gate on `auth === 'api-key'` runs `classifyModelMatch`; otherwise SKIP with audit record `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli', auth, endpoint_class }` (eliminates v0.5.0-alpha false-positive `silent_model_downgrade` on CLI-subscription / oauth-personal peers); forensic-only `cli_attested_model_raw` captures Codex stderr banner unparsed |
 | Strict-only convergence + snapshot | `converged iff caller READY AND every responded peer READY` (6.12); `status_missing` counts AGAINST; no loose toggle; `appendRound` persists `round.convergence_snapshot` with `spec_version: 'v4.9'`; `checkConvergence` reads the persisted snapshot (audit immutability under future predicate evolution) |

@@ -17,6 +17,31 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.7.0] — 2026-05-03
+
+**Tribunal relator lottery.** Implementa o rito colegiado descrito pelo operador: caller como impetrante, peer sorteado como juiz relator, demais peers como painel julgador, veredito peer-only e aceite/contestacao do caller.
+
+### Adicionado
+
+- **Sorteio automatico e aleatorio de relator**: `session_init` agora roda uma loteria `crypto.randomInt` sobre os peers nao-caller, persiste `meta.lead_peer` e grava `meta.relator_lottery` com `mode`, candidatos, selecionado, indice sorteado, timestamp e `excludes_caller=true`.
+- **Guarda de elegibilidade do colegiado**: sessoes sem nenhum peer nao-caller elegivel falham na abertura; o store nao persiste `lead_peer=null` nem cria diretorio de sessao invalida.
+- **Metadados do rito colegiado**: novas sessoes persistem `meta.process_model="tribunal_collegiate_v1"`, `meta.petition` (peticao inicial com `task` + `artifacts`) e `meta.tribunal` (papeis, painel e regra de veredito).
+- **Relator antes do painel**: `ask_peers` envia a peticao primeiro ao `lead_peer`; os demais peers recebem a peticao acrescida do bloco `Lead Peer Report (judge-relator)` e votam de forma independente.
+- **Veredito persistido por rodada**: `appendRound` grava `round.verdict` com votos, papel de cada peer (`judge_relator` / `judge`), `peer_verdict`, disposicao do caller (`accepted` / `contested`) e `final_convergence`.
+- **Fechamento automatico no aceite**: quando todos os peers votam READY, nao ha rejeicoes de spawn e o caller declara `caller_status=READY`, a sessao e finalizada automaticamente com `outcome=converged` e `outcome_reason=caller_accepted_peer_verdict`. Se o caller declara `NOT_READY`, o veredito fica contestado e a sessao permanece aberta para nova rodada.
+
+### Alterado
+
+- **Spec ativa v4.15**: `SESSION_SPEC_VERSION` passa a `v4.15`; `docs/workflow-spec.md` documenta a nova §6.27 e o resumo operacional foi atualizado.
+- **`ask_peers` deixa de ser broadcast plano**: o fluxo agora e relator-first + painel, preservando o mesmo conjunto de peers e a mesma regra de quorum estrito.
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
+
+---
+
 ## [1.6.8] — 2026-05-03
 
 **Operational hygiene patch after live-session audit.** Fecha achados práticos encontrados em `~/.cross-review` e nas configurações ativas, sem alterar o protocolo v4.14 nem a superfície MCP pública.
