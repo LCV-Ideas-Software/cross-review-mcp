@@ -17,6 +17,26 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ---
 
+## [1.7.1] — 2026-05-04
+
+**Smoke harness state-dir parity.** Corrige o falso P0 apontado pela auditoria externa: a persistencia de `session_init` estava correta, mas o harness funcional verificava e limpava sempre `~/.cross-review`, enquanto o servidor filho obedecia `CROSS_REVIEW_STATE_DIR`.
+
+### Corrigido
+
+- **`functional-smoke.js` respeita `CROSS_REVIEW_STATE_DIR`**: adiciona `resolveStateDirFromEnv()` com a mesma semantica de `session-store` (default `~/.cross-review`, override absoluto e expansao `~`, `~/...`, `~\...`) e usa esse caminho nas assercoes de `meta.json` e nas limpezas de sessoes sinteticas.
+- **Anti-drift do proprio harness**: a unidade de `CROSS_REVIEW_STATE_DIR` agora tambem valida que a resolucao local do smoke espelha o store nos casos default, whitespace-only, override absoluto, `~`, `~/...` e `~\...`, evitando regressao em que teste e runtime voltem a consultar diretorios diferentes.
+
+### Validação
+
+- `node --check scripts/functional-smoke.js`
+- `node --check src/server.js`
+- `npm test` com `CROSS_REVIEW_STATE_DIR=C:\Users\leona\.cross-review\data_v1`
+- `npm test` com `CROSS_REVIEW_STATE_DIR` removido do processo de teste
+- `npm run check-models`
+- `npm audit --audit-level=moderate`
+
+---
+
 ## [1.7.0] — 2026-05-03
 
 **Tribunal relator lottery.** Implementa o rito colegiado descrito pelo operador: caller como impetrante, peer sorteado como juiz relator, demais peers como painel julgador, veredito peer-only e aceite/contestacao do caller.

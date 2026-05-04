@@ -13,7 +13,7 @@
  * paths are validated in manual E2E sessions, not here.
  *
  * Success: every tool responds with the expected shape + the correct
- * files are created in ~/.cross-review/<id>/.
+ * files are created in the configured cross-review state dir.
  */
 
 const { spawn } = require("node:child_process");
@@ -22,7 +22,25 @@ const path = require("node:path");
 const os = require("node:os");
 
 const SERVER = path.resolve(__dirname, "..", "src", "server.js");
-const STATE_DIR = path.join(os.homedir(), ".cross-review");
+
+function resolveStateDirFromEnv(env = process.env) {
+	const raw = env.CROSS_REVIEW_STATE_DIR;
+	if (typeof raw === "string" && raw.trim().length > 0) {
+		const trimmed = raw.trim();
+		if (trimmed === "~") return path.resolve(os.homedir());
+		if (trimmed.startsWith("~/") || trimmed.startsWith("~\\")) {
+			return path.resolve(path.join(os.homedir(), trimmed.slice(2)));
+		}
+		return path.resolve(trimmed);
+	}
+	return path.join(os.homedir(), ".cross-review");
+}
+
+const STATE_DIR = resolveStateDirFromEnv();
+
+function sessionPathForSmoke(sessionId) {
+	return path.join(STATE_DIR, sessionId);
+}
 
 function requestLine(id, method, params) {
 	return `${JSON.stringify({ jsonrpc: "2.0", id, method, params })}\n`;
@@ -395,7 +413,7 @@ async function driveAskPeerMatrix() {
 				reason: "caller_accepted_peer_verdict",
 			},
 		});
-		const sessPath = path.join(os.homedir(), ".cross-review", sid);
+		const sessPath = sessionPathForSmoke(sid);
 		if (fs.existsSync(sessPath))
 			fs.rmSync(sessPath, { recursive: true, force: true });
 		results.push({ step: "askpeer cleanup", ok: true });
@@ -476,7 +494,7 @@ async function driveProtocolViolation() {
 			ok: true,
 		});
 
-		const sessPath = path.join(os.homedir(), ".cross-review", sid);
+		const sessPath = sessionPathForSmoke(sid);
 		if (fs.existsSync(sessPath))
 			fs.rmSync(sessPath, { recursive: true, force: true });
 		results.push({ step: "violation cleanup", ok: true });
@@ -549,7 +567,7 @@ async function oneShotAskPeer(stubValue, callerStatus = "NOT_READY") {
 }
 
 function cleanupSession(sid) {
-	const sessPath = path.join(os.homedir(), ".cross-review", sid);
+	const sessPath = sessionPathForSmoke(sid);
 	if (fs.existsSync(sessPath))
 		fs.rmSync(sessPath, { recursive: true, force: true });
 }
@@ -4100,7 +4118,7 @@ async function driveV7EscalateToOperatorUnit() {
 			name: "session_finalize",
 			arguments: { session_id: sid, outcome: "aborted" },
 		});
-		const sessPath = path.join(os.homedir(), ".cross-review", sid);
+		const sessPath = sessionPathForSmoke(sid);
 		if (fs.existsSync(sessPath))
 			fs.rmSync(sessPath, { recursive: true, force: true });
 		results.push({ step: "v4.10 Item D: escalate smoke cleanup", ok: true });
@@ -4125,7 +4143,7 @@ async function driveV7EscalateToOperatorUnit() {
 		entry.context === null,
 		"v4.10 Item D: saveEscalation accepts null context",
 	);
-	const cleanup = path.join(os.homedir(), ".cross-review", id);
+	const cleanup = sessionPathForSmoke(id);
 	if (fs.existsSync(cleanup))
 		fs.rmSync(cleanup, { recursive: true, force: true });
 	results.push({
@@ -8264,6 +8282,23 @@ async function driveV167StateDirOverrideUnit() {
 			step: "v1.6.7 P3.11: default STATE_DIR resolves to ~/.cross-review when env unset",
 			ok: true,
 		});
+		assert(
+			resolveStateDirFromEnv({}) === path.join(os.homedir(), ".cross-review"),
+			"v1.7.1 smoke harness: default state dir mirrors session-store default",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: default state dir mirrors session-store default",
+			ok: true,
+		});
+		assert(
+			resolveStateDirFromEnv({ CROSS_REVIEW_STATE_DIR: "   " }) ===
+				path.join(os.homedir(), ".cross-review"),
+			"v1.7.1 smoke harness: whitespace-only override falls back to default",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: whitespace-only override falls back to default",
+			ok: true,
+		});
 
 		// Absolute override.
 		const absOverride = path.join(os.tmpdir(), "cross-review-test-abs");
@@ -8277,6 +8312,15 @@ async function driveV167StateDirOverrideUnit() {
 			step: "v1.6.7 P3.11: absolute CROSS_REVIEW_STATE_DIR override honored",
 			ok: true,
 		});
+		assert(
+			resolveStateDirFromEnv({ CROSS_REVIEW_STATE_DIR: absOverride }) ===
+				path.resolve(absOverride),
+			"v1.7.1 smoke harness: absolute override mirrors session-store",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: absolute override mirrors session-store",
+			ok: true,
+		});
 
 		// Tilde expansion: lone tilde → homedir.
 		process.env.CROSS_REVIEW_STATE_DIR = "~";
@@ -8287,6 +8331,15 @@ async function driveV167StateDirOverrideUnit() {
 		);
 		results.push({
 			step: "v1.6.7 P3.11: lone tilde in CROSS_REVIEW_STATE_DIR expands to homedir",
+			ok: true,
+		});
+		assert(
+			resolveStateDirFromEnv({ CROSS_REVIEW_STATE_DIR: "~" }) ===
+				path.resolve(os.homedir()),
+			"v1.7.1 smoke harness: lone tilde override mirrors session-store",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: lone tilde override mirrors session-store",
 			ok: true,
 		});
 
@@ -8302,6 +8355,16 @@ async function driveV167StateDirOverrideUnit() {
 			step: "v1.6.7 P3.11: '~/<sub>' expanded under homedir",
 			ok: true,
 		});
+		assert(
+			resolveStateDirFromEnv({
+				CROSS_REVIEW_STATE_DIR: "~/.cross-review-tilde",
+			}) === path.resolve(path.join(os.homedir(), ".cross-review-tilde")),
+			"v1.7.1 smoke harness: '~/<sub>' override mirrors session-store",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: '~/<sub>' override mirrors session-store",
+			ok: true,
+		});
 
 		// Tilde + backslash (Windows).
 		process.env.CROSS_REVIEW_STATE_DIR = "~\\.cross-review-bs";
@@ -8313,6 +8376,16 @@ async function driveV167StateDirOverrideUnit() {
 		);
 		results.push({
 			step: "v1.6.7 P3.11: '~\\\\<sub>' (Windows separator) expanded under homedir",
+			ok: true,
+		});
+		assert(
+			resolveStateDirFromEnv({
+				CROSS_REVIEW_STATE_DIR: "~\\.cross-review-bs",
+			}) === path.resolve(path.join(os.homedir(), ".cross-review-bs")),
+			"v1.7.1 smoke harness: '~\\\\<sub>' override mirrors session-store",
+		);
+		results.push({
+			step: "v1.7.1 smoke harness: '~\\\\<sub>' override mirrors session-store",
 			ok: true,
 		});
 	} finally {
