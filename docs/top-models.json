@@ -34,6 +34,14 @@
             "last_verified": "2026-04-30",
             "ref_url": "https://api-docs.deepseek.com/",
             "notes_en": "v1.5.0 adds DeepSeek through cross-review-v1's own embedded CLI, not through Gemini-derived `@sluisr/deepseek-cli`. The embedded CLI reads prompt content from stdin, calls DeepSeek's OpenAI-compatible Chat API, requests thinking mode, and supports stdio MCP servers from reviewer-configs/deepseek-cli.mcp.json with a safe default allowlist and no cross-review servers in the embedded catalog. Legacy DeepSeek model names `deepseek-chat` and `deepseek-reasoner` are intentionally not used because DeepSeek documents their deprecation on 2026-07-24."
+        },
+        "grok": {
+            "id": "grok-4.3",
+            "fallback_chain": ["grok-4.3"],
+            "cli_version": "@lcv-ideas-software/grok-cli >=1.3.0",
+            "last_verified": "2026-05-04",
+            "ref_url": "https://docs.x.ai/overview",
+            "notes_en": "v1.8.0 adds Grok through the external `grok` CLI in peer-review mode. xAI documents `grok-4.3` in current Responses API examples, and the local LCV-maintained CLI sends requests through /responses. Prompt content travels through stdin; built-in editing/shell/todo/web/X tools are disabled; MCP is restricted to ultrathink and code-reasoning. Stateful memory and cross-review servers are deliberately excluded."
         }
     }
 }

@@ -167,9 +167,13 @@ async function driveServer(extraEnv = {}) {
 		assert(initPayload.caller === "claude", "session_init: caller");
 		assert(
 			Array.isArray(initPayload.peers) &&
+				initPayload.peers.length === 4 &&
 				initPayload.peers.includes("codex") &&
-				initPayload.peers.includes("gemini"),
-			"session_init: peers array contains codex and gemini",
+				initPayload.peers.includes("gemini") &&
+				initPayload.peers.includes("deepseek") &&
+				initPayload.peers.includes("grok") &&
+				!initPayload.peers.includes(initPayload.caller),
+			"session_init: peers array contains all four non-caller peers",
 		);
 		assert(
 			initPayload.peers.includes(initPayload.lead_peer) &&
@@ -1356,6 +1360,8 @@ async function runAll() {
 	all.push(...s28.results);
 	const s28b = await driveDeepSeekCliShapeUnit();
 	all.push(...s28b.results);
+	const s28c = await driveGrokCliShapeUnit();
+	all.push(...s28c.results);
 	const s29 = await driveSpawnPeersIdentityShape();
 	all.push(...s29.results);
 	const s30 = await driveProbeStubShape();
@@ -2689,6 +2695,15 @@ async function driveV414CallerResolutionUnit() {
 		"§6.20: codex → codex",
 	);
 	assert(
+		server.resolveCallerFromClientInfo({ name: "deepseek-cli" }) ===
+			"deepseek",
+		"§6.20: deepseek-cli → deepseek",
+	);
+	assert(
+		server.resolveCallerFromClientInfo({ name: "grok-cli" }) === "grok",
+		"§6.20: grok-cli → grok",
+	);
+	assert(
 		server.resolveCallerFromClientInfo({ name: "Claude Code v2.1" }) ===
 			"claude",
 		"§6.20: substring match case-insensitive",
@@ -2706,7 +2721,7 @@ async function driveV414CallerResolutionUnit() {
 		"§6.20: clientInfo without name → null",
 	);
 	results.push({
-		step: "v4.14 §6.20: clientInfo→agent mapping (claude/gemini/codex/unknown/null)",
+		step: "v4.14 §6.20 + v1.8.0: clientInfo→agent mapping (claude/gemini/codex/deepseek/grok/unknown/null)",
 		ok: true,
 	});
 
@@ -2773,38 +2788,28 @@ async function driveV414CallerResolutionUnit() {
 	// v1.2.12: peersForCaller is the only entry point; the env-var-derived
 	// global PEERS export was removed. Verify the helper computes the
 	// complement of VALID_AGENTS correctly for every valid caller.
-	const peersClaude = server.peersForCaller("claude");
+	for (const caller of server.VALID_AGENTS) {
+		const peers = server.peersForCaller(caller);
+		assert(
+			peers.length === server.VALID_PEERS.length - 1 &&
+				!peers.includes(caller) &&
+				server.VALID_PEERS
+					.filter((agent) => agent !== caller)
+					.every((agent) => peers.includes(agent)),
+			`§6.20 v1.8.0: peersForCaller('${caller}') is VALID_PEERS minus caller`,
+		);
+	}
 	assert(
-		peersClaude.length === 3 &&
-			peersClaude.includes("codex") &&
-			peersClaude.includes("gemini") &&
-			peersClaude.includes("deepseek"),
-		"§6.20 v1.5.0: peersForCaller('claude') is [codex, gemini, deepseek]",
-	);
-	const peersCodex = server.peersForCaller("codex");
-	assert(
-		peersCodex.length === 3 &&
-			peersCodex.includes("claude") &&
-			peersCodex.includes("gemini") &&
-			peersCodex.includes("deepseek"),
-		"§6.20 v1.5.0: peersForCaller('codex') is [claude, gemini, deepseek]",
-	);
-	const peersGemini = server.peersForCaller("gemini");
-	assert(
-		peersGemini.length === 3 &&
-			peersGemini.includes("claude") &&
-			peersGemini.includes("codex") &&
-			peersGemini.includes("deepseek"),
-		"§6.20 v1.5.0: peersForCaller('gemini') is [claude, codex, deepseek]",
-	);
-	assert(
-		Array.isArray(server.VALID_PEERS) &&
-			server.VALID_PEERS.includes("deepseek") &&
-			!server.VALID_AGENTS.includes("deepseek"),
-		"§6.20 v1.5.0: DeepSeek is peer-only (not caller)",
+		Array.isArray(server.VALID_AGENTS) &&
+			Array.isArray(server.VALID_PEERS) &&
+			JSON.stringify(server.VALID_AGENTS) ===
+				JSON.stringify(server.VALID_PEERS) &&
+			server.VALID_AGENTS.includes("deepseek") &&
+			server.VALID_AGENTS.includes("grok"),
+		"§6.20 v1.8.0: DeepSeek and Grok are both agents and peers",
 	);
 	results.push({
-		step: "v4.14 §6.20 v1.5.0: peersForCaller helper invariant for 3 callers + DeepSeek peer-only",
+		step: "v4.14 §6.20 v1.8.0: peersForCaller helper invariant for 5 callers + DeepSeek/Grok agent-peer parity",
 		ok: true,
 	});
 
@@ -3245,8 +3250,8 @@ async function driveV413SpecVersionUnit() {
 			"v4.13 §6.17: meta.spec_version equals SESSION_SPEC_VERSION constant",
 		);
 		assert(
-			meta.spec_version === "v4.15",
-			"v4.13 §6.17: SESSION_SPEC_VERSION literal v4.15 in this release",
+			meta.spec_version === "v4.16",
+			"v4.13 §6.17: SESSION_SPEC_VERSION literal v4.16 in this release",
 		);
 		assert(
 			Object.hasOwn(meta, "outcome_reason") && meta.outcome_reason === null,
@@ -4745,24 +4750,24 @@ async function driveAskPeersNAry() {
 		);
 		assert(Array.isArray(askPayload.peers), "ask_peers: peers array returned");
 		assert(
-			askPayload.peers.length === 3,
-			"ask_peers: 3 peers responded (codex+gemini+deepseek)",
+			askPayload.peers.length === 4,
+			"ask_peers: 4 peers responded (codex+gemini+deepseek+grok)",
 		);
 		const agents = askPayload.peers.map((p) => p.agent).sort();
 		assert(
 			JSON.stringify(agents) ===
-				JSON.stringify(["codex", "deepseek", "gemini"]),
-			`peers are codex,deepseek,gemini (got ${agents.join(",")})`,
+				JSON.stringify(["codex", "deepseek", "gemini", "grok"]),
+			`peers are codex,deepseek,gemini,grok (got ${agents.join(",")})`,
 		);
 		for (const p of askPayload.peers) {
 			assert(p.status === "fulfilled", `peer ${p.agent} status=fulfilled`);
 			assert(p.peer_status === "READY", `peer ${p.agent} peer_status=READY`);
 		}
 		assert(
-			askPayload.quorum.requested === 3 &&
-				askPayload.quorum.responded === 3 &&
+			askPayload.quorum.requested === 4 &&
+				askPayload.quorum.responded === 4 &&
 				askPayload.quorum.rejected === 0,
-			"quorum: 3/3/0",
+			"quorum: 4/4/0",
 		);
 		assert(
 			askPayload.protocol_violation === false,
@@ -4789,7 +4794,7 @@ async function driveAskPeersNAry() {
 			"ask_peers: caller READY accepts unanimous peer verdict and auto-finalizes",
 		);
 		results.push({
-			step: "ask_peers: N-ary round with 3 stub peers, unanimity READY, quorum 3/3/0",
+			step: "ask_peers: N-ary round with 4 stub peers, unanimity READY, quorum 4/4/0",
 			ok: true,
 		});
 
@@ -5636,6 +5641,102 @@ async function driveDeepSeekCliShapeUnit() {
 	return { results };
 }
 
+// v1.8.0: Grok CLI peer shape. The prompt MUST be delivered via stdin;
+// peer-review mode disables built-in tools and only exposes the safe MCP trio.
+async function driveGrokCliShapeUnit() {
+	const results = [];
+	const {
+		buildGrokArgs,
+		GROK_MODEL,
+		GROK_MCP_JSON,
+		GROK_ALLOWED_MCP_SERVERS,
+		buildGrokEnv,
+	} = require("../src/lib/peer-spawn.js");
+	const args = buildGrokArgs();
+
+	assert(args.includes("--peer-review-mode"), "Grok args enable peer-review mode");
+	assert(args.includes("--prompt-stdin"), "Grok args read prompt from stdin");
+	assert(args.includes("-m"), "Grok args include -m");
+	assert(
+		args[args.indexOf("-m") + 1] === GROK_MODEL,
+		`Grok -m value is GROK_MODEL (${GROK_MODEL})`,
+	);
+	assert(args.includes("--mcp-config"), "Grok args include --mcp-config");
+	assert(
+		args[args.indexOf("--mcp-config") + 1] === GROK_MCP_JSON,
+		"Grok --mcp-config points at reviewer-configs/grok-cli.mcp.json",
+	);
+	const allowCount = args.filter(
+		(a) => a === "--allowed-mcp-server-names",
+	).length;
+	assert(
+		allowCount === GROK_ALLOWED_MCP_SERVERS.length,
+		`Grok allowed MCP count=${GROK_ALLOWED_MCP_SERVERS.length}`,
+	);
+	for (const name of GROK_ALLOWED_MCP_SERVERS) {
+		assert(args.includes(name), `Grok args allow MCP server ${name}`);
+	}
+	assert(
+		!args.includes("--prompt") &&
+			!args.includes("-p") &&
+			!args.includes("GROK_API_KEY") &&
+			!args.includes("\n"),
+		"Grok args do not carry prompt content or API-key material",
+	);
+	const configJson = JSON.parse(fs.readFileSync(GROK_MCP_JSON, "utf8"));
+	const configServerNames = Object.keys(configJson.mcpServers || {});
+	assert(
+		!configServerNames.includes("cross-review-v1") &&
+			!configServerNames.includes("cross-review-v2"),
+		"Grok MCP config excludes cross-review servers to prevent recursive review loops",
+	);
+	assert(
+		GROK_ALLOWED_MCP_SERVERS.every((name) => configServerNames.includes(name)),
+		"Grok MCP config contains the safe reasoning allowlist",
+	);
+	const savedGrokKey = process.env.GROK_API_KEY;
+	const savedOpenAIKey = process.env.OPENAI_API_KEY;
+	try {
+		process.env.GROK_API_KEY = "grok-smoke-key";
+		process.env.OPENAI_API_KEY = "openai-smoke-key";
+		const grokEnv = buildGrokEnv();
+		assert(
+			grokEnv.GROK_API_KEY === "grok-smoke-key",
+			"Grok child env includes the required Grok key",
+		);
+		assert(
+			grokEnv.GROK_PEER_REVIEW_MODE === "1" &&
+				grokEnv.GROK_DISABLE_BUILTIN_TOOLS === "1",
+			"Grok child env forces peer-review mode and disables built-in tools",
+		);
+		assert(
+			grokEnv.GROK_MCP_CONFIG === GROK_MCP_JSON &&
+				grokEnv.GROK_ALLOWED_MCP_SERVER_NAMES ===
+					GROK_ALLOWED_MCP_SERVERS.join(","),
+			"Grok child env forces minimal MCP config and allowlist",
+		);
+		assert(
+			!Object.hasOwn(grokEnv, "OPENAI_API_KEY"),
+			"Grok child env does not inherit unrelated provider keys",
+		);
+		assert(
+			Boolean(grokEnv.PATH || grokEnv.Path),
+			"Grok child env preserves PATH/Path for CLI and MCP launchers",
+		);
+	} finally {
+		if (savedGrokKey === undefined) delete process.env.GROK_API_KEY;
+		else process.env.GROK_API_KEY = savedGrokKey;
+		if (savedOpenAIKey === undefined) delete process.env.OPENAI_API_KEY;
+		else process.env.OPENAI_API_KEY = savedOpenAIKey;
+	}
+	results.push({
+		step: "v1.8.0: Grok CLI uses stdin prompt, peer-review mode, safe MCP allowlist, no cross-review recursion, and a filtered child env",
+		ok: true,
+	});
+
+	return { results };
+}
+
 async function driveV164ProbeRuntimeReconciliationUnit() {
 	const results = [];
 	const store = require("../src/lib/session-store.js");
@@ -5675,6 +5776,7 @@ async function driveV165DeepSeekCliAttestationUnit() {
 	const server = require("../src/server.js");
 	const wrongTextModelStdout = [
 		"DeepSeek body",
+		"model: attacker-body-line",
 		'<cross_review_peer_model>{"model_id":"claude-sonnet-4-20250514"}</cross_review_peer_model>',
 		'<cross_review_status>{"status":"READY","confidence":"verified","evidence_sources":["fixture"]}</cross_review_status>',
 		"",
@@ -5704,6 +5806,29 @@ async function driveV165DeepSeekCliAttestationUnit() {
 	);
 	results.push({
 		step: "v1.6.5: embedded DeepSeek CLI model attestation overrides unreliable text self-report",
+		ok: true,
+	});
+	const grokParsed = server.parsePeerOutputs(
+		wrongTextModelStdout,
+		"grok-4.3",
+		{
+			agent: "grok",
+			auth: "api-key",
+			endpoint_class: "xai-responses-api",
+		},
+		"grok-4.3",
+	);
+	assert(
+		grokParsed.model_reported === "grok-4.3",
+		"Grok CLI transport attestation overrides hallucinated text model block",
+	);
+	assert(grokParsed.model_match === true, "Grok CLI attested model matches pin");
+	assert(
+		grokParsed.protocol_violation === false,
+		"Grok CLI attestation does not turn a valid READY block into protocol_violation",
+	);
+	results.push({
+		step: "v1.8.0: Grok CLI model attestation overrides unreliable text self-report",
 		ok: true,
 	});
 	return { results };
@@ -5787,18 +5912,22 @@ async function driveSpawnPeersIdentityShape() {
 	const prevStub = process.env.CROSS_REVIEW_PEER_STUB;
 	process.env.CROSS_REVIEW_PEER_STUB = "STRUCTURED:READY";
 	try {
-		const out = await spawnPeers(["codex", "claude", "gemini", "deepseek"], "probe");
+		const out = await spawnPeers(
+			["codex", "claude", "gemini", "deepseek", "grok"],
+			"probe",
+		);
 		assert(
-			Array.isArray(out) && out.length === 4,
-			"spawnPeers returns array of 4",
+			Array.isArray(out) && out.length === 5,
+			"spawnPeers returns array of 5",
 		);
 		const agents = out.map((o) => o.agent);
 		assert(
 			agents.includes("codex") &&
 				agents.includes("claude") &&
 				agents.includes("gemini") &&
-				agents.includes("deepseek"),
-			"all four agents present by identity",
+				agents.includes("deepseek") &&
+				agents.includes("grok"),
+			"all five agents present by identity",
 		);
 		for (const entry of out) {
 			assert(
@@ -5815,7 +5944,7 @@ async function driveSpawnPeersIdentityShape() {
 			);
 		}
 		results.push({
-			step: "spawnPeers: 4 agents, Promise.all resolution, explicit agent identity per entry (R12 + v1.5.0 DeepSeek)",
+			step: "spawnPeers: 5 agents, Promise.all resolution, explicit agent identity per entry (R12 + v1.5.0 DeepSeek + v1.8.0 Grok)",
 			ok: true,
 		});
 	} finally {
@@ -5855,14 +5984,17 @@ async function driveProbeStubShape() {
 
 	const prev = process.env.CROSS_REVIEW_PROBE_STUB;
 	process.env.CROSS_REVIEW_PROBE_STUB =
-		"codex:top,claude:top,gemini:fallback:gemini-2.5-flash,deepseek:ok:deepseek-v4-pro";
+		"codex:top,claude:top,gemini:fallback:gemini-2.5-flash,deepseek:ok:deepseek-v4-pro,grok:ok:grok-4.3";
 	try {
-		const snap = await probeChain(["codex", "claude", "gemini", "deepseek"], {
-			budgetMs: 5000,
-		});
+		const snap = await probeChain(
+			["codex", "claude", "gemini", "deepseek", "grok"],
+			{
+				budgetMs: 5000,
+			},
+		);
 		assert(
-			Array.isArray(snap) && snap.length === 4,
-			"probeChain returns array of 4",
+			Array.isArray(snap) && snap.length === 5,
+			"probeChain returns array of 5",
 		);
 		const byAgent = Object.fromEntries(snap.map((s) => [s.agent, s]));
 		assert(byAgent.codex.tier === "top", "codex tier=top");
@@ -5876,6 +6008,11 @@ async function driveProbeStubShape() {
 		assert(
 			byAgent.deepseek.model_reported === "deepseek-v4-pro",
 			"deepseek reported pinned model",
+		);
+		assert(byAgent.grok.tier === "ok", "grok tier=ok");
+		assert(
+			byAgent.grok.model_reported === "grok-4.3",
+			"grok reported pinned model",
 		);
 		for (const entry of snap) {
 			for (const field of [
@@ -5897,7 +6034,7 @@ async function driveProbeStubShape() {
 			}
 		}
 		results.push({
-			step: "probeChain: stub mode returns 4 snapshots with full capability_snapshot field set (F2 Q6 + v1.5.0 DeepSeek)",
+			step: "probeChain: stub mode returns 5 snapshots with full capability_snapshot field set (F2 Q6 + v1.5.0 DeepSeek + v1.8.0 Grok)",
 			ok: true,
 		});
 	} finally {
@@ -5941,6 +6078,7 @@ async function drivePeerSpawnRealPathModel() {
 		CLAUDE_MODEL,
 		GEMINI_MODEL,
 		DEEPSEEK_MODEL,
+		GROK_MODEL,
 	} = require("../src/lib/peer-spawn.js");
 
 	assert(
@@ -5963,8 +6101,12 @@ async function drivePeerSpawnRealPathModel() {
 		modelForPeer("deepseek") === DEEPSEEK_MODEL,
 		`modelForPeer('deepseek') === DEEPSEEK_MODEL (${DEEPSEEK_MODEL})`,
 	);
+	assert(
+		modelForPeer("grok") === GROK_MODEL,
+		`modelForPeer('grok') === GROK_MODEL (${GROK_MODEL})`,
+	);
 	results.push({
-		step: `modelForPeer maps codex->${CODEX_MODEL}, claude->${CLAUDE_MODEL}, gemini->${GEMINI_MODEL}, deepseek->${DEEPSEEK_MODEL}`,
+		step: `modelForPeer maps codex->${CODEX_MODEL}, claude->${CLAUDE_MODEL}, gemini->${GEMINI_MODEL}, deepseek->${DEEPSEEK_MODEL}, grok->${GROK_MODEL}`,
 		ok: true,
 	});
 
@@ -6455,6 +6597,8 @@ async function driveV1216ArgvBasenameMatchUnit() {
 		"gemini -m gemini-3.1-pro-preview --prompt --approval-mode plan",
 		// DeepSeek peer (see buildDeepSeekArgs).
 		'node.exe "C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js" -m deepseek-v4-pro --thinking enabled --reasoning-effort max --mcp-config reviewer-configs\\reviewer-minimal.mcp.json',
+		// Grok peer (see buildGrokArgs).
+		"grok.exe --peer-review-mode --prompt-stdin -m grok-4.3 --mcp-config reviewer-configs\\grok-cli.mcp.json",
 	];
 	for (const cmd of realPeerSpawns) {
 		assert(
@@ -6463,7 +6607,7 @@ async function driveV1216ArgvBasenameMatchUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.16 §6.22.1 sanity: isPeerCliCommand still matches real codex/claude/gemini peer-spawn argv shapes",
+		step: "v1.2.16 §6.22.1 sanity + v1.8.0: isPeerCliCommand still matches real codex/claude/gemini/deepseek/grok peer-spawn argv shapes",
 		ok: true,
 	});
 
@@ -6689,6 +6833,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 		"cmd.exe /c claude -p --output-format text",
 		// DeepSeek embedded CLI via cmd.exe wrapper.
 		'cmd.exe /d /s /c "node.exe C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js --reasoning-effort max"',
+		// Grok via cmd.exe with .cmd shim.
+		'cmd.exe /d /s /c "grok.cmd --peer-review-mode --prompt-stdin -m grok-4.3"',
 		// Cmd alias (no .exe in some shells).
 		"cmd /c codex.cmd exec",
 	];
@@ -6699,7 +6845,7 @@ async function driveV1217NpmShimRecognitionUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.17 §6.22.1 + v1.5.0: isPeerCliCommand matches cmd.exe wrappers for codex/gemini/claude and embedded deepseek",
+		step: "v1.2.17 §6.22.1 + v1.5.0 + v1.8.0: isPeerCliCommand matches cmd.exe wrappers for codex/gemini/claude, embedded deepseek, and grok",
 		ok: true,
 	});
 
@@ -6715,6 +6861,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 		"node /usr/lib/node_modules/@openai/codex-cli/bin/codex.mjs exec",
 		// DeepSeek embedded CLI worker.
 		'node.exe "C:\\Users\\leona\\lcv-workspace\\cross-review-v1\\src\\deepseek-cli.js" --reasoning-effort max',
+		// Grok npm-shim worker.
+		'node.exe "C:\\Users\\X\\AppData\\Roaming\\npm\\node_modules\\@lcv-ideas-software\\grok-cli\\dist\\index.js" --peer-review-mode --prompt-stdin',
 	];
 	for (const cmd of nodeExeWorkers) {
 		assert(
@@ -6723,7 +6871,7 @@ async function driveV1217NpmShimRecognitionUnit() {
 		);
 	}
 	results.push({
-		step: "v1.2.17 §6.22.1 + v1.5.0: isPeerCliCommand matches node.exe workers invoking peer .js/.cjs/.mjs entrypoints and embedded deepseek",
+		step: "v1.2.17 §6.22.1 + v1.5.0 + v1.8.0: isPeerCliCommand matches node.exe workers invoking peer .js/.cjs/.mjs entrypoints, embedded deepseek, and grok",
 		ok: true,
 	});
 
@@ -6739,6 +6887,8 @@ async function driveV1217NpmShimRecognitionUnit() {
 		'node.exe "C:\\path\\to\\codex.js"',
 		// cmd.exe with peer name but no flag.
 		"cmd.exe /c gemini --version",
+		// grok without peer-review mode.
+		"cmd.exe /c grok --version",
 	];
 	for (const cmd of nonPeerNodeInvocations) {
 		assert(
@@ -6930,6 +7080,15 @@ async function driveV1218ConvergenceScopeUnit() {
 		) === "quadrilateral",
 		"v1.5.0 Finding 6 extension: 3 peers responded + no exclusions → quadrilateral",
 	);
+	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek", "grok"],
+			[],
+			[],
+		) === "pentalateral",
+		"v1.8.0 Finding 6 extension: 4 peers responded + no exclusions → pentalateral",
+	);
 	// Degraded bilateral: 1 peer responded, 1 excluded by probe.
 	assert(
 		store.deriveConvergenceScope(false, ["codex"], ["gemini"], []) ===
@@ -6954,7 +7113,7 @@ async function driveV1218ConvergenceScopeUnit() {
 		"v1.2.18 Finding 6: zero peers responded → degraded_none",
 	);
 	results.push({
-		step: "v1.2.18 Finding 6 + v1.5.0: deriveConvergenceScope returns correct regime label for quadrilateral / trilateral / bilateral / degraded_bilateral / degraded_none",
+		step: "v1.2.18 Finding 6 + v1.5.0 + v1.8.0: deriveConvergenceScope returns correct regime label for pentalateral / quadrilateral / trilateral / bilateral / degraded_bilateral / degraded_none",
 		ok: true,
 	});
 
@@ -6978,6 +7137,16 @@ async function driveV1218ConvergenceScopeUnit() {
 		"v1.6.7 P2.6: 3 peers responded + 1 rejected → degraded_quadrilateral",
 	);
 	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek", "grok"],
+			[],
+			[],
+			1,
+		) === "degraded_pentalateral",
+		"v1.8.0 P2.6: 4 peers responded + 1 rejected → degraded_pentalateral",
+	);
+	assert(
 		store.deriveConvergenceScope(false, ["codex"], [], [], 1) ===
 			"degraded_bilateral",
 		"v1.6.7 P2.6: 1 peer responded + 1 rejected → degraded_bilateral",
@@ -6998,6 +7167,16 @@ async function driveV1218ConvergenceScopeUnit() {
 		) === "quadrilateral",
 		"v1.6.7 P2.6: rejectedCount=0 + no exclusions preserves quadrilateral",
 	);
+	assert(
+		store.deriveConvergenceScope(
+			false,
+			["codex", "gemini", "deepseek", "grok"],
+			[],
+			[],
+			0,
+		) === "pentalateral",
+		"v1.8.0 P2.6: rejectedCount=0 + no exclusions preserves pentalateral",
+	);
 	// Legacy callers without the new arg still see pre-v1.6.7 behavior.
 	assert(
 		store.deriveConvergenceScope(false, ["codex", "gemini"], [], []) ===
@@ -7005,7 +7184,7 @@ async function driveV1218ConvergenceScopeUnit() {
 		"v1.6.7 P2.6: legacy callers (no rejectedCount arg) preserve trilateral",
 	);
 	results.push({
-		step: "v1.6.7 P2.6: deriveConvergenceScope widens degraded_* to cover spawn-rejected peers (degraded_trilateral / degraded_quadrilateral / degraded_bilateral) without regressing the non-degraded cases",
+		step: "v1.6.7 P2.6 + v1.8.0: deriveConvergenceScope widens degraded_* to cover spawn-rejected peers (degraded_trilateral / degraded_quadrilateral / degraded_pentalateral / degraded_bilateral) without regressing the non-degraded cases",
 		ok: true,
 	});
 
@@ -7048,8 +7227,28 @@ async function driveV1218ConvergenceScopeUnit() {
 		quadDegradedShot.convergence_scope === "degraded_quadrilateral",
 		`v1.6.7 P2.6: snapshot with 3 peers READY + rejected=1 must report convergence_scope=degraded_quadrilateral (got '${quadDegradedShot.convergence_scope}')`,
 	);
+	const pentaDegradedRound = {
+		caller: "claude",
+		caller_status: "READY",
+		peers: [
+			{ agent: "codex", peer_status: "READY" },
+			{ agent: "gemini", peer_status: "READY" },
+			{ agent: "deepseek", peer_status: "READY" },
+			{ agent: "grok", peer_status: "READY" },
+		],
+		quorum: { requested: 5, responded: 4, rejected: 1 },
+	};
+	const pentaDegradedShot = store.computeConvergenceSnapshot(
+		0,
+		pentaDegradedRound,
+		{},
+	);
+	assert(
+		pentaDegradedShot.convergence_scope === "degraded_pentalateral",
+		`v1.8.0 P2.6: snapshot with 4 peers READY + rejected=1 must report convergence_scope=degraded_pentalateral (got '${pentaDegradedShot.convergence_scope}')`,
+	);
 	results.push({
-		step: "v1.6.7 P2.6: computeConvergenceSnapshot threads rejectedCount into deriveConvergenceScope (degraded_trilateral / degraded_quadrilateral)",
+		step: "v1.6.7 P2.6 + v1.8.0: computeConvergenceSnapshot threads rejectedCount into deriveConvergenceScope (degraded_trilateral / degraded_quadrilateral / degraded_pentalateral)",
 		ok: true,
 	});
 
@@ -7090,6 +7289,25 @@ async function driveV1218ConvergenceScopeUnit() {
 		quadShot.convergence_scope === "quadrilateral",
 		`v1.5.0 Finding 6 extension: N-ary snapshot with 3 peers READY must report convergence_scope=quadrilateral (got '${quadShot.convergence_scope}')`,
 	);
+	const pentaRound = {
+		caller: "claude",
+		caller_status: "READY",
+		peers: [
+			{ agent: "codex", peer_status: "READY" },
+			{ agent: "gemini", peer_status: "READY" },
+			{ agent: "deepseek", peer_status: "READY" },
+			{ agent: "grok", peer_status: "READY" },
+		],
+		quorum: { requested: 4, responded: 4, rejected: 0 },
+	};
+	const pentaShot = store.computeConvergenceSnapshot(0, pentaRound, {
+		excluded_probe: [],
+		excluded_runtime: [],
+	});
+	assert(
+		pentaShot.convergence_scope === "pentalateral",
+		`v1.8.0 Finding 6 extension: N-ary snapshot with 4 peers READY must report convergence_scope=pentalateral (got '${pentaShot.convergence_scope}')`,
+	);
 
 	const legacyRound = {
 		caller: "codex",
@@ -7103,7 +7321,7 @@ async function driveV1218ConvergenceScopeUnit() {
 		`v1.2.18 Finding 6: legacy bilateral snapshot must report convergence_scope=bilateral (got '${legacyShot.convergence_scope}')`,
 	);
 	results.push({
-		step: "v1.2.18 Finding 6 + v1.5.0: computeConvergenceSnapshot surfaces convergence_scope on quadrilateral, trilateral, and legacy paths",
+		step: "v1.2.18 Finding 6 + v1.5.0 + v1.8.0: computeConvergenceSnapshot surfaces convergence_scope on pentalateral, quadrilateral, trilateral, and legacy paths",
 		ok: true,
 	});
 
@@ -8489,11 +8707,11 @@ async function driveV170TribunalLotteryUnit() {
 	const lottery = store.runRelatorLottery({
 		sessionId: "00000000-0000-4000-8000-000000000000",
 		caller: "claude",
-		peers: ["claude", "codex", "gemini", "deepseek"],
+		peers: ["claude", "codex", "gemini", "deepseek", "grok"],
 		selectedAt: "2026-05-03T00:00:00.000Z",
 	});
 	assert(
-		["codex", "gemini", "deepseek"].includes(lottery.leadPeer),
+		["codex", "gemini", "deepseek", "grok"].includes(lottery.leadPeer),
 		"v1.7.0 tribunal: lottery never selects caller as lead_peer",
 	);
 	assert(
@@ -8524,15 +8742,16 @@ async function driveV170TribunalLotteryUnit() {
 		task: "tribunal lottery unit",
 		artifacts: ["C:/evidence.txt"],
 		callerAgent: "claude",
-		peers: ["claude", "codex", "gemini", "deepseek"],
+		peers: ["claude", "codex", "gemini", "deepseek", "grok"],
 	});
 	try {
 		const meta = store.readMeta(sid);
 		assert(
 			meta.caller === "claude" &&
 				!meta.peers.includes("claude") &&
+				meta.peers.length === 4 &&
 				meta.peers.includes(meta.lead_peer),
-			"v1.7.0 tribunal: persisted peers exclude caller and include lead_peer",
+			"v1.8.0 tribunal: persisted peers exclude caller and include lead_peer",
 		);
 		assert(
 			meta.petition?.submitted_by === "claude" &&
@@ -8575,7 +8794,7 @@ async function driveV170TribunalLotteryUnit() {
 			"v1.7.0 tribunal: ask_peers filters caller out of persisted meta.peers",
 		);
 		results.push({
-			step: "v1.7.0 tribunal: crypto-random relator lottery + petition/verdict metadata",
+			step: "v1.7.0/v1.8.0 tribunal: crypto-random relator lottery + petition/verdict metadata with four non-caller peers",
 			ok: true,
 		});
 	} finally {

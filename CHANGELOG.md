@@ -1,6 +1,6 @@
 # CHANGELOG — cross-review-v1
 
-Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex, desde v0.5.0-alpha triangular claude↔codex↔gemini, e desde v1.5.0 quadrilateral com DeepSeek como peer embutido).
+Histórico de mudanças do servidor MCP de cross-review (bilateral claude↔codex, desde v0.5.0-alpha triangular claude↔codex↔gemini, desde v1.5.0 quadrilateral com DeepSeek como peer embutido, e desde v1.8.0 pentalateral com Grok CLI).
 
 Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote npm e binário público passam a se chamar **cross-review-v1**. Menções anteriores a `cross-review-mcp` neste changelog são históricas e preservam o nome usado na época.
 
@@ -14,6 +14,30 @@ Nota de nomenclatura: a partir de 2026-04-30, o produto, repositório, pacote np
 
 ### Adicionado
 - (em aberto — F1 caller capability tokens, F3 shell:false migration, F5 StdioServerTransport buffer cap (upstream SDK), F7 detached-spawn for orphan grandchild containment. Plus future tightening of §6.10 detector to hard-reject on high-confidence non-en-US after operator observation period. **Deferidos da auditoria v1.6.7 para release dedicada por exigirem refactor amplo:** P2.5 decomposição dos handlers `ask_peer`/`ask_peers` em sub-funções testáveis (~355 linhas hoje), P2.7 schema validation centralizada via zod/ajv na borda MCP (adiciona dep), P3.9 split do `functional-smoke.js` em arquivos por área §6.X.)
+
+---
+
+## [1.8.0] — 2026-05-04
+
+**Grok como quinto agente/peer.** Estende o tribunal colegiado da v1 para cinco agentes caller-capable: Claude, Codex, Gemini, DeepSeek e Grok. O caller continua sempre excluido do painel julgador e do sorteio de relator.
+
+### Adicionado
+
+- **Grok CLI como peer seguro**: `peer-spawn` passa a reconhecer `grok`, usando o comando externo `grok` com `--peer-review-mode`, `--prompt-stdin`, `-m grok-4.3`, `--mcp-config reviewer-configs/grok-cli.mcp.json` e allowlist `ultrathink`, `code-reasoning`.
+- **Grok tambem e caller**: `VALID_AGENTS` e `VALID_PEERS` agora sao o mesmo conjunto (`claude|codex|gemini|deepseek|grok`); `peersForCaller()` exclui o caller de qualquer origem, preservando a proibicao de auto-revisao.
+- **Config minima do Grok reviewer**: novo `reviewer-configs/grok-cli.mcp.json`, deliberadamente sem `memory` e sem `cross-review-v1`/`cross-review-v2`, para evitar escrita de estado local e loops recursivos.
+- **Escopo pentalateral**: `deriveConvergenceScope` passa a emitir `pentalateral` e `degraded_pentalateral` quando quatro peers respondem no tribunal de cinco agentes.
+- **`.npmignore` defensivo**: adiciona uma camada explicita contra publicacao acidental de runtime state, segredos, memorias privadas de agentes, automacao de repositorio e artefatos temporarios caso o `files` whitelist seja alterado no futuro.
+
+### Alterado
+
+- **Spec ativa v4.16**: `SESSION_SPEC_VERSION` passa a `v4.16`; `docs/workflow-spec.md` documenta o quinto agente/peer e a extensao pentalateral.
+- **A test suite cobre o quinto peer**: smoke reforca resolucao de caller DeepSeek/Grok, invariantes de `VALID_AGENTS === VALID_PEERS`, shape dos args/env do Grok, atestacao de modelo via CLI, orphan-sweep recognition e snapshots pentalaterais.
+
+### Validação
+
+- `npm test`
+- `npm run check-models`
 
 ---
 

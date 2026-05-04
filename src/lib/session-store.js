@@ -1080,8 +1080,9 @@ const CONVERGENCE_SPEC_VERSION = "v4.9";
 // convergence-snapshot semantic) so they can evolve at different cadences.
 // Bumped per spec evolution: v4.13 adds §6.17 spec_version field, §6.18
 // session_sweep + outcome_reason, §6.19 convergence_health; v4.15 adds
-// §6.27 tribunal relator lottery + peer-verdict/caller-disposition semantics.
-const SESSION_SPEC_VERSION = "v4.15";
+// §6.27 tribunal relator lottery + peer-verdict/caller-disposition semantics;
+// v4.16 extends the tribunal to five caller-capable agents/peers with Grok.
+const SESSION_SPEC_VERSION = "v4.16";
 
 // v1.2.18 / Finding 6 (handoff 2026-04-28): derive `convergence_scope`
 // from snapshot data so the caller can distinguish full N-ary unanimity
@@ -1090,6 +1091,7 @@ const SESSION_SPEC_VERSION = "v4.15";
 // excluded_probe / excluded_runtime / responded_peers but required the
 // caller to compute the regime themselves; this field surfaces it
 // explicitly. Values:
+//   - "pentalateral": 4 peers responded (v1.8.0 Grok fifth-agent topology).
 //   - "quadrilateral": 3 peers responded (v1.5.0 DeepSeek fourth-peer topology).
 //   - "trilateral": 2 peers responded.
 //   - "bilateral": legacy ask_peer round (designed bilateral) OR ask_peers
@@ -1119,7 +1121,8 @@ const SESSION_SPEC_VERSION = "v4.15";
 // degradation signal now fires when ANY of probe-excluded, runtime-
 // excluded, or spawn-rejected peers are present — closing the original
 // gap (degradation that was previously masked as "bilateral") without
-// expanding the enum range.
+// expanding the enum range in v1.6.7. v1.8.0 explicitly extends the enum
+// with pentalateral/degraded_pentalateral for the fifth-agent topology.
 function deriveConvergenceScope(
 	legacyBilateral,
 	respondedPeers,
@@ -1135,6 +1138,7 @@ function deriveConvergenceScope(
 	const degraded = excluded > 0 || rejected > 0;
 	if (responded === 0) return "degraded_none";
 	if (legacyBilateral) return "bilateral";
+	if (responded >= 4) return degraded ? "degraded_pentalateral" : "pentalateral";
 	if (responded >= 3) return degraded ? "degraded_quadrilateral" : "quadrilateral";
 	if (responded >= 2) return degraded ? "degraded_trilateral" : "trilateral";
 	// responded === 1 in N-ary path:

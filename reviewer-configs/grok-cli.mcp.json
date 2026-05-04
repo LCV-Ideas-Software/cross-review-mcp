@@ -1,0 +1,19 @@
+{
+  "_comment": "Minimal MCP config for Grok CLI peer-review mode. Contains only reasoning helpers and deliberately excludes memory/stateful servers plus cross-review servers to prevent local state writes and recursive review loops.",
+  "mcpServers": {
+    "ultrathink": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["C:/npm-global/node_modules/@iflow-mcp/hyokunkwak-sequential-thinking-ultra/dist/index.js"]
+    },
+    "code-reasoning": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "C:/Users/leona/lcv-workspace/.agents/mcp-servers/code-reasoning/dist/src/server.js",
+        "--config-dir",
+        "C:/Users/leona/lcv-workspace/.code-reasoning"
+      ]
+    }
+  }
+}

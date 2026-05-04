@@ -11,6 +11,7 @@
 //   - schema_version MUST equal 2 (v1 rejected).
 //   - `gemini` entry is now MANDATORY alongside `codex` and `claude`.
 //   - v1.5.0 adds `deepseek` as the fourth peer and validates it too.
+//   - v1.8.0 adds `grok` as the fifth peer and validates it too.
 //   - Every entry MUST declare `fallback_chain` (array, non-empty,
 //     element[0] === id). The chain is the ordered set of model IDs
 //     the runtime may fall back to when the top pin is unavailable
@@ -56,7 +57,7 @@ const PEER_SPAWN_PATH = path.join(REPO_ROOT, "src", "lib", "peer-spawn.js");
 const TOP_MODELS_PATH = path.join(REPO_ROOT, "docs", "top-models.json");
 
 const REQUIRED_SCHEMA_VERSION = 2;
-const REQUIRED_AGENTS = ["codex", "claude", "gemini", "deepseek"];
+const REQUIRED_AGENTS = ["codex", "claude", "gemini", "deepseek", "grok"];
 
 // v1.2.7 / external-audit round-5 lint cleanup: quote-agnostic so biome
 // formatter migrations between single/double quotes don't break the audit.
@@ -69,6 +70,8 @@ const RE_DEEPSEEK_MODEL =
 	/const\s+DEEPSEEK_MODEL\s*=\s*['"]([^'"]+)['"]\s*;/;
 const RE_DEEPSEEK_EFFORT =
 	/const\s+DEEPSEEK_REASONING_EFFORT\s*=\s*['"]([^'"]+)['"]\s*;/;
+const RE_GROK_MODEL =
+	/const\s+GROK_MODEL\s*=\s*(?:process\.env\.CROSS_REVIEW_GROK_MODEL\s*\|\|\s*)?['"]([^'"]+)['"]\s*;/;
 
 function fail(exitCode, msg) {
 	process.stderr.write(`${msg}\n`);
@@ -163,8 +166,8 @@ function main() {
 		if (!entries[agent]) {
 			fail(
 				3,
-				`STRUCTURAL ERROR: entries.${agent} is missing from top-models.json. ` +
-					"Schema v2 requires all four agents (codex, claude, gemini, deepseek).",
+					`STRUCTURAL ERROR: entries.${agent} is missing from top-models.json. ` +
+					"Schema v2 requires all five agents (codex, claude, gemini, deepseek, grok).",
 			);
 		}
 	}
@@ -180,6 +183,7 @@ function main() {
 			RE_DEEPSEEK_EFFORT,
 			"DEEPSEEK_REASONING_EFFORT",
 		),
+		grok_id: mustMatch(peerSrc, RE_GROK_MODEL, "GROK_MODEL"),
 	};
 
 	const errors = [];
@@ -189,6 +193,7 @@ function main() {
 	const claudeEntry = entries.claude;
 	const geminiEntry = entries.gemini;
 	const deepseekEntry = entries.deepseek;
+	const grokEntry = entries.grok;
 
 	if (codexEntry.id !== pinned.codex_id) {
 		errors.push(
@@ -218,6 +223,11 @@ function main() {
 	if (deepseekEntry.reasoning_effort !== pinned.deepseek_effort) {
 		errors.push(
 			`DEEPSEEK_REASONING_EFFORT drift: peer-spawn.js='${pinned.deepseek_effort}' vs top-models.json='${deepseekEntry.reasoning_effort}'`,
+		);
+	}
+	if (grokEntry.id !== pinned.grok_id) {
+		errors.push(
+			`GROK_MODEL drift: peer-spawn.js='${pinned.grok_id}' vs top-models.json='${grokEntry.id}'`,
 		);
 	}
 
@@ -250,14 +260,16 @@ function main() {
 	process.stdout.write(
 		`  peer-spawn.js pinned: codex='${pinned.codex_id}' effort='${pinned.codex_effort}' ` +
 			`claude='${pinned.claude_id}' gemini='${pinned.gemini_id}' ` +
-			`deepseek='${pinned.deepseek_id}' effort='${pinned.deepseek_effort}'\n`,
+			`deepseek='${pinned.deepseek_id}' effort='${pinned.deepseek_effort}' ` +
+			`grok='${pinned.grok_id}'\n`,
 	);
 	process.stdout.write(
 		`  top-models.json entries: codex.id='${codexEntry.id}' ` +
 			`codex.reasoning_effort='${codexEntry.reasoning_effort}' ` +
 			`claude.id='${claudeEntry.id}' gemini.id='${geminiEntry.id}' ` +
 			`deepseek.id='${deepseekEntry.id}' ` +
-			`deepseek.reasoning_effort='${deepseekEntry.reasoning_effort}'\n`,
+			`deepseek.reasoning_effort='${deepseekEntry.reasoning_effort}' ` +
+			`grok.id='${grokEntry.id}'\n`,
 	);
 	process.stdout.write(`  staleness_threshold_days=${threshold}\n`);
 

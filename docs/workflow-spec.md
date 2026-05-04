@@ -1,4 +1,4 @@
-# Cross-Review MCP Workflow Specification v4.15
+# Cross-Review MCP Workflow Specification v4.16
 
 **Status**: v4.11 is a SPEC-ONLY revision of v4.10 (no code change, no
 version bump). Shipped 2026-04-24 as a small amendment to §6.11 closing
@@ -24,6 +24,34 @@ Encoding: ASCII-only with transliteration of Portuguese accents where
 they appear (see section 6.4). Peer exchange and non-user-facing
 artifacts are authored in en-US (see section 6.10), trivially
 satisfying ASCII-only without transliteration.
+
+---
+
+## 0p. Delta v4.15 -> v4.16 (executive summary)
+
+**Single normative addition: five-agent tribunal with Grok.**
+`VALID_AGENTS` and `VALID_PEERS` are now the same five-member set:
+`claude`, `codex`, `gemini`, `deepseek`, and `grok`. DeepSeek and Grok
+are both agents and peers. The caller is still the petitioner and is
+always excluded from `meta.peers`, the relator lottery, and the judging
+panel.
+
+`session_init` computes peers as `VALID_PEERS - caller`. In the full
+five-agent topology this yields four non-caller judges, so
+`ask_peers` can run a pentalateral tribunal round. `convergence_scope`
+adds `pentalateral` and `degraded_pentalateral` for rounds where four
+peers responded, with the existing strict-quorum rule unchanged:
+`round.quorum.rejected === 0` remains required for convergence.
+
+Grok is spawned through the external `grok` command. The v1 server
+invokes it in peer-review mode with prompt over stdin, built-in
+edit/shell/todo/web/X tools disabled, a minimal MCP allowlist
+(`ultrathink`, `code-reasoning`), no stateful `memory` server, and no
+recursive cross-review MCP server exposure.
+
+Backwards compatibility: pre-v4.16 sessions may still have fewer peers
+or old convergence scope labels. Readers must tolerate older `meta.peers`
+and `round.convergence_snapshot.convergence_scope` values.
 
 ---
 
@@ -368,9 +396,9 @@ was altered in this session.
   all canonical ids except caller. No hardcoded default initiator.
 - **Section 5.1 NEW sub-block**: display names vs canonical ids.
   External-facing identity prose SHOULD use display names ("Claude
-  Code", "ChatGPT Codex", "Gemini") where naming an agent as a
-  conversational participant; internal fields MUST use canonical ids
-  (claude, codex, gemini). Canonical ids remain valid in prompts when
+  Code", "ChatGPT Codex", "Gemini", "DeepSeek", "Grok") where naming an
+  agent as a conversational participant; internal fields MUST use
+  canonical ids (claude, codex, gemini, deepseek, grok). Canonical ids remain valid in prompts when
   discussing config values or code literals.
 - **Section 6.3 UPDATED**: convergence generalizes to N-ary unanimity
   (`caller_status === READY && peers.every(p => p.status === READY)`).
@@ -797,16 +825,17 @@ Role assignment in any cross-review session is strictly dynamic:
   (substring-mapped to a canonical id). The caller is the AI model
   that actually invoked the tool, declared dynamically by that model
   per call — never via operator-configured global state.
-- **Valid canonical ids** are `claude`, `codex`, `gemini`. If
+- **Valid canonical ids** are `claude`, `codex`, `gemini`, `deepseek`,
+  `grok`. If
   resolution fails (no `args.caller` and no recognizable
   `clientInfo.name`), `session_init` throws a per-call error naming
   the exhausted resolution sources; the server keeps running so other
   valid sessions can proceed.
 - **Peers** are computed deterministically as all canonical ids
-  except caller (`peersForCaller(meta.caller)`). For the v4.7
-  triangle, peers is an array of two. The `ask_peers` tool broadcasts
-  to this computed array, which is persisted in `meta.peers` at
-  session_init.
+  except caller (`peersForCaller(meta.caller)`). For the v4.16
+  five-agent tribunal, peers is an array of four. The `ask_peers` tool
+  dispatches to this computed array, which is persisted in `meta.peers`
+  at session_init.
 
 **Pre-v1.2.12 contract — retired.** Pre-v1.2.12 the caller was
 selected by the `CROSS_REVIEW_CALLER` env var, set by each MCP client
@@ -3581,6 +3610,13 @@ or write another product's profile directory.
   `degraded_bilateral`, and `degraded_none` labels for smaller effective
   regimes.
 
+**v4.16 amendment.** The v1.5.0 topology above is superseded for new
+sessions: `VALID_AGENTS` and `VALID_PEERS` are both
+`claude | codex | gemini | deepseek | grok`. DeepSeek and Grok are both
+caller-capable agents and peers, and `peersForCaller(caller)` excludes
+only the caller. Four responded peers produce `pentalateral`; four
+responded peers with a degradation signal produce `degraded_pentalateral`.
+
 **DeepSeek peer transport.**
 
 - The package ships `cross-review-v1-deepseek-cli` from
@@ -3722,7 +3758,7 @@ readers MUST tolerate missing `lead_peer`, `relator_lottery`, `petition`,
 
 ---
 
-## 7. Summary of conventions for immediate use (UPDATED through v4.15)
+## 7. Summary of conventions for immediate use (UPDATED through v4.16)
 
 | Convention | Caller action |
 |------------|---------------|
@@ -3733,12 +3769,12 @@ readers MUST tolerate missing `lead_peer`, `relator_lottery`, `petition`,
 | Scope | FOLLOW-UP for out-of-scope; aborted for honest non-convergence |
 | Noise | Consume content + peer_status + peer_structured + status_source + parser_warnings + peer_model |
 | Warnings | `parser_warnings` is not dead telemetry: inspect and act (peer drift or schema violation) |
-| Model | Peer always invoked with top-level (codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview); no silent fallback; advisory drift audit via `npm run check-models` (section 6.9.2.1) |
+| Model | Peer always invoked with top-level (codex=gpt-5.5 xhigh, claude=claude-opus-4-7, gemini=gemini-3.1-pro-preview, deepseek=deepseek-v4-pro, grok=grok-4.3); no silent fallback; advisory drift audit via `npm run check-models` (section 6.9.2.1) |
 | Encoding | ASCII-only on disk; peer exchange and internal artifacts in en-US (section 6.10 v4.6); only assistant-to-user chat and historically-sealed entries remain pt-BR |
 | Continuity | Optional ledger (section 6.5); when adopted, keep ASCII-only and attach on subsequent sessions |
 | Overflow | Yellow 50k / Red 100k chars in the transcript (section 6.6.1); non-destructive compression (section 6.6.4) with reference to the immutables; meta.json with no API change (section 6.6.3 YAGNI) |
 | Transition window | During server upgrade, peer emits both formats until reload is confirmed |
-| Triangular topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary introduced in F2 -- alpha normative (section 2.7); unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini"); canonical ids internally (claude / codex / gemini); caller resolved dynamically per call via `args.caller > clientInfo.name` with no hardcoded default and no env-var fallback (section 2.8 / §6.20, simplified to two tiers in v1.2.12) |
+| Agent topology | `ask_peer` bilateral legacy remains; `ask_peers` N-ary tribunal supports triangular/quadrilateral/pentalateral rounds; unanimity convergence (section 6.3); display names externally ("Claude Code" / "ChatGPT Codex" / "Gemini" / "DeepSeek" / "Grok"); canonical ids internally (claude / codex / gemini / deepseek / grok); caller resolved dynamically per call via `args.caller > clientInfo.name` with no hardcoded default and no env-var fallback (section 2.8 / §6.20, simplified to two tiers in v1.2.12; extended to five agents in v4.16) |
 | Tribunal relator lottery | `session_init` crypto-randomly selects `lead_peer` from non-caller peers only; `ask_peers` sends petition to relator first, then panel peers deliberate with petition + relator report; peer-only verdict is persisted in `round.verdict`; caller READY accepts and auto-finalizes unanimous READY, caller NOT_READY contests and keeps the session open (§6.27) |
 | Tier + transient resilience | Pre-session capability probe per agent with per-provider `fallback_chain` walk (6.9.3.1, 6.9.3.2); graceful degrade triangular -> bilateral when exactly one peer is excluded, abort only when <2 peers viable (6.9.3.3); session-level `meta.capability_snapshot` + active-peer-only rounds (6.9.3.4; `tier: ok \| offline` canonical in v4.9, retiring `fallback`); dual runtime vs advisory role of top-models.json (6.9.3.5); mid-round transient provider failures (prompt flag / rate limit / 5xx) treated with same-model retry-once-with-backoff; server-side auto-rephrase prohibited; silent mid-round model switch remains prohibited (6.9.3.6); `transient_failure` enum in response distinguishes transient from protocol failure |
 | Transport-aware model-check | `spawnPeer` / `probeAgent` return `transport_descriptor: { agent, auth, endpoint_class }` (6.11); `parsePeerOutputs` gate on `auth === 'api-key'` runs `classifyModelMatch`; otherwise SKIP with audit record `model_check_skipped: { reason: 'unreliable_text_self_report_on_cli', auth, endpoint_class }` (eliminates v0.5.0-alpha false-positive `silent_model_downgrade` on CLI-subscription / oauth-personal peers); forensic-only `cli_attested_model_raw` captures Codex stderr banner unparsed |

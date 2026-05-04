@@ -1,0 +1,86 @@
+# Defense-in-depth for npm artifacts. package.json also uses a files whitelist,
+# but these patterns keep local runtime and variable files out if packaging
+# rules are changed later.
+
+# Dependencies and package-manager state
+node_modules/
+.pnp.*
+.npm/
+.yarn/
+.pnpm-store/
+
+# Test, reports, and temporary output
+coverage/
+.nyc_output/
+.cache/
+.turbo/
+.tmp/
+tmp/
+temp/
+reports/
+playwright-report/
+test-results/
+*.lcov
+*.tgz
+*.tmp
+*.tmp.*
+*.bak
+*.orig
+*.log
+
+# Runtime state and local cross-review data
+data/
+sessions/
+logs/
+artifacts/
+pids/
+*.pid
+*.seed
+*.pid.lock
+*.ndjson
+probe-results.json
+.cross-review/
+
+# Variable files and local secrets
+.env
+.env.*
+*.env
+.npmrc
+*.pem
+*.key
+*.pfx
+*.p12
+*.crt
+*.cer
+secrets.json
+credentials.json
+token.json
+vault.json
+vault*.json
+oauth_creds.json
+
+# Repository automation and development-only material
+.github/
+.vscode/
+.idea/
+.gitattributes
+.gitignore
+.prettierignore
+.prettierrc.json
+scripts/
+docs/
+site/
+
+# AI-agent local memory and private context
+.ai/
+AGENTS.md
+AGENTS.local.md
+CLAUDE.md
+GEMINI.md
+memory/
+memories/
+.claude/
+.gemini/
+.cursor/
+.continue/
+.windsurf/

@@ -4,22 +4,23 @@
 
 # cross-review-v1
 
-> MCP server orchestrating CLI-only cross-review between Claude Code, ChatGPT Codex, Gemini CLI, and an embedded DeepSeek CLI.
+> MCP server orchestrating CLI-only cross-review between Claude Code, ChatGPT Codex, Gemini CLI, an embedded DeepSeek CLI, and Grok CLI.
 
 [![status: stable](https://img.shields.io/badge/status-stable-brightgreen.svg)](#status)
 [![npm](https://img.shields.io/npm/v/@lcv-ideas-software/cross-review-v1.svg)](https://www.npmjs.com/package/@lcv-ideas-software/cross-review-v1)
-[![spec: v4.15](https://img.shields.io/badge/spec-v4.15-informational.svg)](./docs/workflow-spec.md)
+[![spec: v4.16](https://img.shields.io/badge/spec-v4.16-informational.svg)](./docs/workflow-spec.md)
 [![MCP](https://img.shields.io/badge/MCP-stdio-blue.svg)](https://modelcontextprotocol.io/)
 [![license: Apache 2.0](https://img.shields.io/badge/license-Apache--2.0-green.svg)](./LICENSE)
 
 **Install.** `npm install -g @lcv-ideas-software/cross-review-v1` (npmjs.com) or `npm install -g @lcv-ideas-software/cross-review-v1 --registry=https://npm.pkg.github.com` (GitHub Packages mirror).
 
-**Status.** Stable. Current release: **v1.7.1** runtime paired with **spec v4.15**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
+**Status.** Stable. Current release: **v1.8.0** runtime paired with **spec v4.16**. See [CHANGELOG.md](./CHANGELOG.md) for the release history. v1.x releases follow a frozen-public-surface contract (see [CONTRIBUTING.md](./CONTRIBUTING.md) for the v1.x semver policy: patch additive within frozen surface, minor additive only, major requires a new trilateral cross-review session). v1.0 was cut on 2026-04-25 after a 10-session field-use validation gate per operator directive 2026-04-24, ratified by trilateral final approval session `fca13b80`.
 
 The version history at a glance:
 
 | Release | Spec | Scope |
 |---|---|---|
+| **`v1.8.0`** | v4.16 | **Grok joins as fifth agent/peer.** `VALID_AGENTS` and `VALID_PEERS` are now the same five-member set (`claude`, `codex`, `gemini`, `deepseek`, `grok`), while the tribunal lottery still excludes the caller. Grok is spawned through the external `grok` command in safe peer-review mode with stdin prompt, built-in edit/shell/todo/web/X tools disabled, and a minimal MCP allowlist. Convergence telemetry adds `pentalateral` and `degraded_pentalateral` for four-peer tribunal rounds. |
 | **`v1.7.1`** | v4.15 | **Smoke harness state-dir parity.** `functional-smoke.js` now resolves `CROSS_REVIEW_STATE_DIR` with the same default, absolute-path, and tilde-expansion semantics used by `session-store`, so smoke assertions and cleanup inspect the actual server state directory instead of hardcoding `~/.cross-review`. This fixes the false `session_init: meta.json exists` failure when the runtime is configured for a non-default state root. |
 | **`v1.7.0`** | v4.15 | **Tribunal relator lottery.** `session_init` now treats the caller as petitioner and runs a crypto-random relator lottery over non-caller peers, persisting `lead_peer`, `relator_lottery`, `petition`, and `tribunal` metadata. `ask_peers` sends the petition to the relator first, then gives remaining peers the petition plus relator report; each round persists a peer-only `verdict`, records caller acceptance/contest, and auto-finalizes as converged when caller READY accepts a unanimous READY panel verdict. |
 | **`v1.6.8`** | v4.14 | **Operational hygiene patch after live-session audit.** Stops leak-prone smoke units from leaving synthetic sessions open, updates `server_info` sponsors links to the canonical `https://cross-review-v1.lcv.dev`, extends failed-attempt classification for observed MCP/Node/dependency/process-cleanup noise, and aligns the Gemini Code Assist workspace config with the DeepSeek env wiring used by the other active MCP hosts. |
@@ -74,14 +75,15 @@ The version history at a glance:
 
 ## What It Does
 
-`cross-review-v1` is an **MCP stdio server** that orchestrates **structured review sessions** between four top-tier AI peers:
+`cross-review-v1` is an **MCP stdio server** that orchestrates **structured review sessions** between five top-tier AI peers:
 
 - **Claude Code** (Anthropic Claude Pro/Max subscription, model `claude-opus-4-7`)
 - **ChatGPT Codex** (ChatGPT Pro subscription, model `gpt-5.5` + `reasoning_effort=xhigh`)
 - **Gemini CLI** (Google One AI Ultra subscription, model `gemini-3.1-pro-preview` via oauth-personal)
 - **DeepSeek** (embedded `cross-review-v1-deepseek-cli`, model `deepseek-v4-pro` with thinking enabled)
+- **Grok CLI** (external `grok` command, model `grok-4.3` via xAI Responses API)
 
-Claude, Codex, or Gemini can serve as the **caller**; DeepSeek is a peer-only participant in v1.5.0. The server spawns peers under contained CLI invocations, collects their structured responses, and reports convergence via a unanimity predicate:
+Claude, Codex, Gemini, DeepSeek, or Grok can serve as the **caller** and as a **peer**. For each session, the caller is the petitioner and is excluded from the relator lottery and judging panel. The server spawns peers under contained CLI invocations, collects their structured responses, and reports convergence via a unanimity predicate:
 
 > **converged iff caller_status === 'READY' AND every responded peer has peer_status === 'READY'**
 
@@ -93,8 +95,8 @@ This is the canonical defense against single-model hallucinations: if one peer c
 
 The server supports two session shapes:
 
-- **Bilateral** (`ask_peer`): legacy `claude<->codex` only. Gemini callers must use `ask_peers`.
-- **Trilateral / quadrilateral / N-ary** (`ask_peers`): all complements spawn in parallel via `Promise.allSettled`. In v1.5.0, a Claude/Codex/Gemini caller gets three peers: the other two caller-capable agents plus DeepSeek. Per-peer identity is explicit (R12 invariant: never infer agent from array index). Failed spawns enter `meta.failed_attempts[]` (redacted per R14) and are counted in `round.quorum.rejected`. Under strict-quorum semantics (spec §6.12 + v1.2.3 §6.18.1) rejected peers count AGAINST convergence: `round.quorum.rejected === 0` is required in addition to all responded peers READY.
+- **Bilateral** (`ask_peer`): legacy `claude<->codex` only. Gemini, DeepSeek, and Grok callers must use `ask_peers`.
+- **Trilateral / quadrilateral / pentalateral / N-ary** (`ask_peers`): all complements spawn in a tribunal flow via `Promise.allSettled`. In v1.8.0, any caller gets four non-caller peers from the five-agent set. Per-peer identity is explicit (R12 invariant: never infer agent from array index). Failed spawns enter `meta.failed_attempts[]` (redacted per R14) and are counted in `round.quorum.rejected`. Under strict-quorum semantics (spec §6.12 + v1.2.3 §6.18.1) rejected peers count AGAINST convergence: `round.quorum.rejected === 0` is required in addition to all responded peers READY.
 
 Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No "loose mode" toggle. Round state is snapshotted at append time into `round.convergence_snapshot` with `spec_version: 'v4.9'` — audit immutability under future predicate evolution.
 
@@ -102,7 +104,7 @@ Convergence uses the strict denominator: **`status_missing` counts AGAINST**. No
 
 ## Peers and Transport
 
-All peers are spawned via a **CLI process**. Claude, Codex, and Gemini use their vendor CLIs. DeepSeek uses the project-owned embedded `cross-review-v1-deepseek-cli`; the v1 server still treats it as a subprocess peer with stdin/stdout, preserving the CLI-only orchestration contract.
+All peers are spawned via a **CLI process**. Claude, Codex, Gemini, and Grok use their CLIs. DeepSeek uses the project-owned embedded `cross-review-v1-deepseek-cli`; the v1 server still treats every peer as a subprocess with stdin/stdout, preserving the CLI-only orchestration contract.
 
 **Transport descriptor** returned by `spawnPeer` / `probeAgent`:
 
@@ -113,8 +115,9 @@ All peers are spawned via a **CLI process**. Claude, Codex, and Gemini use their
 | gemini | `oauth-personal`    | `v1internal` (cloudcode-pa)       | No authoritative `modelVersion` header — §6.11 skip applies. Ultra tier unlocks 3.x preview models. |
 | gemini | `api-key`           | `generativelanguage-v1beta`       | Defensive-coded but not reachable under the current billing veto. |
 | deepseek | `api-key`         | `deepseek-openai-compatible`      | Embedded CLI calls DeepSeek Chat Completions with `deepseek-v4-pro`, thinking enabled, prompt via stdin, and optional stdio MCP tools. |
+| grok | `api-key`             | `xai-responses-api`               | External `grok` command runs in peer-review mode with stdin prompt, built-in tools disabled, restricted MCP allowlist, and stderr `model: <id>` attestation. |
 
-**Item A (spec v4.9 §6.11).** For non-api-key transports the model's text self-report is unreliable across all three providers; `parsePeerOutputs` gates `classifyModelMatch` on `authoritativeModelAttestationAvailable(descriptor)` (equivalent to `auth === 'api-key'`). When false, the check is SKIPPED with an audit record (`model_check_skipped`) instead of flagging false-positive `silent_model_downgrade`.
+**Item A (spec v4.9 §6.11).** For non-api-key transports the model's text self-report is unreliable; `parsePeerOutputs` gates `classifyModelMatch` on `authoritativeModelAttestationAvailable(descriptor)` (equivalent to `auth === 'api-key'`). When false, the check is SKIPPED with an audit record (`model_check_skipped`) instead of flagging false-positive `silent_model_downgrade`.
 
 **Item E (spec v4.10 §6.11 amendment).** For `cli-subscription` transports with a parseable CLI stderr banner, the banner is promoted from forensic-only to AUTHORITATIVE attestation. Banner MATCH → `cli_banner_attested: true` audit elevation. Banner MISMATCH → hard gate: `model_failure_class: 'cli_banner_attestation_mismatch'` + `protocol_violation: true`. Codex-specific in practice (spec v4.11 survey closed the Claude follow-up as negative).
 
@@ -125,12 +128,13 @@ All peers are spawned via a **CLI process**. Claude, Codex, and Gemini use their
 ### Prerequisites
 
 - **Node.js 18+**
-- The three vendor peer CLIs installed, authenticated, and on PATH:
+- The four external vendor peer CLIs installed, authenticated, and on PATH:
   - `claude` — Claude Code CLI (`npm install -g @anthropic-ai/claude-code` or equivalent)
   - `codex` — Codex CLI (requires ChatGPT Pro subscription)
   - `gemini` — Gemini CLI (requires Google account; Ultra tier recommended for 3.x preview access)
+  - `grok` — LCV-maintained Grok CLI (`@lcv-ideas-software/grok-cli`), version `1.3.0` or newer
 - Active subscriptions covering each vendor CLI (see [Peers and transport](#peers-and-transport)).
-- `DEEPSEEK_API_KEY` in the environment. No external DeepSeek CLI is required; `cross-review-v1-deepseek-cli` is shipped by this package.
+- `DEEPSEEK_API_KEY` and `GROK_API_KEY` in the environment. No external DeepSeek CLI is required; `cross-review-v1-deepseek-cli` is shipped by this package.
 
 ### Clone and install
 
@@ -157,7 +161,7 @@ Both must report GREEN. The smoke suite exercises: parser fuzz coverage, schema 
 
 ## Register with each peer
 
-Each peer registers the MCP server using its host's standard MCP config. **Do NOT set a `CROSS_REVIEW_CALLER` env var** — caller identity is resolved dynamically per session (spec v4.14 §6.20, simplified in v1.2.12) via the calling host's MCP `clientInfo.name` (declared during the `initialize` handshake) with substring match against `claude` / `codex` / `gemini`. The env-var fallback that previously existed was removed in v1.2.12 because it produced "lying logs" — the server affirmed `caller=X` while the actual session was driven by agent Y. If a stale config still sets `CROSS_REVIEW_CALLER`, the server emits a one-shot deprecation notice on stderr at startup and ignores the variable; the server boots and runs normally.
+Each peer registers the MCP server using its host's standard MCP config. **Do NOT set a `CROSS_REVIEW_CALLER` env var** — caller identity is resolved dynamically per session (spec v4.14 §6.20, simplified in v1.2.12) via the calling host's MCP `clientInfo.name` (declared during the `initialize` handshake) with substring match against `claude` / `codex` / `gemini` / `deepseek` / `grok`. The env-var fallback that previously existed was removed in v1.2.12 because it produced "lying logs" — the server affirmed `caller=X` while the actual session was driven by agent Y. If a stale config still sets `CROSS_REVIEW_CALLER`, the server emits a one-shot deprecation notice on stderr at startup and ignores the variable; the server boots and runs normally.
 
 For local workstations, prefer **workspace-scoped MCP config** when the host supports it (`.vscode/mcp.json`, `.gemini/settings.json`, `.mcp.json`, `.codex/config.toml`). Keep user-level MCP config empty unless the host has no project/workspace separation.
 
@@ -178,7 +182,7 @@ Add to the project `.codex/config.toml` when possible:
 command = "/absolute/path/to/cross-review-v1.cmd"
 args = []
 tool_timeout_sec = 1800
-env_vars = ["DEEPSEEK_API_KEY"]
+env_vars = ["DEEPSEEK_API_KEY", "GROK_API_KEY"]
 ```
 
 Verify: `codex mcp get cross-review` should show `enabled: true, transport: stdio`. The Codex CLI declares a `clientInfo.name` containing `codex`, so the server resolves the caller as `codex` automatically.
@@ -194,7 +198,8 @@ Add to the project `.gemini/settings.json` under `mcpServers`:
       "command": "/absolute/path/to/cross-review-v1.cmd",
       "args": [],
       "env": {
-        "DEEPSEEK_API_KEY": "$DEEPSEEK_API_KEY"
+        "DEEPSEEK_API_KEY": "$DEEPSEEK_API_KEY",
+        "GROK_API_KEY": "$GROK_API_KEY"
       }
     }
   }
@@ -203,9 +208,30 @@ Add to the project `.gemini/settings.json` under `mcpServers`:
 
 Verify: invoke `gemini` and confirm `cross-review-v1` appears in the MCP list. The Gemini CLI declares a `clientInfo.name` containing `gemini`, so the server resolves the caller as `gemini` automatically.
 
+### Grok CLI
+
+Add to the project `.grok/settings.json` under `mcpServers`:
+
+```json
+{
+  "mcpServers": {
+    "cross-review-v1": {
+      "command": "/absolute/path/to/cross-review-v1.cmd",
+      "args": [],
+      "env": {
+        "DEEPSEEK_API_KEY": "$DEEPSEEK_API_KEY",
+        "GROK_API_KEY": "$GROK_API_KEY"
+      }
+    }
+  }
+}
+```
+
+Verify: invoke `grok` and confirm `cross-review-v1` appears in the MCP list. The Grok CLI declares a `clientInfo.name` containing `grok`, so the server resolves the caller as `grok` automatically.
+
 ### Mixed-host setups
 
-If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one of `claude` / `codex` / `gemini` (e.g., a custom wrapper or test harness), pass an explicit `caller` argument on every `session_init` call instead of trying to inject identity via env config. The `args.caller` parameter takes precedence over `clientInfo.name` resolution.
+If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one of `claude` / `codex` / `gemini` / `deepseek` / `grok` (e.g., a custom wrapper or test harness), pass an explicit `caller` argument on every `session_init` call instead of trying to inject identity via env config. The `args.caller` parameter takes precedence over `clientInfo.name` resolution.
 
 ### Embedded DeepSeek CLI MCP config
 
@@ -218,6 +244,16 @@ If your MCP host declares a `clientInfo.name` that does NOT cleanly map to one o
 The file may contain a larger stdio-only MCP catalog for manual DeepSeek CLI runs. Use `--allowed-mcp-server-names <name>` repeatedly, or `DEEPSEEK_ALLOWED_MCP_SERVERS=name1,name2`, to expose only the servers needed for that invocation. The default allowlist is the safe reasoning trio above; use `--allow-all-mcp-servers` only for manual diagnostic runs where recursion and tool exposure are intentional. The embedded CLI supports environment placeholders in the common forms `${env:NAME}`, `${NAME}`, and `$NAME`, and it intentionally does not read or write Gemini profile/config directories.
 
 The embedded catalog deliberately excludes `cross-review-v1` and `cross-review-v2`, even in the manual `--allow-all-mcp-servers` path. DeepSeek child processes also receive a filtered environment containing only OS launch essentials plus `DEEPSEEK_*` settings; unrelated provider keys are not forwarded.
+
+### Grok CLI peer mode
+
+Grok is invoked through the external `grok` command. `cross-review-v1` passes:
+
+```bash
+grok --peer-review-mode --prompt-stdin -m grok-4.3 --mcp-config reviewer-configs/grok-cli.mcp.json --allowed-mcp-server-names ultrathink --allowed-mcp-server-names code-reasoning
+```
+
+The child environment is filtered to OS launch essentials plus `GROK_*` and `CROSS_REVIEW_GROK_MODEL`. `GROK_PEER_REVIEW_MODE=1` and `GROK_DISABLE_BUILTIN_TOOLS=1` are forced by the spawner. The minimal Grok MCP config deliberately excludes `memory`, `cross-review-v1`, and `cross-review-v2` to prevent local state writes and recursive review loops. Override the pinned Grok model with `CROSS_REVIEW_GROK_MODEL` only as part of an explicit version/spec bump.
 
 `DEEPSEEK_API_KEY` must be available to the `cross-review-v1` host process. On Windows, the embedded DeepSeek path also falls back to the User/Machine environment values from the registry when the current process environment is stale after a recent env-var change, but host configs should still pass the variable explicitly whenever the host supports it.
 
@@ -345,7 +381,7 @@ cross-review-v1/
 | `session_check_convergence(session_id)` | v0.3.0-alpha | Read the persisted `convergence_snapshot` (or compute for legacy rounds). |
 | `session_finalize(session_id, outcome)` | v0.3.0-alpha | Seal with `converged` / `aborted` / `max-rounds`. |
 | `ask_peer(session_id, prompt, caller_status, review_focus?)` | v0.3.0-alpha | Bilateral `claude<->codex` only; optional per-round focus override. |
-| `ask_peers(session_id, prompt, caller_status, review_focus?)` | v0.5.0-alpha | N-ary parallel spawn; canonical for triangular/quadrilateral sessions; optional per-round focus override. |
+| `ask_peers(session_id, prompt, caller_status, review_focus?)` | v0.5.0-alpha | N-ary tribunal spawn; canonical for triangular/quadrilateral/pentalateral sessions; optional per-round focus override. |
 | `escalate_to_operator(session_id, question, context)` | v0.7.0-alpha | Record anti-hallucination escalation under `meta.escalations[]`. |
 
 ---

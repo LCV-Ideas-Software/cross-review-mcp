@@ -1,6 +1,17 @@
 # cross-review-v1
 
-MCP server orquestrando revisao cruzada entre Claude Code e ChatGPT Codex.
+MCP server stdio CLI-only orquestrando revisao cruzada entre cinco agentes:
+Claude Code, ChatGPT Codex, Gemini CLI, DeepSeek CLI embutido e Grok CLI.
+
+Estado atual: v1.8.0 / spec v4.16. O fluxo vigente e pentalateral: o caller
+abre a peticao, o sistema sorteia automaticamente um relator entre os demais
+agentes, o caller nunca pode revisar a si mesmo, e os peers disponiveis sao
+sempre todos os outros agentes do conjunto `claude`, `codex`, `gemini`,
+`deepseek`, `grok`.
+
+Nota: algumas secoes historicas abaixo preservam o contexto bilateral legado
+do projeto. Para comandos e configuracao de producao atualizados, consulte
+README.md, CHANGELOG.md e docs/workflow-spec.md.
 
 Nota editorial: este arquivo e consumido pelo peer em sessoes de cross-review.
 Por forca da regra canonica 6.4 da workflow-spec ("artifacts escritos para

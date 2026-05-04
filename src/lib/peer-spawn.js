@@ -19,7 +19,8 @@
 //     false-positives on meta-discussion.
 //   - `cli_attested_model_raw`: extracts stderr banner line `model: <id>`.
 //     For Codex this is forensic-only under cli-subscription; for the embedded
-//     DeepSeek wrapper it is the provider-response model attestation.
+//     DeepSeek wrapper and Grok peer-review mode it is the provider-response
+//     model attestation.
 //
 // Spawn of the peer CLI with the definitive flag tree from the canonical
 // README.
@@ -70,6 +71,10 @@
 //               from stdin, calls DeepSeek's OpenAI-compatible API with
 //               thinking enabled, and deliberately contains no Gemini CLI code
 //               or ~/.gemini/settings.json access.
+//   - Grok: model `grok-4.3` via the external `grok` command in
+//           peer-review mode. Prompt travels via stdin; built-in edit/shell/
+//           todo/web/X tools are disabled; MCP is restricted to stateless
+//           reasoning helpers only.
 // Model change requires explicit spec/config bump/edit; no silent fallback.
 // `spawnPeer` returns `peer_model` for persistence in
 // meta.json.rounds[i].peer_model, meeting the normative auditability
@@ -85,6 +90,7 @@ const CONFIGS_DIR = path.resolve(__dirname, "..", "..", "reviewer-configs");
 const EXCLUSIONS_PATH = path.join(CONFIGS_DIR, "peer-exclusions.json");
 const REVIEWER_MCP_JSON = path.join(CONFIGS_DIR, "reviewer-minimal.mcp.json");
 const DEEPSEEK_MCP_JSON = path.join(CONFIGS_DIR, "deepseek-cli.mcp.json");
+const GROK_MCP_JSON = path.join(CONFIGS_DIR, "grok-cli.mcp.json");
 
 // Normative IDs for v0.5.0-alpha (spec v4 section 6.9.2, extended by v4.7
 // triangular + v4.8 resilience).
@@ -94,6 +100,7 @@ const CLAUDE_MODEL = "claude-opus-4-7";
 const GEMINI_MODEL = "gemini-3.1-pro-preview";
 const DEEPSEEK_MODEL = "deepseek-v4-pro";
 const DEEPSEEK_REASONING_EFFORT = "max";
+const GROK_MODEL = process.env.CROSS_REVIEW_GROK_MODEL || "grok-4.3";
 const DEEPSEEK_CLI_PATH = path.resolve(__dirname, "..", "deepseek-cli.js");
 
 // Gemini peer containment: allowlist of MCP servers the peer may use while
@@ -107,6 +114,7 @@ const DEEPSEEK_ALLOWED_MCP_SERVERS = [
 	"ultrathink",
 	"code-reasoning",
 ];
+const GROK_ALLOWED_MCP_SERVERS = ["ultrathink", "code-reasoning"];
 
 function copyEnvIfPresent(target, name) {
 	if (process.env[name] !== undefined) target[name] = process.env[name];
@@ -194,6 +202,50 @@ function buildDeepSeekEnv() {
 	]) {
 		copyEnvValueIfPresent(env, name);
 	}
+	return env;
+}
+
+function buildGrokEnv() {
+	const env = {};
+	for (const name of [
+		"PATH",
+		"Path",
+		"PATHEXT",
+		"SystemRoot",
+		"SYSTEMROOT",
+		"WINDIR",
+		"windir",
+		"ComSpec",
+		"COMSPEC",
+		"TEMP",
+		"TMP",
+		"USERPROFILE",
+		"HOME",
+		"APPDATA",
+		"LOCALAPPDATA",
+	]) {
+		copyEnvIfPresent(env, name);
+	}
+	for (const name of [
+		"GROK_API_KEY",
+		"GROK_BASE_URL",
+		"GROK_MODEL",
+		"GROK_MAX_TOKENS",
+		"GROK_MAX_TOOLS",
+		"GROK_MCP_CONFIG",
+		"GROK_ALLOWED_MCP_SERVER_NAMES",
+		"GROK_DISABLE_MCP",
+		"GROK_DISABLE_BUILTIN_TOOLS",
+		"GROK_PEER_REVIEW_MODE",
+		"CROSS_REVIEW_GROK_MODEL",
+	]) {
+		copyEnvValueIfPresent(env, name);
+	}
+	env.GROK_MODEL = GROK_MODEL;
+	env.GROK_MCP_CONFIG = GROK_MCP_JSON;
+	env.GROK_ALLOWED_MCP_SERVER_NAMES = GROK_ALLOWED_MCP_SERVERS.join(",");
+	env.GROK_PEER_REVIEW_MODE = "1";
+	env.GROK_DISABLE_BUILTIN_TOOLS = "1";
 	return env;
 }
 
@@ -298,6 +350,13 @@ function buildTransportDescriptor(agent) {
 			agent: "deepseek",
 			auth: "api-key",
 			endpoint_class: "deepseek-openai-compatible",
+		};
+	}
+	if (agent === "grok") {
+		return {
+			agent: "grok",
+			auth: "api-key",
+			endpoint_class: "xai-responses-api",
 		};
 	}
 	return { agent: String(agent), auth: "unknown", endpoint_class: "unknown" };
@@ -708,11 +767,28 @@ function buildDeepSeekArgs() {
 	];
 }
 
+function buildGrokArgs() {
+	const allowArgs = GROK_ALLOWED_MCP_SERVERS.flatMap((name) => [
+		"--allowed-mcp-server-names",
+		name,
+	]);
+	return [
+		"--peer-review-mode",
+		"--prompt-stdin",
+		"-m",
+		GROK_MODEL,
+		"--mcp-config",
+		GROK_MCP_JSON,
+		...allowArgs,
+	];
+}
+
 function modelForPeer(peerAgent) {
 	if (peerAgent === "codex") return CODEX_MODEL;
 	if (peerAgent === "claude") return CLAUDE_MODEL;
 	if (peerAgent === "gemini") return GEMINI_MODEL;
 	if (peerAgent === "deepseek") return DEEPSEEK_MODEL;
+	if (peerAgent === "grok") return GROK_MODEL;
 	throw new Error(`modelForPeer: unknown peer agent '${peerAgent}'`);
 }
 
@@ -942,6 +1018,9 @@ function probeAgent(agent, options = {}) {
 			} else if (agent === "deepseek") {
 				cmd = process.execPath;
 				args = buildDeepSeekArgs();
+			} else if (agent === "grok") {
+				cmd = "grok";
+				args = buildGrokArgs();
 			} else {
 				return finish({
 					agent,
@@ -966,6 +1045,8 @@ function probeAgent(agent, options = {}) {
 			};
 			if (agent === "deepseek") {
 				spawnOptions.env = buildDeepSeekEnv();
+			} else if (agent === "grok") {
+				spawnOptions.env = buildGrokEnv();
 			}
 			proc = spawn(cmdLine, spawnOptions);
 		} catch (err) {
@@ -1090,7 +1171,7 @@ function probeAgent(agent, options = {}) {
 			const stderrTail = stderr.slice(-400);
 			const descriptor = buildTransportDescriptor(agent);
 			const cli_attested_model_raw =
-				agent === "codex" || agent === "deepseek"
+				agent === "codex" || agent === "deepseek" || agent === "grok"
 					? extractCliAttestedModelRaw(stderr)
 					: null;
 
@@ -1128,6 +1209,8 @@ function probeAgent(agent, options = {}) {
 			const reported =
 				agent === "deepseek" && cli_attested_model_raw
 					? cli_attested_model_raw
+					: agent === "grok" && cli_attested_model_raw
+						? cli_attested_model_raw
 					: extractReportedModel(stdout);
 			const attested = authoritativeModelAttestationAvailable(descriptor);
 
@@ -1690,6 +1773,9 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 	} else if (peerAgent === "deepseek") {
 		cmd = process.execPath;
 		args = buildDeepSeekArgs();
+	} else if (peerAgent === "grok") {
+		cmd = "grok";
+		args = buildGrokArgs();
 	} else {
 		return Promise.reject(
 			new Error(`spawnPeer: unknown peer agent '${peerAgent}'`),
@@ -1705,6 +1791,8 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 		};
 		if (peerAgent === "deepseek") {
 			spawnOptions.env = buildDeepSeekEnv();
+		} else if (peerAgent === "grok") {
+			spawnOptions.env = buildGrokEnv();
 		}
 		const proc = spawn(cmdLine, spawnOptions);
 		let stdout = "";
@@ -1798,7 +1886,9 @@ function spawnPeer(peerAgent, prompt, options = {}) {
 			clearTimeout(timer);
 			const descriptor = buildTransportDescriptor(peerAgent);
 			const cli_attested_model_raw =
-				peerAgent === "codex" || peerAgent === "deepseek"
+				peerAgent === "codex" ||
+				peerAgent === "deepseek" ||
+				peerAgent === "grok"
 					? extractCliAttestedModelRaw(stderr)
 					: null;
 			if (code !== 0) {
@@ -2196,6 +2286,12 @@ function isPeerCliCommand(cmdLine) {
 	) {
 		return true;
 	}
+	if (
+		(argv0Basename === "grok" || argv0Basename === "grok.exe") &&
+		/(?:^|\s)--peer-review-mode(?:\s|$)/.test(rest)
+	) {
+		return true;
+	}
 	// v1.2.17 npm-shim recognition: cmd.exe wrapper invoking a peer CLI.
 	// Match shape: `cmd.exe /d /s /c "<peer-name>(.cmd|.exe) ... <peer-flag> ..."`
 	// or `cmd.exe /c <peer-name> ... <peer-flag> ...`. The peer name must
@@ -2219,6 +2315,12 @@ function isPeerCliCommand(cmdLine) {
 		if (
 			/(?:[\s"'\\/]|^)claude(?:\.cmd|\.exe)?(?:[\s"']|$)/.test(rest) &&
 			/(?:^|\s)(-p|--print)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/(?:[\s"'\\/]|^)grok(?:\.cmd|\.exe)?(?:[\s"']|$)/.test(rest) &&
+			/(?:^|\s)--peer-review-mode(?:[\s"']|$)/.test(rest)
 		) {
 			return true;
 		}
@@ -2259,6 +2361,14 @@ function isPeerCliCommand(cmdLine) {
 				rest,
 			) &&
 			/(?:^|\s)(-p|--print)(?:[\s"']|$)/.test(rest)
+		) {
+			return true;
+		}
+		if (
+			/[\s"'][^\s"']*[\\/]grok[^\s"']*\.(?:js|cjs|mjs)(?:["']|\s|$)/.test(
+				rest,
+			) &&
+			/(?:^|\s)--peer-review-mode(?:[\s"']|$)/.test(rest)
 		) {
 			return true;
 		}
@@ -2347,6 +2457,8 @@ function findOrphans(procs, ourPid) {
 			agent = "claude";
 		else if (/[\\/]cross-review-v1[\\/]src[\\/]deepseek-cli\.js/i.test(p.command))
 			agent = "deepseek";
+		else if (/\bgrok\b/i.test(p.command) && /--peer-review-mode/i.test(p.command))
+			agent = "grok";
 		orphans.push({ ...p, agent });
 	}
 	return orphans;
@@ -2363,6 +2475,7 @@ module.exports = {
 	buildClaudeArgs,
 	buildGeminiArgs,
 	buildDeepSeekArgs,
+	buildGrokArgs,
 	// v1.4.0 §6.25: Codex sandbox/approval policy is configurable.
 	resolveCodexSandboxPolicy,
 	logCodexSandboxPolicy,
@@ -2392,11 +2505,15 @@ module.exports = {
 	GEMINI_MODEL,
 	DEEPSEEK_MODEL,
 	DEEPSEEK_REASONING_EFFORT,
+	GROK_MODEL,
 	DEEPSEEK_CLI_PATH,
 	DEEPSEEK_MCP_JSON,
+	GROK_MCP_JSON,
 	GEMINI_ALLOWED_MCP_SERVERS,
 	DEEPSEEK_ALLOWED_MCP_SERVERS,
+	GROK_ALLOWED_MCP_SERVERS,
 	buildDeepSeekEnv,
+	buildGrokEnv,
 	// v0.6.0-alpha / spec v4.9 additions.
 	detectGeminiAuth,
 	geminiAuthFromSignals,
